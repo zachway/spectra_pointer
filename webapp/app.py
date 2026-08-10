@@ -1449,19 +1449,6 @@ def _known_as(row: dict) -> str:
 INSTRUMENT_SKY_SAMPLE_TOP_N = 12
 INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
 
-# Cap on how many instrument names the /instruments archive map's summary
-# row shows per archive before collapsing the rest into "N more". Most
-# archives have a handful of named spectrographs, but a few (BeSS, most
-# visibly -- 681 distinct values) report each observer's own free-text
-# equipment string as "instrument" rather than a fixed instrument name, which
-# would otherwise turn that one table cell into an unreadable wall of text.
-# The full, untruncated per-archive breakdown (with counts) is still further
-# down the page in "Tracked instruments" -- this only trims the at-a-glance
-# summary. INSTRUMENTS_QUERY already orders each archive's rows by holdings
-# count descending, so taking the first ARCHIVE_MAP_INSTRUMENT_CAP entries
-# keeps the biggest, most representative instruments visible.
-ARCHIVE_MAP_INSTRUMENT_CAP = 8
-
 # Resolving power (R = lambda/delta-lambda) per (archive display_name,
 # instrument) -- like NOT_YET_TRACKED below, this can't be derived from the
 # database (holdings don't carry it) so it's hand-maintained from each
@@ -2148,19 +2135,6 @@ INSTRUMENTS_TEMPLATE = """
   {% endif %}
 
   <hr>
-  <h2>Archive map</h2>
-  <p class="note">Which instruments each archive's sync covers, at a glance. Archive names link to that archive's own website, when it has a public one, so you can go look at the source directly.</p>
-  <table>
-    <tr><th>Archive</th><th>Instruments</th></tr>
-    {% for a in instruments %}
-    <tr>
-      <td>{% if a.homepage_url %}<a href="{{ a.homepage_url }}" target="_blank" rel="noopener">{{ a.display_name }}</a>{% else %}{{ a.display_name }}{% endif %}</td>
-      <td>{{ a.instrument_preview | join(', ') }}{% if a.instrument_overflow %}, and {{ a.instrument_overflow }} more{% endif %}</td>
-    </tr>
-    {% endfor %}
-  </table>
-
-  <hr>
   <h2>Tracked instruments</h2>
   <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
@@ -2616,8 +2590,6 @@ def instruments_page():
             "display_name": name,
             "instruments": insts,
             "homepage_url": ARCHIVE_HOMEPAGE_URL.get(name),
-            "instrument_preview": [i["instrument"] for i in insts[:ARCHIVE_MAP_INSTRUMENT_CAP]],
-            "instrument_overflow": max(0, len(insts) - ARCHIVE_MAP_INSTRUMENT_CAP),
         }
         for name, insts in instruments_by_archive.items()
     ]
