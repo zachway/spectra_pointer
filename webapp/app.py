@@ -1548,7 +1548,7 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # for that reason. Otherwise deliberately a strict subset of
 # INSTRUMENT_RESOLVING_POWER's keys: n/a (imaging-only) entries are omitted
 # outright, and a handful of obscure/retired instruments this project
-# couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
+# couldn't confirm a real published range for (e.g. CFHT's PYTHIAS,
 # HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
 # HST's COS-STIS combined mode) are left out rather than guessed -- a
@@ -1572,6 +1572,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('CFHT / CADC', 'TIGER'): (400, 700),
     ('CFHT / CADC', 'MOS'): (370, 900),
     ('CFHT / CADC', 'SIS'): (370, 1000),
+    ('CFHT / CADC', 'GECKO'): (300, 1000),
     ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): (0.12, 3.1),
     ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): (0.12, 3.1),
     ('Chandra X-ray Observatory', 'HETG (HRC-I)'): (0.12, 3.1),
@@ -1644,6 +1645,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
     ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
+    ('IRTF Legacy Archive', 'CSHELL'): (1000, 5500),
     ('Keck Observatory Archive', 'NIRSPEC'): (950, 5500),
     ('Keck Observatory Archive', 'HIRES'): (300, 1000),
     ('Keck Observatory Archive', 'MOSFIRE'): (970, 2450),
@@ -1675,6 +1677,9 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST', 'COS'): (90, 320),
     ('MAST', 'STIS'): (115, 1030),
     ('MAST', 'HRS/1'): (105, 320),
+    ('MAST', 'ACS/WFC'): (550, 1050),
+    ('MAST', 'ACS/HRC'): (170, 1050),
+    ('MAST', 'ACS/SBC'): (115, 180),
     ('MAST — JWST', 'NIRSPEC/MSA'): (600, 5300),
     ('MAST — JWST', 'NIRCAM/GRISM'): (2400, 5000),
     ('MAST — JWST', 'NIRSPEC/SLIT'): (600, 5300),
@@ -1685,6 +1690,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
     ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): (900, 2500),
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): (380, 930),
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): (380, 930),
     ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
     ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
     ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
