@@ -42,6 +42,7 @@ from sync.archives import (
     desi,
     elodie,
     eso,
+    eso_raw,
     feros_gavo,
     flashheros_gavo,
     gaia_rvs,
@@ -84,6 +85,7 @@ from sync.archives import (
     svo_cab,
     xmm,
 )
+from sync.reconcile_eso_raw import reconcile as reconcile_eso_raw
 from sync.runner import run_sync
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -93,6 +95,7 @@ ARCHIVES = {
     "rave": rave.fetch,
     "galah": galah.fetch,
     "eso": eso.fetch,
+    "eso_raw": eso_raw.fetch,
     "cfht_cadc": cfht_cadc.fetch,
     "chandra": chandra.fetch,
     "dao": dao.fetch,
@@ -177,6 +180,19 @@ def main() -> None:
                 logger.exception("%s: failed", archive_code)
                 conn.rollback()
                 failed.append(archive_code)
+
+        # eso/eso_raw have no shared join key to upgrade a raw row to
+        # reduced in place during fetch() itself (see
+        # sync/reconcile_eso_raw.py) -- run as a separate pass instead,
+        # once both archives have synced whatever they're going to this run.
+        if "eso" in archive_codes or "eso_raw" in archive_codes:
+            try:
+                reconciled = reconcile_eso_raw(conn)
+                if reconciled:
+                    logger.info("eso_raw: reconciled %d row(s) superseded by a Phase 3 reduced product", reconciled)
+            except Exception:
+                logger.exception("eso_raw: reconciliation failed")
+                conn.rollback()
 
     if failed:
         logger.error("archives failed: %s", ", ".join(failed))

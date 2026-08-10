@@ -19,13 +19,18 @@ def conn():
             "VALUES ('unit_test', 'Unit Test Archive') ON CONFLICT DO NOTHING"
         )
         cur.execute(
-            # 'noirlab'/'eso' alongside 'unit_test': instrument-radius-override
-            # tests must use those exact archive_codes to exercise the
-            # override (it's keyed on (archive_code, instrument)), so their
-            # test rows need the same cleanup -- otherwise a leftover row
-            # referencing a test-range star_id blocks the DELETE FROM stars
-            # below with a foreign key violation on the next test run.
-            "DELETE FROM spectroscopy_holdings WHERE archive_code IN ('unit_test', 'noirlab', 'eso')"
+            "INSERT INTO archives (archive_code, display_name) "
+            "VALUES ('eso_raw', 'ESO Archive (Raw)') ON CONFLICT DO NOTHING"
+        )
+        cur.execute(
+            # 'noirlab'/'eso'/'eso_raw' alongside 'unit_test': instrument-
+            # radius-override and eso/eso_raw reconciliation tests must use
+            # those exact archive_codes (both are keyed by real archive_code,
+            # not a stand-in), so their test rows need the same cleanup --
+            # otherwise a leftover row referencing a test-range star_id
+            # blocks the DELETE FROM stars below with a foreign key
+            # violation on the next test run.
+            "DELETE FROM spectroscopy_holdings WHERE archive_code IN ('unit_test', 'noirlab', 'eso', 'eso_raw')"
         )
         cur.execute(
             "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s",

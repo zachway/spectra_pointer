@@ -1509,6 +1509,25 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('ESO Science Archive', ''): '—',
     ('ESO Science Archive', 'MUSE'): 'R ≈ 1,700–4,000',
     ('ESO Science Archive', 'SINFONI'): 'R ≈ 1,500–4,000 (grating-dependent)',
+    # Raw-archive counterparts to the ESO Science Archive entries above --
+    # same physical instrument, same resolving power, whether the spectrum
+    # is a Phase 3 reduced product or straight off the telescope. Only the
+    # instruments already vetted above are repeated here; VISIR, CES, EMMI,
+    # GRAVITY, SPHERE, NAOS+CONICA, TIMMI2, ISAAC, ERIS, SOXS, and SHOOT are
+    # real spectrographs in the raw data too but left out rather than
+    # guessed at, same graceful-degradation convention as elsewhere in this
+    # dict -- a missing key just means that instrument's bar doesn't render.
+    ('ESO Archive (Raw)', 'HARPS'): 'R ≈ 115,000',
+    ('ESO Archive (Raw)', 'XSHOOTER'): 'R ≈ 3,000–17,000 (arm/slit-dependent)',
+    ('ESO Archive (Raw)', 'FORS2'): 'R ≈ 260–2,600 (grism-dependent)',
+    ('ESO Archive (Raw)', 'FORS1'): 'R ≈ 260–2,600 (grism-dependent, retired)',
+    ('ESO Archive (Raw)', 'UVES'): 'R ≈ 40,000–110,000 (slit-dependent)',
+    ('ESO Archive (Raw)', 'FEROS'): 'R ≈ 48,000',
+    ('ESO Archive (Raw)', 'NIRPS'): 'R ≈ 100,000',
+    ('ESO Archive (Raw)', 'ESPRESSO'): 'R ≈ 70,000–190,000 (mode-dependent)',
+    ('ESO Archive (Raw)', 'EFOSC'): 'R ≈ 600–2,500 (grism-dependent)',
+    ('ESO Archive (Raw)', 'CRIRES'): 'R ≈ 50,000–100,000+ (slit-dependent)',
+    ('ESO Archive (Raw)', 'SOFI'): 'R ≈ 600–1,800 (grism-dependent)',
     ('FEROS Public Spectra (GAVO)', 'FEROS'): 'R ≈ 48,000',
     ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): 'R ≈ 20,000',
     ('GALAH', 'GALAH (HERMES)'): 'R ≈ 28,000',
@@ -1723,6 +1742,17 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('ESO Science Archive', 'FORS1'): (330, 1100),
     ('ESO Science Archive', 'MUSE'): (480, 930),
     ('ESO Science Archive', 'SINFONI'): (1100, 2450),
+    ('ESO Archive (Raw)', 'HARPS'): (378, 691),
+    ('ESO Archive (Raw)', 'XSHOOTER'): (300, 2480),
+    ('ESO Archive (Raw)', 'FORS2'): (330, 1100),
+    ('ESO Archive (Raw)', 'FORS1'): (330, 1100),
+    ('ESO Archive (Raw)', 'UVES'): (300, 1100),
+    ('ESO Archive (Raw)', 'FEROS'): (350, 920),
+    ('ESO Archive (Raw)', 'NIRPS'): (980, 1800),
+    ('ESO Archive (Raw)', 'ESPRESSO'): (380, 788),
+    ('ESO Archive (Raw)', 'EFOSC'): (330, 1100),
+    ('ESO Archive (Raw)', 'CRIRES'): (950, 5300),
+    ('ESO Archive (Raw)', 'SOFI'): (950, 2500),
     ('FEROS Public Spectra (GAVO)', 'FEROS'): (350, 920),
     ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): (350, 870),
     ('GALAH', 'GALAH (HERMES)'): (471, 789),
@@ -2042,6 +2072,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'MAST — JWST': 'https://mast.stsci.edu/',
     'NOIRLab Astro Data Archive': 'https://astroarchive.noirlab.edu/',
     'ESO Science Archive': 'https://archive.eso.org/',
+    'ESO Archive (Raw)': 'https://archive.eso.org/',
     'Gaia RVS': 'https://www.cosmos.esa.int/web/gaia/dr3',
     'GALAH': 'https://datacentral.org.au/',
     'DESI': 'https://data.desi.lbl.gov/',
@@ -2841,6 +2872,12 @@ INFO_TEMPLATE = """
     <li><b>Derived from the file itself</b>: NAOJ inspects the access URL/format of each product to infer raw vs. reduced.</li>
   </ul>
   <p class="note">A handful of archives don't set this field yet, so their holdings sit at <b>unknown</b> even where the true status is actually known with confidence — most notably <b>HARPS-N (TNG)</b>: every record synced from it is a raw exposure (the sync module already dedupes on the raw, unprocessed FITS filename specifically to avoid double-counting each DRS pipeline data product as a separate observation), but that fact isn't yet propagated into the reduction_status field. BeSS is a softer case worth flagging in the other direction: it's marked <b>reduced</b>, but that only means wavelength-calibrated, not flux-calibrated — a real but weaker claim than the "reduced" label implies for e.g. an ESO calib_level-2 spectrum. Treat "unknown" as "not yet recorded," not as "confirmed unclassifiable."</p>
+
+  <h2>ESO: raw archive vs. Phase 3 reduced archive</h2>
+  <p><b>ESO Science Archive</b> and <b>ESO Archive (Raw)</b> are two separate archive_codes drawing from the same TAP endpoint (<code>archive.eso.org/tap_obs</code>) but two disjoint tables: the former queries <code>ivoa.ObsCore</code>, ESO's Phase 3 collection of pipeline-reduced, science-portal products; the latter queries <code>dbo.raw</code>, the unreduced exposures straight off the telescope. This split exists because user feedback correctly flagged that the Phase 3-only view was missing a real, substantial slice of ESO's holdings — confirmed live, tens of thousands of raw HARPS/UVES/ESPRESSO frames per bright, well-observed target with no Phase 3 counterpart at all (e.g. ~30,192 raw HARPS exposures around alpha Centauri alone). Raw frames are included because ESO publishes public pipelines that can reduce them, so a raw-only exposure is still real, usable data, not a dead end.</p>
+  <p>The raw side is deliberately scoped down from ESO's full raw catalog (dominated by imaging, interferometry, polarimetry, and coronagraphy, not spectroscopy) to <code>dp_tech</code> values starting <code>ECHELLE</code> or <code>SPECTRUM</code>, with two instrument codes excluded after live inspection turned up non-target data hiding behind that filter: <b>GRIPS19</b> (an all-sky background monitor — every row's target field literally reads "SKY MAP") and <b>APEXHET</b> (a submillimeter heterodyne receiver on the APEX 12m dish — a different wavelength regime entirely, already excluded from this project's optical/IR wavelength-coverage chart for the same reason). ESO also stamps a fixed sentinel position, <code>(-596.52323555, -596.52323555)</code>, on raw rows with no real coordinates recorded instead of leaving the field null — about 28% of the filtered raw rows — so this project treats that exact value as "no position" and falls back to name-only matching for those records, the same graceful path used for any other archive with sparse position data.</p>
+  <p><b>Why not merge them into one archive like this project's other raw/reduced pairs?</b> Las Cumbres Observatory's own raw and reduced frames (<code>lco_floyds</code>/<code>lco_nres</code>) share an explicit <code>observation_id</code> field tying every processing tier of one physical exposure together, so a single sync module can emit one row per exposure and let a later run upgrade it from raw to reduced in place once reprocessing catches up. ESO's two tables have no equivalent join key — <code>dbo.raw</code>'s dp_ids look like <code>HARPS.&lt;exposure timestamp&gt;</code> and <code>ivoa.ObsCore</code>'s look like <code>ADP.&lt;ingestion timestamp&gt;</code>, generated independently with nothing connecting the two. Checked live: roughly 94% of raw HARPS exposures near alpha Centauri do already have a Phase 3 counterpart, meaning most of what the raw archive contributes for well-studied targets is genuinely the same exposure ESO has already reduced, not a new observation — real double-counting if left alone.</p>
+  <p>Instead of rewriting either sync module, a separate reconciliation pass runs after both archives sync: any <b>ESO Archive (Raw)</b> holding that's cleanly matched to a star, and whose instrument and observation date match an already-matched <b>ESO Science Archive</b> holding for that same star, is deleted outright. Observation date is already stored at day granularity for every archive here, which comfortably absorbs the sub-minute timing difference confirmed live between a raw frame's exposure start and its Phase 3 product's recorded start time, so no fuzzy time-window matching was needed. The net effect: a raw exposure shows up as its own holding right up until ESO deposits a reduced version of it, at which point the raw entry disappears and only the reduced one remains — functionally the same "upgrades over time" behavior as the LCO archives, reconstructed after the fact rather than tracked natively. Ambiguous or unmatched holdings on either side are never touched by this pass.</p>
 
   <h2>Needs-review queue</h2>
   <p class="note">Either an ambiguous positional match (2+ tracked stars fell within the 1.0" radius of the archive's reported position) or a name match rejected as implausible with no positional candidate to fall back on (see How matching works above) — in both cases no single star was assigned automatically. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
