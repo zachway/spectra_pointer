@@ -2007,6 +2007,75 @@ def _advanced_search_context() -> dict:
     }
 
 
+# Public homepage per archive display_name -- same hand-maintained shape as
+# INSTRUMENT_RESOLVING_POWER/INSTRUMENT_WAVELENGTH_RANGE_NM above (not
+# derivable from the database; archive_url elsewhere in this file is a
+# per-observation deep link, not a homepage). Points at the archive's own
+# host wherever that host also serves a human-browsable landing page
+# (confirmed live for every entry below, each with a plain GET); a few
+# multi-instrument archives (Gemini, MAST, the two IRTF/IRSA entries, the
+# two NAOJ/JVO entries, the two CADC-only entries, the two GAVO/DaCHS
+# entries) share one URL since they're really one archive split into
+# several archive_codes for sync purposes. Chandra links to
+# cxc.harvard.edu/cda/ rather than cda.harvard.edu directly -- the latter
+# is the TAP/API host and 403s a plain browser GET at its root. Powers the
+# /instruments archive map.
+ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
+    'Gemini Observatory Archive': 'https://archive.gemini.edu/',
+    'Gemini Observatory Archive — GHOST': 'https://archive.gemini.edu/',
+    'Gemini Observatory Archive — IGRINS': 'https://archive.gemini.edu/',
+    'MAST': 'https://mast.stsci.edu/',
+    'MAST — JWST': 'https://mast.stsci.edu/',
+    'NOIRLab Astro Data Archive': 'https://astroarchive.noirlab.edu/',
+    'ESO Science Archive': 'https://archive.eso.org/',
+    'Gaia RVS': 'https://www.cosmos.esa.int/web/gaia/dr3',
+    'GALAH': 'https://datacentral.org.au/',
+    'DESI': 'https://data.desi.lbl.gov/',
+    'SDSS-V — APOGEE': 'https://www.sdss.org/',
+    'SDSS-V — Optical': 'https://www.sdss.org/',
+    'SDSS Legacy Optical': 'https://www.sdss.org/',
+    'LAMOST': 'https://www.lamost.org/',
+    'LAMOST — MRS': 'https://www.lamost.org/',
+    'Keck Observatory Archive': 'https://koa.ipac.caltech.edu/',
+    'CFHT / CADC': 'https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/',
+    'DAO (Dominion Astrophysical Observatory)': 'https://www.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/',
+    'WEAVE': 'https://www.ing.iac.es/weave/',
+    '4MOST': 'https://www.4most.eu/',
+    'RAVE': 'https://www.rave-survey.org/',
+    'CARMENES': 'http://carmenes.cab.inta-csic.es/',
+    'CARMENES (CAHA archive, VIS+NIR)': 'https://caha.sdc.cab.inta-csic.es/',
+    'LBT — PEPSI, MODS, LUCI': 'https://archive.lbto.org/',
+    'Lick / Mt. Hamilton (Shane + APF)': 'https://mthamilton.ucolick.org/',
+    'FEROS Public Spectra (GAVO)': 'https://dc.g-vo.org/',
+    'Flash/Heros Public Spectra (GAVO)': 'https://dc.g-vo.org/',
+    'Asiago Observatory (Echelle)': 'http://archives.ia2.inaf.it/',
+    'HARPS-N (TNG)': 'http://archives.ia2.inaf.it/',
+    'ELODIE (OHP)': 'http://atlas.obs-hp.fr/elodie/',
+    'SOPHIE (OHP)': 'http://atlas.obs-hp.fr/sophie/',
+    'SALT HRS (SAAO SSDA)': 'https://ssda.saao.ac.za/',
+    'ING Archive (WHT/ISIS)': 'http://casu.ast.cam.ac.uk/casuadc/ingarch',
+    'NAOJ (Subaru HDS, via JVO)': 'https://jvo.nao.ac.jp/',
+    'NEID (WIYN, Kitt Peak)': 'https://neid.ipac.caltech.edu/',
+    'NOT (Nordic Optical Telescope) — FIES': 'https://www.not.iac.es/',
+    'OIRSA (CfA)': 'http://oirsa.cfa.harvard.edu/',
+    'GTC (Gran Telescopio CANARIAS)': 'https://gtc.sdc.cab.inta-csic.es/',
+    'HERMES (Mercator Telescope, KU Leuven)': 'https://mercatorvo.ster.kuleuven.be/',
+    'BeSS (Be Star Spectra, Observatoire de Paris/OHP)': 'http://basebe.obspm.fr/',
+    'Chandra X-ray Observatory': 'https://cxc.harvard.edu/cda/',
+    'IRTF SpeX (via IRSA)': 'https://irsa.ipac.caltech.edu/',
+    'IRTF iSHELL (via IRSA)': 'https://irsa.ipac.caltech.edu/',
+    'IRTF Legacy Archive': 'https://irtfdata.ifa.hawaii.edu/',
+    'Las Cumbres Observatory -- FLOYDS': 'https://lco.global/',
+    'Las Cumbres Observatory -- NRES': 'https://lco.global/',
+    'Ondrejov Observatory (CCD700)': 'http://voarchive.asu.cas.cz/',
+    'PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)': 'https://www.polarbase.ovgso.fr/',
+    'NAOJ (Subaru MOIRCS, via JVO)': 'https://jvo.nao.ac.jp/',
+    'IACOB Spectroscopic Database (IAC)': 'http://research.iac.es/proyecto/iacob/',
+    'SVO CAB Stellar Libraries': 'http://svo2.cab.inta-csic.es/',
+    'IRSA Space-Mission Stellar Collections': 'https://irsa.ipac.caltech.edu/',
+    'XMM-Newton RGS': 'https://nxsa.esac.esa.int/',
+}
+
 INSTRUMENTS_TEMPLATE = """
 <!doctype html>
 <html>
@@ -2052,12 +2121,25 @@ INSTRUMENTS_TEMPLATE = """
   {% endif %}
 
   <hr>
+  <h2>Archive map</h2>
+  <p class="note">Which instruments each archive's sync covers, at a glance. Archive names link to that archive's own website, when it has a public one, so you can go look at the source directly.</p>
+  <table>
+    <tr><th>Archive</th><th>Instruments</th></tr>
+    {% for a in instruments %}
+    <tr>
+      <td>{% if a.homepage_url %}<a href="{{ a.homepage_url }}" target="_blank" rel="noopener">{{ a.display_name }}</a>{% else %}{{ a.display_name }}{% endif %}</td>
+      <td>{{ a.instruments | map(attribute='instrument') | join(', ') }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <hr>
   <h2>Tracked instruments</h2>
   <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
   <details>
     <summary class="summary-row">
-      <span>{{ a.display_name }}</span>
+      <span>{% if a.homepage_url %}<a href="{{ a.homepage_url }}" target="_blank" rel="noopener" onclick="event.stopPropagation()">{{ a.display_name }}</a>{% else %}{{ a.display_name }}{% endif %}</span>
       <span class="summary-count">{{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }}</span>
     </summary>
     <table>
@@ -2503,7 +2585,11 @@ def instruments_page():
             "resolving_power": INSTRUMENT_RESOLVING_POWER.get((r["display_name"], r["instrument"]), "—"),
         })
     instruments = [
-        {"display_name": name, "instruments": insts}
+        {
+            "display_name": name,
+            "instruments": insts,
+            "homepage_url": ARCHIVE_HOMEPAGE_URL.get(name),
+        }
         for name, insts in instruments_by_archive.items()
     ]
 
