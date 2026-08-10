@@ -53,6 +53,8 @@ same graceful path as any other archive with no position data at all
 (feros_gavo, sophie, salt_hrs, ...).
 """
 
+from __future__ import annotations
+
 from astropy.time import Time
 
 from sync.base import RawObservation, clean_float, make_tap_service
