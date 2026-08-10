@@ -1541,17 +1541,17 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # same-key shape as INSTRUMENT_RESOLVING_POWER above (same reasoning: not
 # derivable from the database, no per-observation column for it). Powers the
 # /?q=... search page's wavelength-coverage chart -- see
-# _wavelength_coverage_bars. Deliberately a strict subset of
+# _wavelength_coverage_bars. The chart's x-axis is log-scaled (see
+# 'wavelength-plot' in the page template), so X-ray gratings sit fine on the
+# same chart as optical/IR instruments, just far to the left of everything
+# else -- Chandra's HETG/LETG and XMM-Newton's RGS1/RGS2 are included below
+# for that reason. Otherwise deliberately a strict subset of
 # INSTRUMENT_RESOLVING_POWER's keys: n/a (imaging-only) entries are omitted
 # outright, and a handful of obscure/retired instruments this project
-# couldn't confirm a real published range for (e.g. CFHT's GECKO, PYTHIAS,
+# couldn't confirm a real published range for (e.g. CFHT's PYTHIAS,
 # HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
 # ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
-# HST's COS-STIS combined mode; Chandra's HETG/LETG, whose real ~0.1-3nm
-# X-ray coverage would be invisible or need a second log-scale axis on a
-# chart built for this project's optical/IR archives; XMM-Newton RGS1/RGS2,
-# whose real ~1.2-3.8nm X-ray band would be invisible on this chart's linear
-# optical/IR scale) are left out rather than guessed -- a
+# HST's COS-STIS combined mode) are left out rather than guessed -- a
 # missing key just means that instrument's bar doesn't render, the same
 # graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
 # instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
@@ -1572,6 +1572,14 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('CFHT / CADC', 'TIGER'): (400, 700),
     ('CFHT / CADC', 'MOS'): (370, 900),
     ('CFHT / CADC', 'SIS'): (370, 1000),
+    ('CFHT / CADC', 'GECKO'): (300, 1000),
+    ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): (0.12, 3.1),
+    ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): (0.12, 3.1),
+    ('Chandra X-ray Observatory', 'HETG (HRC-I)'): (0.12, 3.1),
+    ('Chandra X-ray Observatory', 'LETG (HRC-S)'): (0.12, 17.5),
+    ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): (0.12, 6.0),
+    ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): (0.12, 6.0),
+    ('Chandra X-ray Observatory', 'LETG (HRC-I)'): (0.12, 17.5),
     ('DAO (Dominion Astrophysical Observatory)', 'McKellar Spectrograph'): (350, 900),
     ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectrograph'): (350, 900),
     ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectropolarimeter'): (350, 900),
@@ -1637,6 +1645,7 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
     ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
+    ('IRTF Legacy Archive', 'CSHELL'): (1000, 5500),
     ('Keck Observatory Archive', 'NIRSPEC'): (950, 5500),
     ('Keck Observatory Archive', 'HIRES'): (300, 1000),
     ('Keck Observatory Archive', 'MOSFIRE'): (970, 2450),
@@ -1668,6 +1677,9 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST', 'COS'): (90, 320),
     ('MAST', 'STIS'): (115, 1030),
     ('MAST', 'HRS/1'): (105, 320),
+    ('MAST', 'ACS/WFC'): (550, 1050),
+    ('MAST', 'ACS/HRC'): (170, 1050),
+    ('MAST', 'ACS/SBC'): (115, 180),
     ('MAST — JWST', 'NIRSPEC/MSA'): (600, 5300),
     ('MAST — JWST', 'NIRCAM/GRISM'): (2400, 5000),
     ('MAST — JWST', 'NIRSPEC/SLIT'): (600, 5300),
@@ -1678,6 +1690,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
     ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
     ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): (900, 2500),
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): (380, 930),
+    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): (380, 930),
     ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
     ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
     ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
@@ -1708,6 +1722,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('SVO CAB Stellar Libraries', 'STELIB'): (320.0, 950.0),
     ('SVO CAB Stellar Libraries', 'XSL'): (300.0, 2480.0),
     ('SVO CAB Stellar Libraries', 'CaT'): (834.8, 882.8),
+    ('XMM-Newton RGS', 'RGS1'): (0.5, 3.8),
+    ('XMM-Newton RGS', 'RGS2'): (0.5, 3.8),
 }
 
 INSTRUMENTS_TEMPLATE = """
