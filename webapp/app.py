@@ -531,7 +531,7 @@ PAGE_TEMPLATE = """
           </select>
         </label>
         <label>Reduction status
-          <select name="adv_reduction">
+          <select name="adv_reduction" id="adv-reduction">
             <option value="">Any</option>
             {% for choice in reduction_status_choices %}
             <option value="{{ choice }}"{{ " selected" if adv_reduction == choice else "" }}>{{ choice|capitalize }}</option>
@@ -539,16 +539,16 @@ PAGE_TEMPLATE = """
           </select>
         </label>
         <label>Resolving power (R) min
-          <input type="number" name="adv_res_min" value="{{ adv_res_min }}" placeholder="e.g. 20000">
+          <input type="number" name="adv_res_min" id="adv-res-min" value="{{ adv_res_min }}" placeholder="e.g. 20000">
         </label>
         <label>Resolving power (R) max
-          <input type="number" name="adv_res_max" value="{{ adv_res_max }}" placeholder="e.g. 100000">
+          <input type="number" name="adv_res_max" id="adv-res-max" value="{{ adv_res_max }}" placeholder="e.g. 100000">
         </label>
         <label>Wavelength min (nm)
-          <input type="number" name="adv_wave_min" value="{{ adv_wave_min }}" placeholder="e.g. 380">
+          <input type="number" name="adv_wave_min" id="adv-wave-min" value="{{ adv_wave_min }}" placeholder="e.g. 380">
         </label>
         <label>Wavelength max (nm)
-          <input type="number" name="adv_wave_max" value="{{ adv_wave_max }}" placeholder="e.g. 900">
+          <input type="number" name="adv_wave_max" id="adv-wave-max" value="{{ adv_wave_max }}" placeholder="e.g. 900">
         </label>
       </div>
       <p class="note">Resolving powers are hand-compiled per-instrument averages/typical values -- often spanning
@@ -701,19 +701,40 @@ PAGE_TEMPLATE = """
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload a list of Gaia source_ids and/or star names, one per line. Name lookups (anything non-numeric) are capped at {{ max_name_lookups }} per batch; source_id lookups are not.
     {% if adv_active %}The advanced search filters set above apply here too -- "Holdings" below counts only matching observations.{% endif %}</p>
-  <form method="post" action="batch" enctype="multipart/form-data">
+  <form method="post" action="batch" enctype="multipart/form-data" id="batch-form">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
-    <input type="hidden" name="adv_archive" value="{{ adv_archive }}">
-    <input type="hidden" name="adv_instrument" value="{{ adv_instrument }}">
-    <input type="hidden" name="adv_reduction" value="{{ adv_reduction }}">
-    <input type="hidden" name="adv_res_min" value="{{ adv_res_min }}">
-    <input type="hidden" name="adv_res_max" value="{{ adv_res_max }}">
-    <input type="hidden" name="adv_wave_min" value="{{ adv_wave_min }}">
-    <input type="hidden" name="adv_wave_max" value="{{ adv_wave_max }}">
+    <input type="hidden" name="adv_archive" id="batch-adv_archive" value="{{ adv_archive }}">
+    <input type="hidden" name="adv_instrument" id="batch-adv_instrument" value="{{ adv_instrument }}">
+    <input type="hidden" name="adv_reduction" id="batch-adv_reduction" value="{{ adv_reduction }}">
+    <input type="hidden" name="adv_res_min" id="batch-adv_res_min" value="{{ adv_res_min }}">
+    <input type="hidden" name="adv_res_max" id="batch-adv_res_max" value="{{ adv_res_max }}">
+    <input type="hidden" name="adv_wave_min" id="batch-adv_wave_min" value="{{ adv_wave_min }}">
+    <input type="hidden" name="adv_wave_max" id="batch-adv_wave_max" value="{{ adv_wave_max }}">
     <button type="submit">Look up list</button>
     <button type="submit" name="format" value="csv">Look up and download CSV</button>
   </form>
+  <script>
+    (function() {
+      // The advanced-search panel's fields live in the page's other <form>
+      // (the name/ID + radial search one), so this hidden-field copy is the
+      // only way the batch form's POST sees them -- the panel's <select>/
+      // <input> elements aren't inside this <form>, so the browser would
+      // otherwise submit whatever adv_* values this page was originally
+      // rendered with (e.g. blank, on a fresh page load), not whatever the
+      // user has since picked in the panel above without submitting it.
+      var batchForm = document.getElementById('batch-form');
+      var fieldIds = ['adv-archive', 'adv-instrument', 'adv-reduction', 'adv-res-min', 'adv-res-max', 'adv-wave-min', 'adv-wave-max'];
+      if (!batchForm) return;
+      batchForm.addEventListener('submit', function() {
+        fieldIds.forEach(function(id) {
+          var source = document.getElementById(id);
+          var hidden = document.getElementById('batch-' + id.replace(/-/g, '_'));
+          if (source && hidden) hidden.value = source.value;
+        });
+      });
+    })();
+  </script>
 
   {% if batch_error %}
     <p class="error">Error: {{ batch_error }}</p>
