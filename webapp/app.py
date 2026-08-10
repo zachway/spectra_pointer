@@ -1449,6 +1449,19 @@ def _known_as(row: dict) -> str:
 INSTRUMENT_SKY_SAMPLE_TOP_N = 12
 INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
 
+# Cap on how many instrument names the /instruments archive map's summary
+# row shows per archive before collapsing the rest into "N more". Most
+# archives have a handful of named spectrographs, but a few (BeSS, most
+# visibly -- 681 distinct values) report each observer's own free-text
+# equipment string as "instrument" rather than a fixed instrument name, which
+# would otherwise turn that one table cell into an unreadable wall of text.
+# The full, untruncated per-archive breakdown (with counts) is still further
+# down the page in "Tracked instruments" -- this only trims the at-a-glance
+# summary. INSTRUMENTS_QUERY already orders each archive's rows by holdings
+# count descending, so taking the first ARCHIVE_MAP_INSTRUMENT_CAP entries
+# keeps the biggest, most representative instruments visible.
+ARCHIVE_MAP_INSTRUMENT_CAP = 8
+
 # Resolving power (R = lambda/delta-lambda) per (archive display_name,
 # instrument) -- like NOT_YET_TRACKED below, this can't be derived from the
 # database (holdings don't carry it) so it's hand-maintained from each
@@ -2142,7 +2155,7 @@ INSTRUMENTS_TEMPLATE = """
     {% for a in instruments %}
     <tr>
       <td>{% if a.homepage_url %}<a href="{{ a.homepage_url }}" target="_blank" rel="noopener">{{ a.display_name }}</a>{% else %}{{ a.display_name }}{% endif %}</td>
-      <td>{{ a.instruments | map(attribute='instrument') | join(', ') }}</td>
+      <td>{{ a.instrument_preview | join(', ') }}{% if a.instrument_overflow %}, and {{ a.instrument_overflow }} more{% endif %}</td>
     </tr>
     {% endfor %}
   </table>
@@ -2603,6 +2616,8 @@ def instruments_page():
             "display_name": name,
             "instruments": insts,
             "homepage_url": ARCHIVE_HOMEPAGE_URL.get(name),
+            "instrument_preview": [i["instrument"] for i in insts[:ARCHIVE_MAP_INSTRUMENT_CAP]],
+            "instrument_overflow": max(0, len(insts) - ARCHIVE_MAP_INSTRUMENT_CAP),
         }
         for name, insts in instruments_by_archive.items()
     ]
