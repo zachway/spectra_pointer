@@ -345,7 +345,7 @@ RADIAL_SEARCH_MAX_RADIUS_ARCMIN = 300.0  # 5 degrees
 RADIAL_SEARCH_MAX_RESULTS = 200
 
 
-def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool):
+def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool, adv_filters: dict | None):
     try:
         ra_val = float(ra_str) % 360.0
         dec_val = float(dec_str)
@@ -366,9 +366,9 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
     cur = get_cursor()
     cur.execute(
         """
-        SELECT gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name, sep_deg
+        SELECT star_id, gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name, sep_deg
         FROM (
-            SELECT gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name,
+            SELECT star_id, gaia_source_id, bsc_hr_number, ra, dec, phot_g_mean_mag, name_aliases, input_name,
                 degrees(acos(least(1.0, greatest(-1.0,
                     sin(radians(dec)) * sin(radians(?)) +
                     cos(radians(dec)) * cos(radians(?)) * cos(radians(ra - ?))
@@ -391,17 +391,34 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool)
         # number, which this route's own lookup now understands too.
         r["search_id"] = r["gaia_source_id"] if r["gaia_source_id"] is not None else r["bsc_hr_number"]
 
+    # Advanced-search filters narrow the radial result list to only stars
+    # with a matching holding -- bounded to this page's <=200 candidates, see
+    # _advanced_matches_for_star_ids for why that bound matters.
+    if adv_filters:
+        matches = _advanced_matches_for_star_ids(cur, [r["star_id"] for r in rows], adv_filters)
+        rows = [r for r in rows if r["star_id"] in matches]
+        for r in rows:
+            r["adv_matches"] = matches[r["star_id"]]
+
     if export_csv:
+        fieldnames = ["gaia_source_id", "known_as", "ra", "dec", "sep_arcsec", "phot_g_mean_mag"]
+        if adv_filters:
+            for r in rows:
+                r["matched_holdings"] = "; ".join(r["adv_matches"])
+            fieldnames.append("matched_holdings")
         return _csv_response(
-            ["gaia_source_id", "known_as", "ra", "dec", "sep_arcsec", "phot_g_mean_mag"],
+            fieldnames,
             rows,
             f"spectra_pointer_radial_ra{ra_val:.5f}_dec{dec_val:.5f}_r{radius_arcmin:g}arcmin.csv",
         )
 
-    return _render_radial(ra_str, dec_str, str(radius_arcmin), radial_results=rows, radius_display=radius_arcmin)
+    return _render_radial(
+        ra_str, dec_str, str(radius_arcmin), radial_results=rows, radius_display=radius_arcmin,
+        adv_active=bool(adv_filters),
+    )
 
 
-def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None):
+def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None, adv_active=False):
     return render_template_string(
         PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
@@ -411,6 +428,8 @@ def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_result
         ra=ra_str, dec=dec_str, radius=radius_str,
         radial_searched=True, radial_error=radial_error, radial_results=radial_results,
         radius_display=radius_display if radius_display is not None else radius_str,
+        adv_active=adv_active,
+        **_advanced_search_context(),
     )
 
 NAV_HTML = """
@@ -452,6 +471,13 @@ SHARED_STYLE = """
     .site-header h1 { margin: 0; }
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
                          border-radius: 4px; object-fit: cover; }
+    .radial-form { display: inline-block; margin: 0.3rem 0; }
+    details.advanced-search { max-width: 700px; }
+    details.advanced-search summary { font-size: 1rem; }
+    .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+                      gap: 0.6rem 1rem; margin: 0.6rem 0; }
+    .advanced-grid label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; }
+    .advanced-grid select, .advanced-grid input { font-family: monospace; padding: 0.2rem; }
 """
 
 PAGE_TEMPLATE = """
@@ -474,26 +500,96 @@ PAGE_TEMPLATE = """
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
-  </form>
 
-  <p class="note">Or search by sky position:</p>
-  <form method="get" action="" class="radial-form">
-    <input type="text" name="ra" placeholder="RA (deg)" value="{{ ra or '' }}" size="10">
-    <input type="text" name="dec" placeholder="Dec (deg)" value="{{ dec or '' }}" size="10">
-    <input type="text" name="radius" placeholder="Radius (arcmin, default {{ '%g'|format(5) }})" value="{{ radius or '' }}" size="20">
-    <button type="submit">Search radius</button>
+    <p class="note">Or search by sky position:</p>
+    <div class="radial-form">
+      <input type="text" name="ra" placeholder="RA (deg)" value="{{ ra or '' }}" size="10">
+      <input type="text" name="dec" placeholder="Dec (deg)" value="{{ dec or '' }}" size="10">
+      <input type="text" name="radius" placeholder="Radius (arcmin, default {{ '%g'|format(5) }})" value="{{ radius or '' }}" size="20">
+      <button type="submit">Search radius</button>
+    </div>
+
+    <details class="advanced-search">
+      <summary>Advanced search</summary>
+      <p class="note">Narrows whichever search you run above (by name/ID or by sky position) to spectra from a
+        specific archive, instrument, resolving-power range, wavelength range, and/or reduction status.</p>
+      <div class="advanced-grid">
+        <label>Archive
+          <select name="adv_archive" id="adv-archive">
+            <option value="">Any archive</option>
+            {% for a in archive_options %}
+            <option value="{{ a.archive_code }}"{{ " selected" if adv_archive == a.archive_code else "" }}>{{ a.display_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Instrument
+          <select name="adv_instrument" id="adv-instrument">
+            <option value="">Any instrument</option>
+            {% for i in instrument_options %}
+            <option value="{{ i.instrument }}" data-archive="{{ i.archive_code }}"{{ " selected" if adv_instrument == i.instrument else "" }}>{{ i.display_name }} — {{ i.instrument }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Reduction status
+          <select name="adv_reduction">
+            <option value="">Any</option>
+            {% for choice in reduction_status_choices %}
+            <option value="{{ choice }}"{{ " selected" if adv_reduction == choice else "" }}>{{ choice|capitalize }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Resolving power (R) min
+          <input type="number" name="adv_res_min" value="{{ adv_res_min }}" placeholder="e.g. 20000">
+        </label>
+        <label>Resolving power (R) max
+          <input type="number" name="adv_res_max" value="{{ adv_res_max }}" placeholder="e.g. 100000">
+        </label>
+        <label>Wavelength min (nm)
+          <input type="number" name="adv_wave_min" value="{{ adv_wave_min }}" placeholder="e.g. 380">
+        </label>
+        <label>Wavelength max (nm)
+          <input type="number" name="adv_wave_max" value="{{ adv_wave_max }}" placeholder="e.g. 900">
+        </label>
+      </div>
+      <p class="note">Resolving powers are hand-compiled per-instrument averages/typical values -- often spanning
+        several gratings or modes -- taken from each instrument's published specs, not a per-observation
+        measurement. Treat a range match as approximate, not authoritative for any single spectrum; see the
+        <a href="/instruments">Instruments</a> tab for each instrument's full source range.</p>
+    </details>
   </form>
+  <script>
+    (function() {
+      var archiveSel = document.getElementById('adv-archive');
+      var instrumentSel = document.getElementById('adv-instrument');
+      if (!archiveSel || !instrumentSel) return;
+      var allOptions = Array.prototype.slice.call(instrumentSel.options);
+      function applyArchiveFilter() {
+        var archive = archiveSel.value;
+        var current = instrumentSel.value;
+        instrumentSel.innerHTML = '';
+        allOptions.forEach(function(opt) {
+          if (!archive || opt.value === '' || opt.getAttribute('data-archive') === archive) {
+            instrumentSel.appendChild(opt);
+          }
+        });
+        var stillPresent = Array.prototype.slice.call(instrumentSel.options).some(function(o) { return o.value === current; });
+        instrumentSel.value = stillPresent ? current : '';
+      }
+      archiveSel.addEventListener('change', applyArchiveFilter);
+      applyArchiveFilter();
+    })();
+  </script>
 
   {% if radial_searched %}
     {% if radial_error %}
       <p class="error">Error: {{ radial_error }}</p>
     {% else %}
-      <p>{{ radial_results|length }} star{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}.
-        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}&amp;format=csv">Download as CSV</a>{% endif %}
+      <p>{{ radial_results|length }} star{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}{% if adv_active %} matching the advanced search filters{% endif %}.
+        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
       </p>
       {% if radial_results %}
       <table>
-        <tr><th>Star</th><th>RA</th><th>Dec</th><th>Separation</th><th>G mag</th></tr>
+        <tr><th>Star</th><th>RA</th><th>Dec</th><th>Separation</th><th>G mag</th>{% if adv_active %}<th>Matched holdings</th>{% endif %}</tr>
         {% for r in radial_results %}
         <tr>
           <td><a href="?q={{ r.search_id }}">{{ r.known_as }}</a></td>
@@ -501,6 +597,7 @@ PAGE_TEMPLATE = """
           <td>{{ "%.5f"|format(r.dec) }}</td>
           <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
           <td>{{ r.phot_g_mean_mag if r.phot_g_mean_mag is not none else "—" }}</td>
+          {% if adv_active %}<td>{{ r.adv_matches|join(", ") }}</td>{% endif %}
         </tr>
         {% endfor %}
       </table>
@@ -565,8 +662,12 @@ PAGE_TEMPLATE = """
       </script>
     {% endif %}
 
+    {% if adv_active and holdings %}
+      <p class="note">Showing {{ holdings_shown }} of {{ holdings_total }} observation{{ "s" if holdings_total != 1 else "" }}
+        matching the advanced search filters. <a href="?q={{ star_search_id }}">Clear filters</a></p>
+    {% endif %}
     {% if holdings %}
-      <p><a href="?q={{ star_search_id }}&amp;format=csv">Download holdings as CSV</a></p>
+      <p><a href="?q={{ star_search_id }}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary class="summary-row">
@@ -587,6 +688,9 @@ PAGE_TEMPLATE = """
         </table>
       </details>
       {% endfor %}
+    {% elif adv_active %}
+      <p>No holdings match the advanced search filters ({{ holdings_total }} total for this star).
+        <a href="?q={{ star_search_id }}">Clear filters</a></p>
     {% else %}
       <p>No spectroscopy holdings found for this star yet.</p>
     {% endif %}
@@ -638,6 +742,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
         active_tab="search",
+        **_advanced_search_context(),
     )
 
 
@@ -648,6 +753,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
         active_tab="search",
+        **_advanced_search_context(),
     )
 
 
@@ -733,11 +839,12 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
 def search():
     query = request.args.get("q", "").strip()
     export_csv = request.args.get("format", "").strip().lower() == "csv"
+    adv_filters = _parse_advanced_filters()
 
     ra_str = request.args.get("ra", "").strip()
     dec_str = request.args.get("dec", "").strip()
     if not query and (ra_str or dec_str):
-        return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv)
+        return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv, adv_filters)
 
     if not query:
         return _blank()
@@ -788,6 +895,9 @@ def search():
         [star["star_id"]],
     )
     raw_holdings = _rows_as_dicts(cur)
+    holdings_total = len(raw_holdings)
+    if adv_filters:
+        raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
 
     if export_csv:
         known_as = ", ".join(star["name_aliases"]) if star["name_aliases"] else star["input_name"]
@@ -814,6 +924,8 @@ def search():
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
         active_tab="search",
+        holdings_total=holdings_total, holdings_shown=len(raw_holdings), adv_active=bool(adv_filters),
+        **_advanced_search_context(),
     )
 
 
@@ -1725,6 +1837,175 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('XMM-Newton RGS', 'RGS1'): (0.5, 3.8),
     ('XMM-Newton RGS', 'RGS2'): (0.5, 3.8),
 }
+
+# The search page's advanced-search panel: filter by archive, instrument,
+# resolving-power range, wavelength range, and/or reduction status, layered
+# on top of whichever primary search (name/ID or sky position) the user
+# already ran. reduction_status's own choices mirror spectroscopy_holdings'
+# CHECK constraint (db/schema.sql) -- there's no parquet-side enum to read
+# them from at runtime.
+REDUCTION_STATUS_CHOICES = ("raw", "reduced", "unknown")
+
+# Pulls every number out of an INSTRUMENT_RESOLVING_POWER string, e.g.
+# "R ≈ 40,000–110,000 (slit-dependent)" -> [40000.0, 110000.0]. Good enough
+# for a range-overlap filter, not for display -- the min/max of whatever
+# numbers appear, regardless of what qualifier text surrounds them (a
+# trailing "100,000+" still contributes 100000.0). This is exactly why the
+# advanced-search panel spells out that these are approximate.
+_RESOLVING_POWER_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _parse_resolving_power_range(text: str) -> tuple[float, float] | None:
+    nums = [float(n.replace(",", "")) for n in _RESOLVING_POWER_NUM_RE.findall(text)]
+    return (min(nums), max(nums)) if nums else None
+
+
+def _ranges_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
+    return a[0] <= b[1] and b[0] <= a[1]
+
+
+def _optional_range(min_str: str, max_str: str) -> tuple[float, float] | None:
+    """Turn a pair of optional min/max form fields into a (lo, hi) range for
+    _ranges_overlap, defaulting whichever bound is blank to +/-infinity --
+    not to the other bound's value, so a max-only query still matches
+    everything below it rather than nothing. None if both are blank."""
+    def _f(s: str) -> float | None:
+        try:
+            return float(s) if s.strip() else None
+        except ValueError:
+            return None
+    lo, hi = _f(min_str), _f(max_str)
+    if lo is None and hi is None:
+        return None
+    return (lo if lo is not None else 0.0, hi if hi is not None else math.inf)
+
+
+def _parse_advanced_filters() -> dict | None:
+    """Read the adv_* query params (the advanced-search panel's fields) off
+    the current request into a filter dict, or None if none were supplied --
+    lets every caller skip the extra holdings filtering/queries below on an
+    ordinary search."""
+    archive_code = request.args.get("adv_archive", "").strip()
+    instrument = request.args.get("adv_instrument", "").strip()
+    reduction_status = request.args.get("adv_reduction", "").strip()
+    res_range = _optional_range(request.args.get("adv_res_min", ""), request.args.get("adv_res_max", ""))
+    wave_range = _optional_range(request.args.get("adv_wave_min", ""), request.args.get("adv_wave_max", ""))
+    if not (archive_code or instrument or reduction_status or res_range or wave_range):
+        return None
+    return {
+        "archive_code": archive_code or None,
+        "instrument": instrument or None,
+        "reduction_status": reduction_status or None,
+        "res_range": res_range,
+        "wave_range": wave_range,
+    }
+
+
+def _holding_matches_advanced_filters(h: dict, filters: dict) -> bool:
+    """h needs archive_code, display_name, instrument, reduction_status --
+    true of both a spectroscopy_holdings row (joined to archives) and the
+    rows _advanced_matches_for_star_ids below builds for the same purpose."""
+    if filters["archive_code"] and h["archive_code"] != filters["archive_code"]:
+        return False
+    if filters["instrument"] and h["instrument"] != filters["instrument"]:
+        return False
+    if filters["reduction_status"] and h["reduction_status"] != filters["reduction_status"]:
+        return False
+    if filters["res_range"] is not None:
+        r = _parse_resolving_power_range(INSTRUMENT_RESOLVING_POWER.get((h["display_name"], h["instrument"] or ""), ""))
+        if r is None or not _ranges_overlap(r, filters["res_range"]):
+            return False
+    if filters["wave_range"] is not None:
+        w = INSTRUMENT_WAVELENGTH_RANGE_NM.get((h["display_name"], h["instrument"] or ""))
+        if w is None or not _ranges_overlap(w, filters["wave_range"]):
+            return False
+    return True
+
+
+def _advanced_matches_for_star_ids(cur: duckdb.DuckDBPyConnection, star_ids: list[int], filters: dict) -> dict[int, list[str]]:
+    """For each of the given star_ids -- a small, already-bounded candidate
+    set (a radial search's page, capped at RADIAL_SEARCH_MAX_RESULTS) --
+    which of its holdings satisfy `filters`, labelled "display_name —
+    instrument" for display. Restricted to an explicit star_id IN-list
+    rather than a live archive_code/instrument filter over the whole
+    spectroscopy_holdings table: the Parquet export is sorted by star_id
+    (see scripts.export_to_parquet), not archive/instrument, so an unbounded
+    filter on those columns gets none of that sort order's row-group pruning
+    and would force a full scan of a many-million-row table on every
+    request -- the same OOM/slowness shape this project has already hit and
+    fixed for /sky and the Leaderboard (see webapp/app.py's module
+    docstring and export_to_parquet's own comments). Keying off a bounded
+    star_id list keeps this cheap regardless of which archive/instrument the
+    user picks.
+    """
+    if not star_ids:
+        return {}
+    placeholders = ",".join("?" * len(star_ids))
+    cur.execute(
+        f"""
+        SELECT h.star_id, a.archive_code, a.display_name, h.instrument, h.reduction_status
+        FROM spectroscopy_holdings h
+        JOIN archives a ON a.archive_code = h.archive_code
+        WHERE h.star_id IN ({placeholders})
+        """,
+        star_ids,
+    )
+    matches: dict[int, list[str]] = defaultdict(list)
+    for r in _rows_as_dicts(cur):
+        if _holding_matches_advanced_filters(r, filters):
+            label = f"{r['display_name']} — {r['instrument'] or '—'}"
+            if label not in matches[r["star_id"]]:
+                matches[r["star_id"]].append(label)
+    return matches
+
+
+# Archive/instrument dropdown options for the advanced-search panel, cached
+# after the first request -- both come from `archives` and `instruments`
+# (a few dozen and a few hundred rows respectively), which are only as fresh
+# as the Parquet snapshot loaded once at process startup anyway (see
+# _make_connection), so re-querying them per request buys nothing.
+_advanced_search_options_cache: tuple[list[dict], list[dict]] | None = None
+
+
+def _advanced_search_options() -> tuple[list[dict], list[dict]]:
+    global _advanced_search_options_cache
+    if _advanced_search_options_cache is None:
+        cur = get_cursor()
+        cur.execute("SELECT archive_code, display_name FROM archives ORDER BY display_name")
+        archive_options = _rows_as_dicts(cur)
+        archive_code_by_display = {a["display_name"]: a["archive_code"] for a in archive_options}
+        cur.execute(
+            "SELECT display_name, instrument FROM instruments "
+            "WHERE instrument IS NOT NULL AND instrument != '' ORDER BY display_name, instrument"
+        )
+        instrument_options = [
+            {**r, "archive_code": archive_code_by_display.get(r["display_name"], "")}
+            for r in _rows_as_dicts(cur)
+        ]
+        _advanced_search_options_cache = (archive_options, instrument_options)
+    return _advanced_search_options_cache
+
+
+def _advanced_search_context() -> dict:
+    """Common template kwargs for the advanced-search panel -- dropdown
+    options plus each field's current value (so the panel keeps showing your
+    filters after a GET) -- spread into every render of PAGE_TEMPLATE so the
+    panel behaves the same regardless of which search path rendered the
+    page."""
+    archive_options, instrument_options = _advanced_search_options()
+    return {
+        "archive_options": archive_options,
+        "instrument_options": instrument_options,
+        "reduction_status_choices": REDUCTION_STATUS_CHOICES,
+        "adv_archive": request.args.get("adv_archive", "").strip(),
+        "adv_instrument": request.args.get("adv_instrument", "").strip(),
+        "adv_reduction": request.args.get("adv_reduction", "").strip(),
+        "adv_res_min": request.args.get("adv_res_min", "").strip(),
+        "adv_res_max": request.args.get("adv_res_max", "").strip(),
+        "adv_wave_min": request.args.get("adv_wave_min", "").strip(),
+        "adv_wave_max": request.args.get("adv_wave_max", "").strip(),
+    }
+
 
 INSTRUMENTS_TEMPLATE = """
 <!doctype html>
