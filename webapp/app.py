@@ -1499,6 +1499,25 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('ESO Science Archive', ''): '—',
     ('ESO Science Archive', 'MUSE'): 'R ≈ 1,700–4,000',
     ('ESO Science Archive', 'SINFONI'): 'R ≈ 1,500–4,000 (grating-dependent)',
+    # Raw-archive counterparts to the ESO Science Archive entries above --
+    # same physical instrument, same resolving power, whether the spectrum
+    # is a Phase 3 reduced product or straight off the telescope. Only the
+    # instruments already vetted above are repeated here; VISIR, CES, EMMI,
+    # GRAVITY, SPHERE, NAOS+CONICA, TIMMI2, ISAAC, ERIS, SOXS, and SHOOT are
+    # real spectrographs in the raw data too but left out rather than
+    # guessed at, same graceful-degradation convention as elsewhere in this
+    # dict -- a missing key just means that instrument's bar doesn't render.
+    ('ESO Archive (Raw)', 'HARPS'): 'R ≈ 115,000',
+    ('ESO Archive (Raw)', 'XSHOOTER'): 'R ≈ 3,000–17,000 (arm/slit-dependent)',
+    ('ESO Archive (Raw)', 'FORS2'): 'R ≈ 260–2,600 (grism-dependent)',
+    ('ESO Archive (Raw)', 'FORS1'): 'R ≈ 260–2,600 (grism-dependent, retired)',
+    ('ESO Archive (Raw)', 'UVES'): 'R ≈ 40,000–110,000 (slit-dependent)',
+    ('ESO Archive (Raw)', 'FEROS'): 'R ≈ 48,000',
+    ('ESO Archive (Raw)', 'NIRPS'): 'R ≈ 100,000',
+    ('ESO Archive (Raw)', 'ESPRESSO'): 'R ≈ 70,000–190,000 (mode-dependent)',
+    ('ESO Archive (Raw)', 'EFOSC'): 'R ≈ 600–2,500 (grism-dependent)',
+    ('ESO Archive (Raw)', 'CRIRES'): 'R ≈ 50,000–100,000+ (slit-dependent)',
+    ('ESO Archive (Raw)', 'SOFI'): 'R ≈ 600–1,800 (grism-dependent)',
     ('FEROS Public Spectra (GAVO)', 'FEROS'): 'R ≈ 48,000',
     ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): 'R ≈ 20,000',
     ('GALAH', 'GALAH (HERMES)'): 'R ≈ 28,000',
@@ -1713,6 +1732,17 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('ESO Science Archive', 'FORS1'): (330, 1100),
     ('ESO Science Archive', 'MUSE'): (480, 930),
     ('ESO Science Archive', 'SINFONI'): (1100, 2450),
+    ('ESO Archive (Raw)', 'HARPS'): (378, 691),
+    ('ESO Archive (Raw)', 'XSHOOTER'): (300, 2480),
+    ('ESO Archive (Raw)', 'FORS2'): (330, 1100),
+    ('ESO Archive (Raw)', 'FORS1'): (330, 1100),
+    ('ESO Archive (Raw)', 'UVES'): (300, 1100),
+    ('ESO Archive (Raw)', 'FEROS'): (350, 920),
+    ('ESO Archive (Raw)', 'NIRPS'): (980, 1800),
+    ('ESO Archive (Raw)', 'ESPRESSO'): (380, 788),
+    ('ESO Archive (Raw)', 'EFOSC'): (330, 1100),
+    ('ESO Archive (Raw)', 'CRIRES'): (950, 5300),
+    ('ESO Archive (Raw)', 'SOFI'): (950, 2500),
     ('FEROS Public Spectra (GAVO)', 'FEROS'): (350, 920),
     ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): (350, 870),
     ('GALAH', 'GALAH (HERMES)'): (471, 789),
@@ -2028,6 +2058,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'MAST — JWST': 'https://mast.stsci.edu/',
     'NOIRLab Astro Data Archive': 'https://astroarchive.noirlab.edu/',
     'ESO Science Archive': 'https://archive.eso.org/',
+    'ESO Archive (Raw)': 'https://archive.eso.org/',
     'Gaia RVS': 'https://www.cosmos.esa.int/web/gaia/dr3',
     'GALAH': 'https://datacentral.org.au/',
     'DESI': 'https://data.desi.lbl.gov/',
