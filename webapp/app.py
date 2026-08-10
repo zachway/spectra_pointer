@@ -699,10 +699,18 @@ PAGE_TEMPLATE = """
   <hr>
 
   <h2>Batch lookup</h2>
-  <p class="note">Paste or upload a list of Gaia source_ids and/or star names, one per line. Name lookups (anything non-numeric) are capped at {{ max_name_lookups }} per batch; source_id lookups are not.</p>
+  <p class="note">Paste or upload a list of Gaia source_ids and/or star names, one per line. Name lookups (anything non-numeric) are capped at {{ max_name_lookups }} per batch; source_id lookups are not.
+    {% if adv_active %}The advanced search filters set above apply here too -- "Holdings" below counts only matching observations.{% endif %}</p>
   <form method="post" action="batch" enctype="multipart/form-data">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
+    <input type="hidden" name="adv_archive" value="{{ adv_archive }}">
+    <input type="hidden" name="adv_instrument" value="{{ adv_instrument }}">
+    <input type="hidden" name="adv_reduction" value="{{ adv_reduction }}">
+    <input type="hidden" name="adv_res_min" value="{{ adv_res_min }}">
+    <input type="hidden" name="adv_res_max" value="{{ adv_res_max }}">
+    <input type="hidden" name="adv_wave_min" value="{{ adv_wave_min }}">
+    <input type="hidden" name="adv_wave_max" value="{{ adv_wave_max }}">
     <button type="submit">Look up list</button>
     <button type="submit" name="format" value="csv">Look up and download CSV</button>
   </form>
@@ -717,7 +725,7 @@ PAGE_TEMPLATE = """
 
   {% if batch_results %}
     <table>
-      <tr><th>Query</th><th>source_id</th><th>Tracked</th><th>Known as</th><th>Holdings</th></tr>
+      <tr><th>Query</th><th>source_id</th><th>Tracked</th><th>Known as</th><th>Holdings</th>{% if adv_active %}<th>Matched holdings</th>{% endif %}</tr>
       {% for r in batch_results %}
       <tr>
         <td>{{ r.query }}</td>
@@ -725,6 +733,7 @@ PAGE_TEMPLATE = """
         <td>{{ r.status }}</td>
         <td>{{ r.known_as or "—" }}</td>
         <td>{{ r.holdings_count if r.holdings_count is not none else "—" }}</td>
+        {% if adv_active %}<td>{{ r.adv_matches|join(", ") if r.adv_matches else "—" }}</td>{% endif %}
       </tr>
       {% endfor %}
     </table>
@@ -746,13 +755,14 @@ def _blank(query=None, error=None, resolved_source_id=None):
     )
 
 
-def _blank_batch(batch_error=None, batch_note=None, batch_results=None):
+def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_active=False):
     return render_template_string(
         PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
         active_tab="search",
+        adv_active=adv_active,
         **_advanced_search_context(),
     )
 
@@ -1881,15 +1891,18 @@ def _optional_range(min_str: str, max_str: str) -> tuple[float, float] | None:
 
 
 def _parse_advanced_filters() -> dict | None:
-    """Read the adv_* query params (the advanced-search panel's fields) off
-    the current request into a filter dict, or None if none were supplied --
+    """Read the adv_* fields (the advanced-search panel's fields) off the
+    current request into a filter dict, or None if none were supplied --
     lets every caller skip the extra holdings filtering/queries below on an
-    ordinary search."""
-    archive_code = request.args.get("adv_archive", "").strip()
-    instrument = request.args.get("adv_instrument", "").strip()
-    reduction_status = request.args.get("adv_reduction", "").strip()
-    res_range = _optional_range(request.args.get("adv_res_min", ""), request.args.get("adv_res_max", ""))
-    wave_range = _optional_range(request.args.get("adv_wave_min", ""), request.args.get("adv_wave_max", ""))
+    ordinary search. request.values (not request.args) so this also picks up
+    the hidden adv_* fields the batch-lookup form POSTs alongside its own
+    name list -- the panel itself always lives in the page's GET form, but
+    its current values need to reach the POST /batch route too."""
+    archive_code = request.values.get("adv_archive", "").strip()
+    instrument = request.values.get("adv_instrument", "").strip()
+    reduction_status = request.values.get("adv_reduction", "").strip()
+    res_range = _optional_range(request.values.get("adv_res_min", ""), request.values.get("adv_res_max", ""))
+    wave_range = _optional_range(request.values.get("adv_wave_min", ""), request.values.get("adv_wave_max", ""))
     if not (archive_code or instrument or reduction_status or res_range or wave_range):
         return None
     return {
@@ -1989,21 +2002,22 @@ def _advanced_search_options() -> tuple[list[dict], list[dict]]:
 def _advanced_search_context() -> dict:
     """Common template kwargs for the advanced-search panel -- dropdown
     options plus each field's current value (so the panel keeps showing your
-    filters after a GET) -- spread into every render of PAGE_TEMPLATE so the
-    panel behaves the same regardless of which search path rendered the
-    page."""
+    filters after a GET, or after a batch-lookup POST that carried them as
+    hidden fields -- see _parse_advanced_filters) -- spread into every
+    render of PAGE_TEMPLATE so the panel behaves the same regardless of
+    which search path rendered the page."""
     archive_options, instrument_options = _advanced_search_options()
     return {
         "archive_options": archive_options,
         "instrument_options": instrument_options,
         "reduction_status_choices": REDUCTION_STATUS_CHOICES,
-        "adv_archive": request.args.get("adv_archive", "").strip(),
-        "adv_instrument": request.args.get("adv_instrument", "").strip(),
-        "adv_reduction": request.args.get("adv_reduction", "").strip(),
-        "adv_res_min": request.args.get("adv_res_min", "").strip(),
-        "adv_res_max": request.args.get("adv_res_max", "").strip(),
-        "adv_wave_min": request.args.get("adv_wave_min", "").strip(),
-        "adv_wave_max": request.args.get("adv_wave_max", "").strip(),
+        "adv_archive": request.values.get("adv_archive", "").strip(),
+        "adv_instrument": request.values.get("adv_instrument", "").strip(),
+        "adv_reduction": request.values.get("adv_reduction", "").strip(),
+        "adv_res_min": request.values.get("adv_res_min", "").strip(),
+        "adv_res_max": request.values.get("adv_res_max", "").strip(),
+        "adv_wave_min": request.values.get("adv_wave_min", "").strip(),
+        "adv_wave_max": request.values.get("adv_wave_max", "").strip(),
     }
 
 
@@ -2986,6 +3000,7 @@ def _parse_batch_lines(text: str) -> list[str]:
 @app.route("/batch", methods=["POST"])
 def batch_search():
     export_csv = request.form.get("format", "").strip().lower() == "csv"
+    adv_filters = _parse_advanced_filters()
     uploaded = request.files.get("file")
     if uploaded and uploaded.filename:
         text = uploaded.read().decode("utf-8", errors="replace")
@@ -2994,7 +3009,7 @@ def batch_search():
 
     entries = _parse_batch_lines(text)
     if not entries:
-        return _blank_batch(batch_error="No names or source_ids found in the upload.")
+        return _blank_batch(batch_error="No names or source_ids found in the upload.", adv_active=bool(adv_filters))
 
     id_entries = [e for e in entries if e.isdigit()]
     name_entries = [e for e in entries if not e.isdigit()]
@@ -3018,6 +3033,8 @@ def batch_search():
 
     tracked: dict[int, dict] = {}
     holdings_counts: dict[int, int] = {}
+    adv_matches_by_source: dict[int, list[str]] = {}
+    holdings_by_source_id: dict[int, list[dict]] = {}
     if all_source_ids:
         cur = get_cursor()
         # A literal IN (?, ?, ...) list, not list_contains(?, gaia_source_id)
@@ -3037,17 +3054,52 @@ def batch_search():
         )
         tracked = {row["gaia_source_id"]: row for row in _rows_as_dicts(cur)}
 
-        cur.execute(
-            f"""
-            SELECT s.gaia_source_id, COUNT(*) AS n
-            FROM spectroscopy_holdings h
-            JOIN stars s ON s.star_id = h.star_id
-            WHERE s.gaia_source_id IN ({id_placeholders})
-            GROUP BY s.gaia_source_id
-            """,
-            all_source_ids,
-        )
-        holdings_counts = {row["gaia_source_id"]: row["n"] for row in _rows_as_dicts(cur)}
+        if adv_filters or export_csv:
+            # Per-holding rows (archive/instrument/reduction status, etc.),
+            # needed either to apply the advanced-search filters row-by-row
+            # (same shape as _holding_matches_advanced_filters everywhere
+            # else) or to build the CSV export below -- both already needed
+            # this level of detail, so this single query replaces what used
+            # to be two (a COUNT(*)-only query here plus a near-identical
+            # one duplicated in the CSV branch). Still bounded to
+            # all_source_ids -- whatever the user pasted/uploaded -- not a
+            # live archive/instrument scan, so this stays cheap regardless
+            # of which filters are picked (see _advanced_matches_for_star_ids
+            # for why that distinction matters).
+            cur.execute(
+                f"""
+                SELECT s.gaia_source_id, a.archive_code, a.display_name, h.instrument, h.obs_date,
+                       h.match_status, h.match_method, h.reduction_status, h.archive_url
+                FROM spectroscopy_holdings h
+                JOIN stars s ON s.star_id = h.star_id
+                JOIN archives a ON a.archive_code = h.archive_code
+                WHERE s.gaia_source_id IN ({id_placeholders})
+                ORDER BY s.gaia_source_id, a.display_name, h.instrument, h.obs_date
+                """,
+                all_source_ids,
+            )
+            for row in _rows_as_dicts(cur):
+                if adv_filters and not _holding_matches_advanced_filters(row, adv_filters):
+                    continue
+                holdings_by_source_id.setdefault(row["gaia_source_id"], []).append(row)
+            holdings_counts = {sid: len(rows) for sid, rows in holdings_by_source_id.items()}
+            if adv_filters:
+                adv_matches_by_source = {
+                    sid: sorted({f"{r['display_name']} — {r['instrument'] or '—'}" for r in rows})
+                    for sid, rows in holdings_by_source_id.items()
+                }
+        else:
+            cur.execute(
+                f"""
+                SELECT s.gaia_source_id, COUNT(*) AS n
+                FROM spectroscopy_holdings h
+                JOIN stars s ON s.star_id = h.star_id
+                WHERE s.gaia_source_id IN ({id_placeholders})
+                GROUP BY s.gaia_source_id
+                """,
+                all_source_ids,
+            )
+            holdings_counts = {row["gaia_source_id"]: row["n"] for row in _rows_as_dicts(cur)}
 
     results = []
     for entry in entries:
@@ -3076,26 +3128,10 @@ def batch_search():
             "query": entry, "source_id": source_id,
             "status": "tracked", "known_as": known_as,
             "holdings_count": holdings_counts.get(source_id, 0),
+            "adv_matches": adv_matches_by_source.get(source_id, []),
         })
 
     if export_csv:
-        holdings_by_source_id: dict[int, list[dict]] = {}
-        if all_source_ids:
-            cur.execute(
-                f"""
-                SELECT s.gaia_source_id, a.display_name, h.instrument, h.obs_date,
-                       h.match_status, h.match_method, h.reduction_status, h.archive_url
-                FROM spectroscopy_holdings h
-                JOIN stars s ON s.star_id = h.star_id
-                JOIN archives a ON a.archive_code = h.archive_code
-                WHERE s.gaia_source_id IN ({id_placeholders})
-                ORDER BY s.gaia_source_id, a.display_name, h.instrument, h.obs_date
-                """,
-                all_source_ids,
-            )
-            for row in _rows_as_dicts(cur):
-                holdings_by_source_id.setdefault(row["gaia_source_id"], []).append(row)
-
         # One row per holding (not per query) so the CSV is the actual list
         # of spectra behind each star, not just a count -- matches what the
         # single-star "download holdings" CSV already does. Queries with no
@@ -3129,8 +3165,10 @@ def batch_search():
     note = f"{len(entries)} entries looked up."
     if truncated:
         note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
+    if adv_filters:
+        note += " Holdings counts are filtered by the advanced search options above."
 
-    return _blank_batch(batch_error=batch_error, batch_note=note, batch_results=results)
+    return _blank_batch(batch_error=batch_error, batch_note=note, batch_results=results, adv_active=bool(adv_filters))
 
 
 # =============================================================================
