@@ -364,7 +364,7 @@ LIMIT {CMD_SAMPLE_SIZE}
 """
 
 
-# /timeplots (the Leaderboard/Stats tab) used to run eight separate full (or
+# /leaderboard (formerly /timeplots, and /stats before that) used to run eight separate full (or
 # near-full) scans per request -- most-observed, trending, a bare count(*),
 # by-archive, by-method against spectroscopy_holdings, plus nearest,
 # fastest-movers and a spectral-type histogram against `stars` -- against the
@@ -465,7 +465,7 @@ STATS_QUERIES = {
 # connection, but confirmed this is the slow-page complaint in practice
 # (Cloud Run's connection to joy is neither fast nor consistent, and it's the
 # same live-query-over-the-full-holdings-table shape already fixed for /sky,
-# /timeplots, and /triage elsewhere in this module -- /info was just missed
+# /leaderboard, and /triage elsewhere in this module -- /info was just missed
 # in that pass). NEEDS_REVIEW_QUERY/SKIPPED_QUERY only cover the unfiltered
 # default view; /info's per-archive filter (?archive=...) is rare enough,
 # and cheap enough once narrowed to one archive_code, to stay a live query in

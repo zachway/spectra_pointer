@@ -450,8 +450,8 @@ def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_result
 NAV_HTML = """
   <nav class="tabs">
     <a href="/" class="{{ 'active' if active_tab == 'search' else '' }}">Search</a>
-    <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Color-Magnitude Diagram</a>
-    <a href="/timeplots" class="{{ 'active' if active_tab == 'timeplots' else '' }}">Leaderboard</a>
+    <a href="/cmd" class="{{ 'active' if active_tab == 'cmd' else '' }}">Spectroscopy CMD</a>
+    <a href="/leaderboard" class="{{ 'active' if active_tab == 'leaderboard' else '' }}">Leaderboard</a>
     <a href="/instruments" class="{{ 'active' if active_tab == 'instruments' else '' }}">Instruments</a>
     <a href="/status" class="{{ 'active' if active_tab == 'archive_status' else '' }}">Archive Status</a>
     <a href="/triage" class="{{ 'active' if active_tab == 'triage' else '' }}">Triage</a>
@@ -924,7 +924,7 @@ def search():
 
     # gaia_source_id is purely a display value from here on -- it can
     # legitimately be NULL for a source_catalog='bsc5' star (same reasoning
-    # as timeplots', see 751327c). star_search_id is what round-trips back
+    # as leaderboard's, see 751327c). star_search_id is what round-trips back
     # through this same route's own ?q= lookup (bsc_hr_number for a BSC5
     # star, since it has no gaia_source_id for that to be).
     source_id = star["gaia_source_id"]
@@ -980,7 +980,7 @@ CMD_TEMPLATE = """
 <html>
 <head>
   <meta charset="utf-8">
-  <title>The Spectra Pointer — Color-Magnitude Diagram</title>
+  <title>The Spectra Pointer — Spectroscopy CMD</title>
   <style>""" + SHARED_STYLE + """
     #cmd-plot { width: 100%; height: 700px; margin-top: 1rem; }
   </style>
@@ -1203,7 +1203,7 @@ def sky():
     )
 
 
-TIMEPLOTS_TEMPLATE = """
+LEADERBOARD_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
@@ -1351,8 +1351,8 @@ TIMEPLOTS_TEMPLATE = """
 """
 
 
-@app.route("/timeplots")
-def timeplots():
+@app.route("/leaderboard")
+def leaderboard():
     cur = get_cursor()
 
     # scripts.export_to_parquet precomputes the full top-5-per-period
@@ -1456,7 +1456,7 @@ def timeplots():
     ]
 
     return render_template_string(
-        TIMEPLOTS_TEMPLATE,
+        LEADERBOARD_TEMPLATE,
         period_labels=period_labels,
         cumulative_traces=cumulative_traces,
         period_traces=period_traces,
@@ -1464,8 +1464,15 @@ def timeplots():
         total_stars=total_stars, total_holdings=total_holdings,
         by_archive=by_archive, by_method=by_method,
         nearest=nearest, fastest_movers=fastest_movers, spectral_types=spectral_types,
-        active_tab="timeplots",
+        active_tab="leaderboard",
     )
+
+
+@app.route("/timeplots")
+def timeplots_redirect():
+    # /leaderboard's old route name, kept as a redirect for anyone with a
+    # bookmarked or inbound /timeplots link -- same pattern as /stats below.
+    return redirect("/leaderboard")
 
 
 # Natural OBAFGKM order — GROUP BY doesn't preserve it, so the display order
@@ -2728,7 +2735,7 @@ def instruments_page():
 
 @app.route("/stats")
 def stats():
-    return redirect("/timeplots")
+    return redirect("/leaderboard")
 
 
 # (category db value, display label) -- fixed order so every archive's row
@@ -3037,7 +3044,7 @@ def info():
     # stats_summary) are precomputed by scripts.export_to_parquet -- this
     # route used to run these as four separate live queries against
     # spectroscopy_holdings (a 1GB+ remote Parquet file) on every request,
-    # the same slow-page shape already fixed for /sky, /timeplots, and
+    # the same slow-page shape already fixed for /sky, /leaderboard, and
     # /triage. See export_to_parquet's NEEDS_REVIEW_QUERY/SKIPPED_QUERY for
     # the full reasoning.
     cur = get_cursor()
