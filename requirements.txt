@@ -1,5 +1,6 @@
 astroquery
 astropy
+skyplothelper[plotly]
 psycopg[binary]
 beautifulsoup4
 requests

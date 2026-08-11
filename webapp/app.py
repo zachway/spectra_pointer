@@ -53,6 +53,7 @@ import duckdb
 import numpy as np
 import paramiko
 import requests
+import skyplothelper.plotly as sph_plotly
 from astropy.coordinates import SkyCoord
 from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
@@ -2229,20 +2230,11 @@ INSTRUMENTS_TEMPLATE = """
   <hr>
   <h2>Where each instrument points</h2>
   <p class="note">A sample of up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the {{ top_n }} instruments with the most of them, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage (northern vs. southern observatories, survey footprints, pointed vs. all-sky programs). Click a legend entry to isolate one instrument.</p>
-  {% if sky_traces %}
+  {% if instrument_sky_fig %}
     <div id="instrument-sky"></div>
     <script>
-      const skyTraces = {{ sky_traces | tojson }};
-      Plotly.newPlot('instrument-sky', skyTraces.map(t => ({
-        x: t.x, y: t.y, name: t.instrument, mode: 'markers', type: 'scattergl',
-        marker: { size: 3, opacity: 0.6 },
-        hovertemplate: t.instrument + '<extra></extra>',
-      })), {
-        xaxis: { showticklabels: false, zeroline: false, title: 'Right Ascension', scaleanchor: 'y' },
-        yaxis: { showticklabels: false, zeroline: false, title: 'Declination' },
-        hovermode: 'closest',
-        legend: { orientation: 'h' },
-      }, { responsive: true, scrollZoom: true });
+      const instrumentSkyFig = {{ instrument_sky_fig | tojson }};
+      Plotly.newPlot('instrument-sky', instrumentSkyFig.data, instrumentSkyFig.layout, { responsive: true, scrollZoom: true });
     </script>
   {% else %}
     <p>No position-tagged instrument data yet.</p>
@@ -2677,10 +2669,32 @@ def instruments_page():
     for r in _rows_as_dicts(cur):
         sky_by_instrument[r["instrument"]].append(r)
 
-    sky_traces = []
-    for instrument, pts in sky_by_instrument.items():
-        x, y = _aitoff_project([p["raw_ra"] for p in pts], [p["raw_dec"] for p in pts])
-        sky_traces.append({"instrument": instrument, "x": x, "y": y})
+    # Built with skyplothelper (github.com/pjcigan/skyplothelper) rather than
+    # the hand-rolled Aitoff formula this replaced -- that formula turned out
+    # to drift from a true Aitoff projection at high |dec| (~10% off at
+    # RA=180, Dec=60 when checked against this library), and this also gets
+    # us real gridlines/tick labels and a galactic-plane overlay (matching
+    # /sky's own, hand-rolled separately there) for free. Figure is built
+    # server-side and shipped as Plotly JSON for the client's existing
+    # Plotly.js (from CDN) to render -- native legend-click-to-isolate and
+    # zoom/pan behavior are unaffected since each instrument is still its own
+    # named go.Scatter trace.
+    instrument_sky_fig = None
+    if sky_by_instrument:
+        fig = sph_plotly.make_figure(projection="AIT", show_grid=True, theme="light", width=900, height=700)
+        sph_plotly.add_plane_overlay(fig, plane="galactic", color="#999999", opacity=0.4, width=1, name="Galactic plane")
+        for instrument, pts in sky_by_instrument.items():
+            sph_plotly.add_scatter(
+                fig, [p["raw_ra"] for p in pts], [p["raw_dec"] for p in pts],
+                name=instrument, mode="markers", marker={"size": 3, "opacity": 0.6},
+                hovertemplate=instrument + "<extra></extra>",
+            )
+        sph_plotly.add_coord_labels(fig)
+        fig.update_layout(
+            hovermode="closest", legend={"orientation": "h"},
+            margin={"t": 10, "l": 10, "r": 10, "b": 10},
+        )
+        instrument_sky_fig = json.loads(fig.to_json())
 
     # Star overlap between archives/instruments -- archive_overlap(_triple)
     # and instrument_overlap(_triple) are precomputed by
@@ -2724,7 +2738,7 @@ def instruments_page():
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
         treemap_counts=treemap_counts,
         instruments=instruments,
-        sky_traces=sky_traces,
+        instrument_sky_fig=instrument_sky_fig,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
         archive_items=archive_items, archive_pairs=archive_pairs, archive_triples=archive_triples,
         instrument_items=instrument_items, instrument_pairs=instrument_pairs, instrument_triples=instrument_triples,
