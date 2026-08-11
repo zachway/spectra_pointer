@@ -72,6 +72,22 @@ logger = logging.getLogger(__name__)
 LOG_READ_LIMIT = 100_000
 
 
+def _parse_gcloud_timestamp(ts: str) -> datetime:
+    """Cloud Logging's own RFC3339 timestamps -- confirmed live to sometimes
+    carry fractional seconds (e.g. "2026-08-11T15:39:43.106410Z") and
+    sometimes not, undocumented either way, which crashed the fixed
+    %Y-%m-%dT%H:%M:%SZ strptime this used before. Truncating to whole-second
+    precision is fine here: the watermark only needs to exclude
+    already-processed rows on the next run (the filter in
+    _run_gcloud_logging_read is a strict '>', not '>='), so being off by
+    under a second risks re-processing one request, never silently
+    dropping one."""
+    ts = ts.strip()
+    if "." in ts:
+        ts = ts.split(".", 1)[0] + "Z"
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
 def _run_gcloud_logging_read(service_name: str, project: str | None, since: datetime) -> str:
     filter_str = (
         f'resource.type="cloud_run_revision" '
@@ -122,7 +138,15 @@ def _latest_timestamp(log_lines: str) -> str | None:
         ts = ts.strip()
         if ts:
             latest = ts  # --order=asc, so the last non-empty line is newest
-    return latest
+    if latest is None:
+        return None
+    # Normalized to the canonical no-fractional-seconds form here (rather
+    # than persisting whatever raw precision gcloud happened to return) so
+    # every access_heatmap.json this ever writes has one consistent
+    # watermark format, and _parse_gcloud_timestamp's fractional-seconds
+    # handling only has to cover reading old already-written files, not new
+    # ones too.
+    return _parse_gcloud_timestamp(latest).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _load_previous(out_dir: str) -> dict:
@@ -148,7 +172,7 @@ def _write_atomic(out_dir: str, payload: dict) -> None:
 def build(out_dir: str, service_name: str, project: str | None, initial_window_days: int) -> None:
     previous = _load_previous(out_dir)
     if previous["watermark"]:
-        since = datetime.strptime(previous["watermark"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        since = _parse_gcloud_timestamp(previous["watermark"])
     else:
         since = datetime.now(timezone.utc) - timedelta(days=initial_window_days)
 
