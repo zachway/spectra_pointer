@@ -9,3 +9,4 @@ scipy
 aiohttp
 pytz
 paramiko
+geoip2fast

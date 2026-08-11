@@ -138,6 +138,21 @@ def _make_connection() -> duckdb.DuckDBPyConnection:
     # (see its module for why) as one JSON object with mixed scalar/list
     # fields, rather than one table per field like everything else here.
     con.execute(f"CREATE VIEW stats_summary AS SELECT * FROM read_json_auto('{source}/stats_summary.json')")
+    # /info's "Who's using The Spectra Pointer?" map -- country-level request
+    # counts derived from Cloud Run's own request logs, published
+    # independently by scripts.build_access_heatmap (see that module for the
+    # privacy reasoning) on its own schedule rather than as part of this
+    # export pipeline. A fresh SPECTRA_DATA_DIR/out_dir that hasn't had that
+    # script run against it yet won't have this file -- falls back to an
+    # empty view instead of crashing app startup on import.
+    try:
+        con.execute(f"CREATE VIEW access_heatmap AS SELECT * FROM read_json_auto('{source}/access_heatmap.json')")
+    except duckdb.Error:
+        con.execute(
+            "CREATE VIEW access_heatmap AS SELECT "
+            "NULL::VARCHAR AS generated_at, 0::BIGINT AS total_requests, "
+            "[]::STRUCT(country VARCHAR, country_code VARCHAR, count BIGINT)[] AS countries"
+        )
     return con
 
 
@@ -2859,12 +2874,56 @@ INFO_TEMPLATE = """
   <meta charset="utf-8">
   <title>The Spectra Pointer — More Info</title>
   <style>""" + SHARED_STYLE + """</style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
 <body>
   <div class="site-header">
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
+  <h2>Who's using The Spectra Pointer?</h2>
+  <p class="note">Country-level counts derived from Cloud Run's own request logs — the client IP address on each request, geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept, and Google's own Cloud Logging — not this project — deletes the underlying request logs after 30 days regardless. Counts include every client that requested the site (browsers, crawlers, uptime checks that weren't filtered out as internal/private traffic), not just human visitors, so treat this as roughly indicative rather than precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
+  {% if access_heatmap_countries %}
+    <div id="access-heatmap-plot" style="width: 100%; height: 450px;"></div>
+    <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries.</p>
+    <script>
+      (function() {
+        const countries = {{ access_heatmap_countries | tojson }};
+        const maxCount = Math.max(...countries.map(c => c.count));
+        // Same log10(n+1)-with-real-count-ticks treatment as the Archive
+        // Status overlap heatmap below -- request counts by country span
+        // orders of magnitude (the operator's own testing vs. a handful of
+        // hits from elsewhere), so a linear scale would make every country
+        // but the top one look the same near-white shade.
+        const tickVals = [], tickText = [];
+        for (let t = 1; t <= maxCount; t *= 10) {
+          tickVals.push(Math.log10(t + 1));
+          tickText.push(t.toLocaleString());
+        }
+        if (maxCount > 0 && tickVals[tickVals.length - 1] < Math.log10(maxCount + 1)) {
+          tickVals.push(Math.log10(maxCount + 1));
+          tickText.push(maxCount.toLocaleString());
+        }
+        Plotly.newPlot('access-heatmap-plot', [{
+          type: 'choropleth',
+          locationmode: 'country names',
+          locations: countries.map(c => c.country),
+          z: countries.map(c => Math.log10(c.count + 1)),
+          customdata: countries.map(c => c.count),
+          colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
+          marker: { line: { color: '#fff', width: 0.5 } },
+          hovertemplate: '%{location}: %{customdata:,} requests<extra></extra>',
+          colorbar: { title: { text: 'requests' }, tickvals: tickVals, ticktext: tickText },
+        }], {
+          geo: { projection: { type: 'natural earth' }, showframe: false, showcoastlines: false, bgcolor: 'rgba(0,0,0,0)' },
+          margin: { t: 10, b: 10, l: 0, r: 0 },
+        }, { responsive: true });
+      })();
+    </script>
+  {% else %}
+    <p>No data yet.</p>
+  {% endif %}
+
   <h2>How matching works</h2>
   <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
   <ol>
@@ -2994,6 +3053,10 @@ def info():
     cur.execute("SELECT archive_code, display_name, n FROM skipped_by_archive ORDER BY n DESC")
     skipped_by_archive = _rows_as_dicts(cur)
 
+    cur.execute("SELECT generated_at, total_requests, countries FROM access_heatmap")
+    access_heatmap_row = cur.fetchone()
+    access_heatmap_generated_at, access_heatmap_total, access_heatmap_countries = access_heatmap_row
+
     # The per-archive filter is a rare, deliberate user action (not the
     # default page load), and cheap once narrowed to one archive_code -- kept
     # as a live query rather than precomputing one skipped-records table per
@@ -3022,6 +3085,8 @@ def info():
         INFO_TEMPLATE, active_tab="info",
         needs_review=needs_review, needs_review_total=needs_review_total,
         skipped=skipped, skipped_by_archive=skipped_by_archive, archive_filter=archive_filter,
+        access_heatmap_generated_at=access_heatmap_generated_at, access_heatmap_total=access_heatmap_total,
+        access_heatmap_countries=access_heatmap_countries,
     )
 
 
