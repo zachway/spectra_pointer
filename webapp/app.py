@@ -371,7 +371,7 @@ RADIAL_SEARCH_MAX_RESULTS = 200
 # tighter max radius than stars-mode's 300', and a hard query timeout (see
 # _execute_with_timeout) so a genuinely huge candidate set fails fast with
 # a clear message rather than hanging the request indefinitely.
-RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN = 10.0
+RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN = 60.0
 RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS = 120.0
 
 
