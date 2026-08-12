@@ -372,7 +372,7 @@ RADIAL_SEARCH_MAX_RESULTS = 200
 # _execute_with_timeout) so a genuinely huge candidate set fails fast with
 # a clear message rather than hanging the request indefinitely.
 RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN = 10.0
-RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS = 30.0
+RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS = 120.0
 
 
 def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool, adv_filters: dict | None,
