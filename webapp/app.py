@@ -360,6 +360,20 @@ RADIAL_SEARCH_DEFAULT_RADIUS_ARCMIN = 5.0
 RADIAL_SEARCH_MAX_RADIUS_ARCMIN = 300.0  # 5 degrees
 RADIAL_SEARCH_MAX_RESULTS = 200
 
+# The unmatched-records mode below (_radial_search_unmatched) queries a much
+# bigger, unindexed table (17.9M rows vs. `stars`' 1.4M) with far more
+# rows per unit sky area -- many individual observation records can share
+# one real position. Confirmed live 2026-08-12: a routine 5' search near a
+# dense field returned 8,306 real candidates, silently truncated to
+# RADIAL_SEARCH_MAX_RESULTS's 200. Per feedback, that mode drops the
+# row-count cap entirely instead of just raising it (still an arbitrary
+# truncation point) -- bounding cost the other two ways instead: a much
+# tighter max radius than stars-mode's 300', and a hard query timeout (see
+# _execute_with_timeout) so a genuinely huge candidate set fails fast with
+# a clear message rather than hanging the request indefinitely.
+RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN = 10.0
+RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS = 30.0
+
 
 def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool, adv_filters: dict | None,
                     search_unmatched: bool = False):
@@ -380,7 +394,8 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
         except ValueError:
             return _render_radial(ra_str, dec_str, radius_str, radial_error="Radius must be a number of arcminutes.",
                                    search_unmatched=search_unmatched)
-    radius_arcmin = max(0.01, min(radius_arcmin, RADIAL_SEARCH_MAX_RADIUS_ARCMIN))
+    max_radius_arcmin = RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN if search_unmatched else RADIAL_SEARCH_MAX_RADIUS_ARCMIN
+    radius_arcmin = max(0.01, min(radius_arcmin, max_radius_arcmin))
     radius_deg = radius_arcmin / 60.0
 
     if search_unmatched:
@@ -441,6 +456,33 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
     )
 
 
+# DuckDB has no native per-query timeout/statement_timeout equivalent --
+# cur.interrupt() from a second thread is the documented cancellation
+# mechanism (confirmed live: raises duckdb.InterruptException in the
+# executing thread within milliseconds of being called). Runs `sql` on a
+# background thread and interrupts+raises TimeoutError if it doesn't finish
+# within timeout_seconds, so a caller can show a clean error instead of the
+# request just hanging until Cloud Run's own request timeout kills it.
+def _execute_with_timeout(cur: duckdb.DuckDBPyConnection, sql: str, params: list, timeout_seconds: float) -> None:
+    outcome: dict = {}
+
+    def run():
+        try:
+            cur.execute(sql, params)
+        except Exception as exc:  # re-raised on the calling thread below
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout_seconds)
+    if thread.is_alive():
+        cur.interrupt()
+        thread.join(5.0)  # let the interrupt actually land before returning
+        raise TimeoutError(f"query did not finish within {timeout_seconds:g}s")
+    if "error" in outcome:
+        raise outcome["error"]
+
+
 # Companion to _radial_search above, split out rather than another branch
 # inside it -- the two modes share ra/dec/radius validation (done by the
 # caller) but otherwise query, join, and render completely differently, so
@@ -461,50 +503,53 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
 # raw_dec) so row-group pruning actually applies -- but this file is still
 # ~13x more rows than `stars` even after slimming, hence the caveat on the
 # checkbox itself that this mode is noticeably slower.
+#
+# No LIMIT here (unlike the stars-mode query above) -- see
+# RADIAL_SEARCH_UNMATCHED_MAX_RADIUS_ARCMIN's comment for why a silent
+# row-count truncation was replaced with a tighter radius cap + timeout
+# instead. archive_url/archive_obs_id are pulled via a join against the
+# main spectroscopy_holdings table directly (rather than collecting ids
+# into a separate IN-list query, the previous approach) since an uncapped
+# result set could otherwise mean an unbounded parameter list.
 def _radial_search_unmatched(ra_val: float, dec_val: float, radius_deg: float, radius_arcmin: float,
                               ra_str: str, dec_str: str, export_csv: bool):
     cur = get_cursor()
-    cur.execute(
-        """
-        SELECT t.id, t.star_id, t.archive_code, a.display_name AS archive_display_name, t.instrument,
-               t.obs_date, t.match_status, t.raw_target_name, t.raw_ra, t.raw_dec, t.sep_deg
-        FROM (
-            SELECT id, star_id, archive_code, instrument, obs_date, match_status, raw_target_name, raw_ra, raw_dec,
-                degrees(acos(least(1.0, greatest(-1.0,
-                    sin(radians(raw_dec)) * sin(radians(?)) +
-                    cos(radians(raw_dec)) * cos(radians(?)) * cos(radians(raw_ra - ?))
-                )))) AS sep_deg
-            FROM spectroscopy_holdings_by_position
-            WHERE raw_dec BETWEEN ? AND ?
-        ) t
-        JOIN archives a ON a.archive_code = t.archive_code
-        WHERE t.sep_deg <= ?
-        ORDER BY t.sep_deg
-        LIMIT ?
-        """,
-        [dec_val, dec_val, ra_val, dec_val - radius_deg, dec_val + radius_deg, radius_deg, RADIAL_SEARCH_MAX_RESULTS],
-    )
+    try:
+        _execute_with_timeout(
+            cur,
+            """
+            SELECT t.id, t.star_id, t.archive_code, a.display_name AS archive_display_name, t.instrument,
+                   t.obs_date, t.match_status, t.raw_target_name, t.raw_ra, t.raw_dec, t.sep_deg,
+                   h.archive_url, h.archive_obs_id
+            FROM (
+                SELECT id, star_id, archive_code, instrument, obs_date, match_status, raw_target_name, raw_ra, raw_dec,
+                    degrees(acos(least(1.0, greatest(-1.0,
+                        sin(radians(raw_dec)) * sin(radians(?)) +
+                        cos(radians(raw_dec)) * cos(radians(?)) * cos(radians(raw_ra - ?))
+                    )))) AS sep_deg
+                FROM spectroscopy_holdings_by_position
+                WHERE raw_dec BETWEEN ? AND ?
+            ) t
+            JOIN archives a ON a.archive_code = t.archive_code
+            JOIN spectroscopy_holdings h ON h.id = t.id
+            WHERE t.sep_deg <= ?
+            ORDER BY t.sep_deg
+            """,
+            [dec_val, dec_val, ra_val, dec_val - radius_deg, dec_val + radius_deg, radius_deg],
+            RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        return _render_radial(
+            ra_str, dec_str, str(radius_arcmin),
+            radial_error=(
+                f"This search took too long (over {RADIAL_SEARCH_UNMATCHED_TIMEOUT_SECONDS:g}s) and was cancelled "
+                "-- try a smaller radius."
+            ),
+            search_unmatched=True,
+        )
     rows = _rows_as_dicts(cur)
     for r in rows:
         r["sep_arcsec"] = r["sep_deg"] * 3600.0
-
-    # archive_url/archive_obs_id live only on the main spectroscopy_holdings
-    # table (deliberately left off the slim position file -- see that
-    # export query's comment) -- looked up here by `id` for only this
-    # page's <=200 already-capped results, never for the full multi-million
-    # row candidate set the cone search above actually scans.
-    ids = [r["id"] for r in rows]
-    detail_by_id = {}
-    if ids:
-        cur.execute(
-            f"SELECT id, archive_url, archive_obs_id FROM spectroscopy_holdings WHERE id IN ({','.join('?' * len(ids))})",
-            ids,
-        )
-        detail_by_id = {row["id"]: row for row in _rows_as_dicts(cur)}
-    for r in rows:
-        detail = detail_by_id.get(r["id"], {})
-        r["archive_url"] = detail.get("archive_url")
-        r["archive_obs_id"] = detail.get("archive_obs_id")
 
     if export_csv:
         fieldnames = ["archive_display_name", "raw_target_name", "raw_ra", "raw_dec", "sep_arcsec",
