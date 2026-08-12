@@ -105,7 +105,7 @@ DATA_TABLES = (
     "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
     "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
-    "needs_review", "skipped_by_archive", "skipped",
+    "needs_review", "skipped_by_archive", "skipped", "spectroscopy_holdings_by_position",
 )
 
 
@@ -361,23 +361,30 @@ RADIAL_SEARCH_MAX_RADIUS_ARCMIN = 300.0  # 5 degrees
 RADIAL_SEARCH_MAX_RESULTS = 200
 
 
-def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool, adv_filters: dict | None):
+def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool, adv_filters: dict | None,
+                    search_unmatched: bool = False):
     try:
         ra_val = float(ra_str) % 360.0
         dec_val = float(dec_str)
     except ValueError:
-        return _render_radial(ra_str, dec_str, radius_str, radial_error="RA and Dec must be decimal degrees.")
+        return _render_radial(ra_str, dec_str, radius_str, radial_error="RA and Dec must be decimal degrees.",
+                               search_unmatched=search_unmatched)
     if not (-90.0 <= dec_val <= 90.0):
-        return _render_radial(ra_str, dec_str, radius_str, radial_error="Dec must be between -90 and 90 degrees.")
+        return _render_radial(ra_str, dec_str, radius_str, radial_error="Dec must be between -90 and 90 degrees.",
+                               search_unmatched=search_unmatched)
 
     radius_arcmin = RADIAL_SEARCH_DEFAULT_RADIUS_ARCMIN
     if radius_str:
         try:
             radius_arcmin = float(radius_str)
         except ValueError:
-            return _render_radial(ra_str, dec_str, radius_str, radial_error="Radius must be a number of arcminutes.")
+            return _render_radial(ra_str, dec_str, radius_str, radial_error="Radius must be a number of arcminutes.",
+                                   search_unmatched=search_unmatched)
     radius_arcmin = max(0.01, min(radius_arcmin, RADIAL_SEARCH_MAX_RADIUS_ARCMIN))
     radius_deg = radius_arcmin / 60.0
+
+    if search_unmatched:
+        return _radial_search_unmatched(ra_val, dec_val, radius_deg, radius_arcmin, ra_str, dec_str, export_csv)
 
     cur = get_cursor()
     cur.execute(
@@ -434,7 +441,88 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
     )
 
 
-def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None, adv_active=False):
+# Companion to _radial_search above, split out rather than another branch
+# inside it -- the two modes share ra/dec/radius validation (done by the
+# caller) but otherwise query, join, and render completely differently, so
+# interleaving them under one function would mean threading two unrelated
+# result shapes through the same code path.
+#
+# Queries spectroscopy_holdings_by_position (see its export query's own
+# comment in scripts/export_to_parquet.py for why this file exists and what
+# it deliberately leaves out) instead of `stars` -- this is the "search
+# unmatched records" checkbox's whole reason to exist: `stars` only has
+# rows sync.matcher already resolved to a Gaia/BSC5 counterpart, so a
+# record that missed that 1" easy-match cutoff (match_status='skipped') or
+# is still sitting in needs_review is otherwise invisible to any radius
+# search, no matter how wide.
+#
+# Same `dec BETWEEN` pre-filter shape as the `stars` query above, matching
+# how spectroscopy_holdings_by_position.parquet is sorted (ORDER BY
+# raw_dec) so row-group pruning actually applies -- but this file is still
+# ~13x more rows than `stars` even after slimming, hence the caveat on the
+# checkbox itself that this mode is noticeably slower.
+def _radial_search_unmatched(ra_val: float, dec_val: float, radius_deg: float, radius_arcmin: float,
+                              ra_str: str, dec_str: str, export_csv: bool):
+    cur = get_cursor()
+    cur.execute(
+        """
+        SELECT t.id, t.star_id, t.archive_code, a.display_name AS archive_display_name, t.instrument,
+               t.obs_date, t.match_status, t.raw_target_name, t.raw_ra, t.raw_dec, t.sep_deg
+        FROM (
+            SELECT id, star_id, archive_code, instrument, obs_date, match_status, raw_target_name, raw_ra, raw_dec,
+                degrees(acos(least(1.0, greatest(-1.0,
+                    sin(radians(raw_dec)) * sin(radians(?)) +
+                    cos(radians(raw_dec)) * cos(radians(?)) * cos(radians(raw_ra - ?))
+                )))) AS sep_deg
+            FROM spectroscopy_holdings_by_position
+            WHERE raw_dec BETWEEN ? AND ?
+        ) t
+        JOIN archives a ON a.archive_code = t.archive_code
+        WHERE t.sep_deg <= ?
+        ORDER BY t.sep_deg
+        LIMIT ?
+        """,
+        [dec_val, dec_val, ra_val, dec_val - radius_deg, dec_val + radius_deg, radius_deg, RADIAL_SEARCH_MAX_RESULTS],
+    )
+    rows = _rows_as_dicts(cur)
+    for r in rows:
+        r["sep_arcsec"] = r["sep_deg"] * 3600.0
+
+    # archive_url/archive_obs_id live only on the main spectroscopy_holdings
+    # table (deliberately left off the slim position file -- see that
+    # export query's comment) -- looked up here by `id` for only this
+    # page's <=200 already-capped results, never for the full multi-million
+    # row candidate set the cone search above actually scans.
+    ids = [r["id"] for r in rows]
+    detail_by_id = {}
+    if ids:
+        cur.execute(
+            f"SELECT id, archive_url, archive_obs_id FROM spectroscopy_holdings WHERE id IN ({','.join('?' * len(ids))})",
+            ids,
+        )
+        detail_by_id = {row["id"]: row for row in _rows_as_dicts(cur)}
+    for r in rows:
+        detail = detail_by_id.get(r["id"], {})
+        r["archive_url"] = detail.get("archive_url")
+        r["archive_obs_id"] = detail.get("archive_obs_id")
+
+    if export_csv:
+        fieldnames = ["archive_display_name", "raw_target_name", "raw_ra", "raw_dec", "sep_arcsec",
+                      "match_status", "instrument", "obs_date", "archive_url"]
+        return _csv_response(
+            fieldnames,
+            rows,
+            f"spectra_pointer_radial_unmatched_ra{ra_val:.5f}_dec{dec_val:.5f}_r{radius_arcmin:g}arcmin.csv",
+        )
+
+    return _render_radial(
+        ra_str, dec_str, str(radius_arcmin), radial_results=rows, radius_display=radius_arcmin,
+        search_unmatched=True,
+    )
+
+
+def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_results=None, radius_display=None,
+                    adv_active=False, search_unmatched=False):
     return render_template_string(
         PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
@@ -445,6 +533,7 @@ def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_result
         radial_searched=True, radial_error=radial_error, radial_results=radial_results,
         radius_display=radius_display if radius_display is not None else radius_str,
         adv_active=adv_active,
+        search_unmatched=search_unmatched,
         **_advanced_search_context(),
     )
 
@@ -488,6 +577,8 @@ SHARED_STYLE = """
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
                          border-radius: 4px; object-fit: cover; }
     .radial-form { display: inline-block; margin: 0.3rem 0; }
+    .radial-form label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
+    .caveat-tip { cursor: help; border-bottom: 1px dotted #000; }
     details.advanced-search { max-width: 700px; }
     details.advanced-search summary { font-size: 1rem; }
     .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -524,6 +615,11 @@ PAGE_TEMPLATE = """
       <input type="text" name="dec" placeholder="Dec (deg)" value="{{ dec or '' }}" size="10">
       <input type="text" name="radius" placeholder="Radius (arcmin, default {{ '%g'|format(5) }})" value="{{ radius or '' }}" size="20">
       <button type="submit">Search radius</button>
+      <label class="unmatched-toggle">
+        <input type="checkbox" name="search_unmatched" value="1"{{ " checked" if search_unmatched else "" }}>
+        Search unmatched records
+        <span class="caveat-tip" title="(1) Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. (2) Scans far more data than the search above and will be noticeably slower. (3) Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">(?)</span>
+      </label>
     </div>
 
     <details class="advanced-search">
@@ -601,11 +697,25 @@ PAGE_TEMPLATE = """
     {% if radial_error %}
       <p class="error">Error: {{ radial_error }}</p>
     {% else %}
-      <p>{{ radial_results|length }} star{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}{% if adv_active %} matching the advanced search filters{% endif %}.
-        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
+      <p>{{ radial_results|length }} {{ "record" if search_unmatched else "star" }}{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}{% if adv_active %} matching the advanced search filters{% endif %}.
+        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if search_unmatched %}&amp;search_unmatched=1{% endif %}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
       </p>
       {% if radial_results %}
       <table>
+        {% if search_unmatched %}
+        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Match status</th><th>Link</th></tr>
+        {% for r in radial_results %}
+        <tr>
+          <td>{{ r.archive_display_name }}</td>
+          <td>{{ r.raw_target_name or "—" }}</td>
+          <td>{{ "%.5f"|format(r.raw_ra) }}</td>
+          <td>{{ "%.5f"|format(r.raw_dec) }}</td>
+          <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
+          <td>{{ r.match_status }}</td>
+          <td>{% if r.archive_url %}<a href="{{ r.archive_url }}" target="_blank" rel="noopener">open</a>{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
         <tr><th>Star</th><th>RA</th><th>Dec</th><th>Separation</th><th>G mag</th>{% if adv_active %}<th>Matched holdings</th>{% endif %}</tr>
         {% for r in radial_results %}
         <tr>
@@ -617,6 +727,7 @@ PAGE_TEMPLATE = """
           {% if adv_active %}<td>{{ r.adv_matches|join(", ") }}</td>{% endif %}
         </tr>
         {% endfor %}
+        {% endif %}
       </table>
       {% endif %}
     {% endif %}
@@ -892,7 +1003,9 @@ def search():
     ra_str = request.args.get("ra", "").strip()
     dec_str = request.args.get("dec", "").strip()
     if not query and (ra_str or dec_str):
-        return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv, adv_filters)
+        search_unmatched = bool(request.args.get("search_unmatched"))
+        return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv, adv_filters,
+                               search_unmatched=search_unmatched)
 
     if not query:
         return _blank()
