@@ -596,7 +596,7 @@ NAV_HTML = """
 """
 
 SHARED_STYLE = """
-    body { font-family: monospace; max-width: 800px; margin: 2rem auto; padding: 0 1rem; color: #000; background: #fff; }
+    body { font-family: monospace; max-width: min(90vw, 1200px); margin: 2rem auto; padding: 0 1rem; color: #000; background: #fff; }
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
     dt { font-weight: bold; }
     dd { margin: 0; }
