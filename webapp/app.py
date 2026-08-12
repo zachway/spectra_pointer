@@ -578,7 +578,9 @@ SHARED_STYLE = """
                          border-radius: 4px; object-fit: cover; }
     .radial-form { display: inline-block; margin: 0.3rem 0; }
     .radial-form label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
-    .caveat-tip { cursor: help; border-bottom: 1px dotted #000; }
+    .caveat-details { display: inline-block; margin-left: 0.5rem; font-size: 0.85rem; vertical-align: middle; }
+    .caveat-details summary { cursor: pointer; }
+    .caveat-details p { margin: 0.3rem 0 0; max-width: 480px; font-size: 0.85rem; }
     details.advanced-search { max-width: 700px; }
     details.advanced-search summary { font-size: 1rem; }
     .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -618,8 +620,11 @@ PAGE_TEMPLATE = """
       <label class="unmatched-toggle">
         <input type="checkbox" name="search_unmatched" value="1"{{ " checked" if search_unmatched else "" }}>
         Search unmatched records
-        <span class="caveat-tip" title="(1) Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. (2) Scans far more data than the search above and will be noticeably slower. (3) Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">(?)</span>
       </label>
+      <details class="caveat-details">
+        <summary>caveats</summary>
+        <p class="note">Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.</p>
+      </details>
     </div>
 
     <details class="advanced-search">
