@@ -53,6 +53,7 @@ from sync.archives import (
     gtc,
     harpsn_tng,
     hermes_mercator,
+    heros_ondrejov,
     iacob,
     ing,
     irsa_missions,
@@ -144,6 +145,7 @@ ARCHIVES = {
     "iacob": iacob.fetch,
     "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
+    "heros_ondrejov": heros_ondrejov.fetch,
 }
 
 
