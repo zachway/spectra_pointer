@@ -54,6 +54,7 @@ from sync.archives import (
     harpsn_tng,
     hermes_mercator,
     hpol,
+    heros_ondrejov,
     iacob,
     ing,
     irsa_missions,
@@ -77,6 +78,7 @@ from sync.archives import (
     ondrejov,
     polarbase,
     rave,
+    ritter_prest,
     salt_hrs,
     sdss_legacy_optical,
     sdss_v_apogee,
@@ -144,8 +146,10 @@ ARCHIVES = {
     "svo_cab": svo_cab.fetch,
     "irsa_missions": irsa_missions.fetch,
     "iacob": iacob.fetch,
+    "ritter_prest": ritter_prest.fetch,
     "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
+    "heros_ondrejov": heros_ondrejov.fetch,
 }
 
 
