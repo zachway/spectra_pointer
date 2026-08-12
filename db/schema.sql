@@ -77,13 +77,26 @@ CREATE TABLE archives (
 -- One row per archive per sync run's progress. sync_cursor is JSONB because
 -- each archive paginates differently (date windows, offsets, run2d/run1d
 -- generations, ...) — no single scalar watermark fits all of them.
+--
+-- reconcile_cursor is a second, independent cursor for sync/reconcile.py:
+-- most archives paginate on an observation-time column (t_min/mjd/dateobs/
+-- ...), so sync_cursor only ever moves forward in observation time and can
+-- permanently miss a record the source archive adds/re-releases later with
+-- an old timestamp (confirmed live for mast.py). reconcile.py periodically
+-- re-walks each at-risk archive from the start of its history using this
+-- separate cursor, so it doesn't fight with sync_cursor's forward progress.
 CREATE TABLE archive_sync_state (
     archive_code        TEXT PRIMARY KEY REFERENCES archives(archive_code),
     sync_cursor          JSONB NOT NULL DEFAULT '{}'::jsonb,
     last_run_at          TIMESTAMPTZ,
     last_run_status       TEXT CHECK (last_run_status IN ('success', 'partial', 'failed')),
     last_run_notes        TEXT,
-    rows_seen_last_run    INTEGER
+    rows_seen_last_run    INTEGER,
+    reconcile_cursor            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reconcile_last_run_at        TIMESTAMPTZ,
+    reconcile_last_run_status     TEXT CHECK (reconcile_last_run_status IN ('success', 'partial', 'failed')),
+    reconcile_last_run_notes      TEXT,
+    reconcile_rows_seen_last_run  INTEGER
 );
 
 -- The core deliverable table: does spectroscopic data exist for this star in
