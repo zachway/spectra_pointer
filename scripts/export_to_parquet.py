@@ -501,6 +501,54 @@ LIMIT {SKIPPED_TOP_N}
 """
 
 
+# Slim, position-sorted sibling of spectroscopy_holdings for the search
+# page's opt-in "search unmatched records" checkbox -- webapp.app's normal
+# radial search only ever queries `stars` (Gaia/BSC5-confirmed positions),
+# so a user searching a wider radius than sync.matcher's 1" easy-match
+# cutoff has no way to see a nearby record that didn't make it into `stars`
+# at all (match_status='skipped', 16.1M rows as of 2026-08-12) or is still
+# sitting in needs_review.
+#
+# Deliberately NOT `SELECT * FROM pg.spectroscopy_holdings ORDER BY
+# raw_ra/dec` -- confirmed live via this table's own Parquet column
+# metadata that archive_url + archive_obs_id alone account for 61% of the
+# ~1.5GB file (two per-row TEXT columns), and a full-width resort wouldn't
+# even shrink that: `id`'s current compression benefits from loosely
+# tracking insertion order under the main file's `ORDER BY star_id` (see
+# below), which a position-bucket sort would scramble. So this exports only
+# the columns a cone search + result listing actually needs, and leaves
+# archive_url/archive_obs_id on the main file -- webapp.app looks those up
+# by `id` afterward, but only for this page's <=200 capped, already-matched
+# results, never for the full candidate set the cone search itself scans.
+#
+# WHERE raw_ra/raw_dec IS NOT NULL cuts straight to the rows a position
+# search could ever return -- confirmed live only 17,911,462 of 48,312,943
+# total holdings rows carry a position at all (many archives, e.g.
+# feros_gavo/flashheros_gavo/salt_hrs/irtf_spex/irtf_ishell, are name-only
+# by design, see this file's own per-archive notes in db/schema.sql). Not
+# filtered to match_status='skipped' -- the checkbox is meant to search
+# "everything not covered by the normal stars-table search's radius", which
+# includes needs_review and even already-matched rows a user might still
+# want to see alongside unmatched ones (match_status is exported so
+# webapp.app can label each result). Confirmed live this whole query,
+# sorted, comes to 320.6MB -- comfortably under the 1GiB Cloud Run limit
+# even loaded alongside the other exported tables, unlike a full-width
+# resorted clone would have been.
+#
+# ORDER BY raw_dec, not a spatial/HEALPix bucket -- matches the exact
+# `raw_dec BETWEEN ? AND ?` pre-filter shape webapp.app's radial search
+# already uses against `stars` (see RADIAL_SEARCH_DEFAULT_RADIUS_ARCMIN's
+# comment there), so Parquet's row-group min/max stats can actually skip
+# row groups outside the search band instead of every query scanning the
+# whole 320MB file over httpfs.
+HOLDINGS_BY_POSITION_QUERY = """
+SELECT id, star_id, archive_code, instrument, obs_date, match_status, raw_target_name, raw_ra, raw_dec
+FROM pg.spectroscopy_holdings
+WHERE raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+ORDER BY raw_dec
+"""
+
+
 # Precomputed per-(archive, reported target name) triage queue -- the
 # /triage page used to run this grouping live against the hosted
 # DuckDB/Parquet snapshot, but a true GROUP BY (archive_code, raw_target_name)
@@ -927,6 +975,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
         skipped_path = os.path.join(out_dir, "skipped.parquet")
         _atomic_copy(con, _localize(SKIPPED_QUERY), skipped_path)
         logger.info("exported skipped -> %s", skipped_path)
+
+        holdings_by_position_path = os.path.join(out_dir, "spectroscopy_holdings_by_position.parquet")
+        _atomic_copy(con, _localize(HOLDINGS_BY_POSITION_QUERY), holdings_by_position_path)
+        logger.info("exported spectroscopy_holdings_by_position -> %s", holdings_by_position_path)
 
         archive_overlap_path = os.path.join(out_dir, "archive_overlap.parquet")
         _atomic_copy(con, _localize(ARCHIVE_OVERLAP_QUERY), archive_overlap_path)
