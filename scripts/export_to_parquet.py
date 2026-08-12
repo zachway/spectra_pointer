@@ -1033,6 +1033,34 @@ ALLOWED_TRIAGE_OUTCOMES = {
     "confirmed_absent_from_gaia",
 }
 
+# A name-based vote (see the "Expands one vote-by-name..." comment below)
+# assumes the name identifies one real target, so a handful of matching
+# skipped rows at most -- confirmed live 2026-08-12 that assumption breaks
+# for a calibration-frame name like Lick's "WideFlat": it matched 217,237
+# of that one archive's 1.1M skipped rows, and the query planner badly
+# misjudged the cost (estimated 1,934 rows, actual 217,237), turning one
+# submission into a multi-minute scan+insert that then repeats on *every*
+# future run (this file is deliberately never truncated, see above, so a
+# bad vote's cost doesn't go away once paid -- it recurs forever). Rather
+# than trust every submitted name to be a real, narrowly-matching target,
+# skip (and warn about) any name-vote whose live candidate count exceeds
+# this cap -- a human can still resolve a calibration-frame name's skipped
+# rows through the normal per-archive_obs_id path instead.
+#
+# Deliberately NOT applied to TRIAGE_NAME_VOTE_UNCAPPED_OUTCOMES below --
+# attach_gaia_source/attach_bright_star assert the whole group genuinely
+# *is* one specific real, named source (unlike not_a_real_target/not_a_star/
+# confirmed_absent_from_gaia, which are exactly the "this looks like junk"
+# calls the cap exists to double-check), and a real, well-studied star can
+# legitimately have far more than 1000 same-named archive rows (e.g. a
+# multi-decade RV-monitoring target). Capping those too would silently
+# drop a correct large-scale attach the same way it would have dropped
+# WideFlat's incorrect one -- so this only protects the "this is junk"
+# outcomes, where a name matching an implausible number of rows is itself
+# a signal to slow down and double-check, not attach.
+TRIAGE_NAME_VOTE_MAX_MATCHES = 1000
+TRIAGE_NAME_VOTE_UNCAPPED_OUTCOMES = {"attach_gaia_source", "attach_bright_star"}
+
 
 def import_triage_submissions(database_url: str, out_dir: str) -> None:
     path = os.path.join(out_dir, TRIAGE_SUBMISSIONS_FILENAME)
@@ -1080,6 +1108,30 @@ def import_triage_submissions(database_url: str, out_dir: str) -> None:
             params = {**obj, "raw_target_name": raw_target_name, "proposed_bsc_hr_number": obj.get("proposed_bsc_hr_number")}
             try:
                 if raw_target_name:
+                    # Sanity-check the fan-out *before* attempting the insert
+                    # below -- see TRIAGE_NAME_VOTE_MAX_MATCHES's own comment
+                    # for why this is needed, what happens without it, and
+                    # why attach_* outcomes are exempted.
+                    if obj.get("outcome") not in TRIAGE_NAME_VOTE_UNCAPPED_OUTCOMES:
+                        cur.execute(
+                            """
+                            SELECT count(*) FROM spectroscopy_holdings h
+                            WHERE h.archive_code = %(archive_code)s AND h.match_status = 'skipped'
+                              AND NULLIF(TRIM(h.raw_target_name), '') = %(raw_target_name)s
+                            """,
+                            params,
+                        )
+                        n_candidates = cur.fetchone()[0]
+                        if n_candidates > TRIAGE_NAME_VOTE_MAX_MATCHES:
+                            logger.warning(
+                                "skipping name-vote submission -- %r under archive_code=%r matches %d skipped "
+                                "rows (cap %d), looks like a calibration-frame/placeholder name rather than a "
+                                "real target: %r",
+                                raw_target_name, obj.get("archive_code"), n_candidates, TRIAGE_NAME_VOTE_MAX_MATCHES, obj,
+                            )
+                            n_skipped += 1
+                            continue
+
                     # Expands one vote-by-name into every record the *live*
                     # spectroscopy_holdings table currently has under that
                     # (archive_code, name) and still marked 'skipped' -- not
