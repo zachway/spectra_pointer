@@ -513,6 +513,7 @@ PAGE_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <p class="note">A numeric search is interpreted as a Gaia source_id or a Bright Star Catalogue (HR) number.</p>
+  <p class="note"><b>This webapp is under active development! If you find bugs or want features please file an issue <a href="https://github.com/zachway/spectra_pointer"> here </a> or email me at zway1 [at] gsu.edu </b></p>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit">Search</button>
