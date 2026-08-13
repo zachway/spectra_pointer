@@ -131,7 +131,19 @@ INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC: dict[tuple[str, str], float] = {
 }
 
 
+_NAME_PREFIX_RE = re.compile(r"^(NAME|\*)\s+", re.IGNORECASE)
+
+
 def _normalize_name(name: str) -> str:
+    # SIMBAD's "ids" field doesn't store proper names bare -- Vega comes back
+    # as "NAME Vega", Arcturus's Bayer designation as "* alf Boo" -- and
+    # add_bsc_star (ingest/add_star.py) stores those tokens verbatim into
+    # name_aliases. Without stripping the prefix, an archive reporting the
+    # bare name never matches the cached alias and silently falls through to
+    # position matching (confirmed live: IRTF Legacy's "Vega" record). See
+    # webapp/app.py's _normalize_star_name for the same fix on the manual
+    # search path.
+    name = _NAME_PREFIX_RE.sub("", name.strip())
     key = re.sub(r"\s+", "", name).upper()
     if key.startswith("GL"):
         # "Gl" (Gliese) and "GJ" (Gliese-Jahreiss) are used interchangeably
