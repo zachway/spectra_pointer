@@ -231,6 +231,26 @@ LEADERBOARD_TOP_N = 20
 #     made top-N by either metric is known does a star x period grid get
 #     built -- cast stars only, ~74x that small set, nowhere near the
 #     full 6.1M-star grid.
+def _common_name_expr(alias_col: str, input_col: str, id_col: str) -> str:
+    # name_aliases[1] is just whatever token SIMBAD's "ids" field happened
+    # to list first (see ingest.add_star) -- often a Bayer/Flamsteed
+    # designation like "* alf Boo" or a catalog number, not the star's
+    # actual common name. SIMBAD does mark common names, with a "NAME "
+    # prefix (e.g. "NAME Arcturus") -- same convention webapp.app's
+    # _normalize_star_name already strips for search matching. Prefer that
+    # alias, stripped of its prefix, before falling back to the old
+    # first-alias/input_name/gaia_source_id chain.
+    return f"""COALESCE(
+        list_transform(
+            list_filter({alias_col}, x -> x LIKE 'NAME %'),
+            x -> trim(substr(x, 6))
+        )[1],
+        {alias_col}[1],
+        {input_col},
+        CAST({id_col} AS VARCHAR)
+    )"""
+
+
 LEADERBOARD_COUNTS_QUERY = """
 SELECT
     star_id,
@@ -265,7 +285,7 @@ SELECT
     s.star_id,
     s.gaia_source_id,
     s.bsc_hr_number,
-    COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label,
+    {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS label,
     g.yr, g.half,
     tp.n AS within_n,
     tc.cum_n AS cumulative_n
@@ -354,7 +374,7 @@ SELECT
     s.gaia_source_id,
     s.phot_bp_mean_mag - s.phot_rp_mean_mag AS bp_rp,
     s.phot_g_mean_mag + 5 * log10(s.parallax) - 10 AS abs_g_mag,
-    COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS label
+    {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS label
 FROM pg.stars s
 JOIN obs_counts oc ON oc.star_id = s.star_id
 WHERE s.phot_bp_mean_mag IS NOT NULL AND s.phot_rp_mean_mag IS NOT NULL
@@ -388,7 +408,7 @@ FASTEST_MOVERS_TOP_N = 20
 STATS_QUERIES = {
     "most_observed": f"""
         SELECT s.gaia_source_id, s.bsc_hr_number,
-               COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
+               {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
@@ -398,7 +418,7 @@ STATS_QUERIES = {
     """,
     "trending": f"""
         SELECT s.gaia_source_id, s.bsc_hr_number,
-               COALESCE(s.name_aliases[1], s.input_name, CAST(s.gaia_source_id AS VARCHAR)) AS known_as,
+               {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS known_as,
                count(*) AS n
         FROM pg.spectroscopy_holdings h
         JOIN pg.stars s ON s.star_id = h.star_id
@@ -423,7 +443,7 @@ STATS_QUERIES = {
     """,
     "nearest": f"""
         SELECT gaia_source_id, bsc_hr_number,
-               COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
+               {_common_name_expr('name_aliases', 'input_name', 'gaia_source_id')} AS known_as,
                1000.0 / parallax AS distance_pc
         FROM pg.stars
         WHERE parallax > 0
@@ -432,7 +452,7 @@ STATS_QUERIES = {
     """,
     "fastest_movers": f"""
         SELECT gaia_source_id, bsc_hr_number,
-               COALESCE(name_aliases[1], input_name, CAST(gaia_source_id AS VARCHAR)) AS known_as,
+               {_common_name_expr('name_aliases', 'input_name', 'gaia_source_id')} AS known_as,
                sqrt(pmra * pmra + pmdec * pmdec) AS total_pm
         FROM pg.stars
         WHERE pmra IS NOT NULL AND pmdec IS NOT NULL
