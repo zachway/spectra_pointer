@@ -622,8 +622,9 @@ SHARED_STYLE = """
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
                          border-radius: 4px; object-fit: cover; }
     .radial-form { display: inline-block; margin: 0.3rem 0; }
-    .radial-form label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
+    label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
     .caveat-tip { text-decoration: underline; cursor: help; }
+    p.caveat-text { max-width: 700px; }
     details.advanced-search { max-width: 700px; }
     details.advanced-search summary { font-size: 1rem; }
     .advanced-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -652,17 +653,21 @@ PAGE_TEMPLATE = """
   <p class="note"><b>This webapp is under active development! If you find bugs or want features please file an issue <a href="https://github.com/zachway/spectra_pointer"> here </a> or email me at zway1 [at] gsu.edu </b></p>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
-    <button type="submit">Search</button>
+    <button type="submit" name="mode" value="name">Search</button>
+    <label class="unmatched-toggle">
+      <input type="checkbox" name="resolve_only" value="1"{{ " checked" if resolve_only else "" }}>
+      Resolve coordinates only (skips the records lookup below)
+    </label>
 
     <p class="note">Or search by sky position:</p>
     <div class="radial-form">
       <input type="text" name="ra" placeholder="RA (deg)" value="{{ ra or '' }}" size="10">
       <input type="text" name="dec" placeholder="Dec (deg)" value="{{ dec or '' }}" size="10">
       <input type="text" name="radius" placeholder="Radius (arcmin, default {{ '%g'|format(5) }})" value="{{ radius or '' }}" size="20">
-      <button type="submit">Search radius</button>
+      <button type="submit" name="mode" value="radius">Search radius</button>
       <label class="unmatched-toggle">
         <input type="checkbox" name="search_unmatched" value="1"{{ " checked" if search_unmatched else "" }}>
-        Search unmatched records (<span class="caveat-tip" title="Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">hover for caveats</span>)
+        Search unmatched records (<span class="caveat-tip" tabindex="0" title="Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">hover or click for caveats</span>)
       </label>
     </div>
 
@@ -734,6 +739,29 @@ PAGE_TEMPLATE = """
       }
       archiveSel.addEventListener('change', applyArchiveFilter);
       applyArchiveFilter();
+    })();
+    (function() {
+      // .caveat-tip spans live inside a checkbox <label> (see
+      // "Search unmatched records" above) -- clicking anywhere in a
+      // <label>, including this span, normally toggles its checkbox.
+      // preventDefault() here stops that default action, so a click reveals
+      // the caveat text instead of silently checking the box.
+      document.querySelectorAll('.caveat-tip').forEach(function(span) {
+        var note = document.createElement('p');
+        note.className = 'note caveat-text';
+        note.textContent = span.getAttribute('title');
+        note.hidden = true;
+        (span.closest('label') || span).insertAdjacentElement('afterend', note);
+        function toggle(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          note.hidden = !note.hidden;
+        }
+        span.addEventListener('click', toggle);
+        span.addEventListener('keydown', function(e) {
+          if (e.key === 'Enter' || e.key === ' ') toggle(e);
+        });
+      });
     })();
   </script>
 
@@ -863,6 +891,9 @@ PAGE_TEMPLATE = """
     {% elif adv_active %}
       <p>No holdings match the advanced search filters ({{ holdings_total }} total for this star).
         <a href="?q={{ star_search_id }}">Clear filters</a></p>
+    {% elif resolve_only %}
+      <p class="note">Coordinates only resolved above -- records were not searched.
+        <a href="?q={{ star_search_id }}">Show records too</a></p>
     {% else %}
       <p>No spectroscopy holdings found for this star yet.</p>
     {% endif %}
@@ -1046,13 +1077,24 @@ def search():
 
     ra_str = request.args.get("ra", "").strip()
     dec_str = request.args.get("dec", "").strip()
-    if not query and (ra_str or dec_str):
+    # mode reflects which submit button was actually clicked (see the two
+    # buttons in PAGE_TEMPLATE's <form>) -- without it, a name/ID query left
+    # over in the box from a previous search would silently win over a
+    # freshly-clicked "Search radius", since both buttons share one <form>
+    # and the browser submits every field regardless of which button fired.
+    # Links that only ever set ra/dec (radial pagination, CSV download, old
+    # bookmarks) never carry `mode`, so the pre-existing query-empty
+    # heuristic remains the fallback for those.
+    mode = request.args.get("mode", "").strip()
+    if mode == "radius" or (mode != "name" and not query and (ra_str or dec_str)):
         search_unmatched = bool(request.args.get("search_unmatched"))
         return _radial_search(ra_str, dec_str, request.args.get("radius", "").strip(), export_csv, adv_filters,
                                search_unmatched=search_unmatched)
 
     if not query:
         return _blank()
+
+    resolve_only = bool(request.args.get("resolve_only")) and not export_csv
 
     cur = get_cursor()
     resolved_source_id = None
@@ -1088,6 +1130,21 @@ def search():
     # star, since it has no gaia_source_id for that to be).
     source_id = star["gaia_source_id"]
     star_search_id = source_id if source_id is not None else star["bsc_hr_number"]
+
+    if resolve_only:
+        # Skips the holdings query and wavelength-coverage computation
+        # entirely -- the point of this mode is a cheap coordinate/metadata
+        # lookup, not a scan of spectroscopy_holdings.
+        return render_template_string(
+            PAGE_TEMPLATE, query=query, star=star, holdings=[], star_search_id=star_search_id,
+            wavelength_chart=None,
+            error=None, resolved_source_id=resolved_source_id,
+            max_name_lookups=MAX_NAME_LOOKUPS,
+            batch_error=None, batch_note=None, batch_results=None,
+            active_tab="search",
+            holdings_total=0, holdings_shown=0, adv_active=False, resolve_only=True,
+            **_advanced_search_context(),
+        )
 
     cur.execute(
         """
@@ -1130,6 +1187,7 @@ def search():
         batch_error=None, batch_note=None, batch_results=None,
         active_tab="search",
         holdings_total=holdings_total, holdings_shown=len(raw_holdings), adv_active=bool(adv_filters),
+        resolve_only=False,
         **_advanced_search_context(),
     )
 
