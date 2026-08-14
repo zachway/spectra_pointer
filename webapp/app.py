@@ -667,7 +667,7 @@ PAGE_TEMPLATE = """
       <button type="submit" name="mode" value="radius">Search radius</button>
       <label class="unmatched-toggle">
         <input type="checkbox" name="search_unmatched" value="1"{{ " checked" if search_unmatched else "" }}>
-        Search unmatched records (<span class="caveat-tip" tabindex="0" title="Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">hover or click for caveats</span>)
+        Search unmatched records (<span class="caveat-tip" tabindex="0" title="Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">hover/click for caveats</span>)
       </label>
     </div>
 
