@@ -96,6 +96,28 @@ SHITTY_MATCH_RADIUS_ARCSEC = 60.0
 # not just the handful actually that old.
 GAIA_QUERY_TIME_BUCKET_YEARS = 10
 
+# Coarse (RA, Dec) grid cell size (degrees) for grouping a chunk's records by
+# sky position before querying Gaia, nested underneath the epoch bucketing
+# above -- purely a performance grouping, not a correctness filter: every
+# record still gets its own precise CONTAINS/CIRCLE search regardless of
+# which sky bucket it landed in, so a boundary-adjacent record can never be
+# missed the way a bug in an actual spatial WHERE-filter on gaia_source_lite
+# could. The motivation is locality: Gaia's own archive documentation treats
+# HEALPix indexing as central to how gaia_source(_lite) is organized, so a
+# batch of upload points scattered across the whole sky plausibly touches
+# many more disjoint regions of that index than the same batch grouped by
+# proximity. Confirmed live 2026-08-17 that dao's own candidate pool is
+# genuinely scattered (419 of a possible 648 10x10 degree cells populated,
+# full RA range, dec -72 to +90), so this isn't just a theoretical concern
+# for this archive. Deliberately (RA, Dec) together, not RA alone -- RA-only
+# binning badly mis-clusters near the poles, where a small angular
+# separation can span a huge RA range. NOT yet empirically validated against
+# real timing data (unlike GAIA_QUERY_TIME_BUCKET_YEARS's necessity, this is
+# a plausible lever, not a proven one) -- and it trades fewer/heavier Gaia
+# round-trips for more/lighter ones, so the right cell size is a real,
+# untuned open question.
+GAIA_QUERY_SKY_BUCKET_DEG = 15.0
+
 # See module docstring point 4. Confirmed live against this project's own
 # data (2026-08-17): ~32% of records with 2+ candidates within 2' clear this
 # gap -- a real, non-trivial population, not noise.
@@ -136,10 +158,20 @@ ARCHIVE_FAINTNESS_CEILING_MAG: dict[str, float] = {
 }
 DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 
+# gaiadr3.gaia_source_lite, not the full gaia_source -- same row count, but
+# only 51 columns instead of 150+, and it's Gaia's own documented
+# optimization for exactly this kind of query ("substantially improve the
+# performance of various types of ADQL queries" -- ESA Gaia archive's
+# "Writing queries" help page, sec. 2.1). Confirmed live 2026-08-17 that
+# gaia_source_lite carries every column this query needs (source_id, ra,
+# dec, pmra, pmdec, phot_g_mean_mag). The dedicated Gaia.cross_match /
+# cross_match_basic helpers were also checked and ruled out for this use
+# case -- their radius argument is hard-capped at 10", well under
+# SHITTY_MATCH_RADIUS_ARCSEC (60", before PM padding).
 GAIA_XMATCH_RADIUS_QUERY = """
 SELECT u.rec_id, g.source_id, g.ra, g.dec, g.pmra, g.pmdec, g.phot_g_mean_mag
 FROM tap_upload.pending AS u
-JOIN gaiadr3.gaia_source AS g
+JOIN gaiadr3.gaia_source_lite AS g
   ON 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', u.ra, u.dec, {radius_deg}))
 """
 
@@ -215,6 +247,19 @@ class Candidate:
 
 def faintness_ceiling_mag(archive_code: str) -> float:
     return ARCHIVE_FAINTNESS_CEILING_MAG.get(archive_code, DEFAULT_FAINTNESS_CEILING_MAG)
+
+
+def _sky_bucket(ra: float, dec: float) -> tuple[int, int]:
+    """See GAIA_QUERY_SKY_BUCKET_DEG -- a coarse grouping key only, purely
+    for query-batching locality, never a search boundary: every record still
+    gets its own precise CONTAINS/CIRCLE search regardless of which bucket
+    it lands in, so a record can never be missed by landing in the "wrong"
+    bucket. The one known imprecision is the RA=0/360 seam (a point at
+    359.9 and one at 0.1 are ~0.2 deg apart on sky but land in different
+    buckets) -- harmless for the same reason, just a missed locality
+    grouping for that pair, not a missed match.
+    """
+    return (int(ra // GAIA_QUERY_SKY_BUCKET_DEG), int(dec // GAIA_QUERY_SKY_BUCKET_DEG))
 
 
 def pick_best_candidate(archive_code: str, candidates: list[Candidate]) -> tuple[Candidate | None, str]:
@@ -375,15 +420,25 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
         years_from_gaia_epoch = abs(r.obs_date.year - matcher.GAIA_DR3_REF_EPOCH)
         epoch_buckets[int(years_from_gaia_epoch // GAIA_QUERY_TIME_BUCKET_YEARS)].append(i)
 
+    # Sky-position bucketing nested underneath the epoch bucketing (see
+    # GAIA_QUERY_SKY_BUCKET_DEG) -- groups each epoch bucket's records by
+    # coarse (RA, Dec) cell before querying, so one Gaia round-trip searches
+    # a spatially clustered batch of points instead of one scattered across
+    # the whole sky.
     live_hits_raw: dict[int, list[tuple]] = {}
-    for idxs in epoch_buckets.values():
-        bucket_records = [positional[i] for i in idxs]
-        bucket_max_years = max(
-            abs(matcher._to_jyear(r.obs_date) - matcher.GAIA_DR3_REF_EPOCH) for r in bucket_records
-        )
-        bucket_hits = _gaia_cone_search_batch(bucket_records, SHITTY_MATCH_RADIUS_ARCSEC, bucket_max_years)
-        for local_rec_id, hits in bucket_hits.items():
-            live_hits_raw[idxs[local_rec_id]] = hits
+    for epoch_idxs in epoch_buckets.values():
+        sky_buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
+        for i in epoch_idxs:
+            sky_buckets[_sky_bucket(positional[i].ra, positional[i].dec)].append(i)
+
+        for idxs in sky_buckets.values():
+            bucket_records = [positional[i] for i in idxs]
+            bucket_max_years = max(
+                abs(matcher._to_jyear(r.obs_date) - matcher.GAIA_DR3_REF_EPOCH) for r in bucket_records
+            )
+            bucket_hits = _gaia_cone_search_batch(bucket_records, SHITTY_MATCH_RADIUS_ARCSEC, bucket_max_years)
+            for local_rec_id, hits in bucket_hits.items():
+                live_hits_raw[idxs[local_rec_id]] = hits
 
     # Dedup live candidates by gaia_source_id across the whole batch (the
     # same nearby star can show up as a raw candidate for many records) so

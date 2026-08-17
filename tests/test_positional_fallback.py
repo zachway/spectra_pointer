@@ -202,13 +202,16 @@ def test_gaia_query_buckets_are_symmetric_around_gaia_epoch(conn, monkeypatch):
 
     monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
 
+    # Same sky position for both -- isolating epoch-bucketing behavior from
+    # the separate sky-position bucketing (see GAIA_QUERY_SKY_BUCKET_DEG),
+    # which would otherwise also split these into two buckets/queries.
     before = RawObservation(
         archive_obs_id="sym-before", archive_url="http://example.test/sym-before",
         ra=50.0, dec=20.0, obs_date=date(2010, 1, 1),  # 6 years before 2016.0
     )
     after = RawObservation(
         archive_obs_id="sym-after", archive_url="http://example.test/sym-after",
-        ra=60.0, dec=30.0, obs_date=date(2022, 1, 1),  # 6 years after 2016.0
+        ra=50.0, dec=20.0, obs_date=date(2022, 1, 1),  # 6 years after 2016.0
     )
     run_shitty_positional_match(conn, "unit_test", [before, after])
 
@@ -288,3 +291,53 @@ def test_launch_gaia_upload_job_raises_on_error_phase(monkeypatch):
 
     with pytest.raises(RuntimeError, match="ERROR"):
         positional_fallback._launch_gaia_upload_job("SELECT 1", Table(), "pending")
+
+
+def test_gaia_queries_are_bucketed_by_sky_position_within_an_epoch_bucket(conn, monkeypatch):
+    """Two records in the same epoch bucket but far apart on the sky should
+    still split into separate Gaia queries -- sky bucketing nests underneath
+    epoch bucketing, it doesn't replace it."""
+    calls = []
+
+    def fake_cone_search(records, radius_arcsec, max_years):
+        calls.append([(r.ra, r.dec) for r in records])
+        return {}
+
+    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+
+    same_epoch_near = RawObservation(
+        archive_obs_id="sky-a", archive_url="http://example.test/sky-a",
+        ra=10.0, dec=10.0, obs_date=date(2020, 1, 1),
+    )
+    same_epoch_far = RawObservation(
+        archive_obs_id="sky-b", archive_url="http://example.test/sky-b",
+        ra=200.0, dec=-40.0, obs_date=date(2020, 1, 1),  # same epoch, far away on sky
+    )
+    run_shitty_positional_match(conn, "unit_test", [same_epoch_near, same_epoch_far])
+
+    assert len(calls) == 2, "same epoch bucket but different sky buckets should still be separate queries"
+    assert {tuple(c) for c in calls} == {((10.0, 10.0),), ((200.0, -40.0),)}
+
+
+def test_gaia_queries_merge_nearby_records_in_same_sky_bucket(conn, monkeypatch):
+    """Two records close together on the sky, in the same epoch bucket,
+    should share one Gaia query."""
+    calls = []
+
+    def fake_cone_search(records, radius_arcsec, max_years):
+        calls.append(len(records))
+        return {}
+
+    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+
+    a = RawObservation(
+        archive_obs_id="near-a", archive_url="http://example.test/near-a",
+        ra=10.1, dec=10.1, obs_date=date(2020, 1, 1),
+    )
+    b = RawObservation(
+        archive_obs_id="near-b", archive_url="http://example.test/near-b",
+        ra=10.2, dec=10.2, obs_date=date(2020, 3, 1),  # same epoch bucket, close on sky
+    )
+    run_shitty_positional_match(conn, "unit_test", [a, b])
+
+    assert calls == [2]
