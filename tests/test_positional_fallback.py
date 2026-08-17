@@ -239,3 +239,52 @@ def test_gaia_query_buckets_split_calendar_adjacent_but_epoch_distant_records(co
     run_shitty_positional_match(conn, "unit_test", [near, far])
 
     assert sorted(calls) == pytest.approx([1, 21], abs=0.01)
+
+
+class _FakePhaseJob:
+    """Simulates a real astroquery Job's phase transitions for testing
+    _launch_gaia_upload_job's polling loop without touching the network."""
+
+    def __init__(self, phases, jobid="fake-job-1"):
+        self._phases = list(phases)
+        self.jobid = jobid
+        self._phase = "EXECUTING"
+
+    def is_finished(self):
+        return self._phase in ("ERROR", "ABORTED", "COMPLETED")
+
+    def get_phase(self, update=False):
+        if update and self._phases:
+            self._phase = self._phases.pop(0)
+        return self._phase
+
+    def get_results(self):
+        return Table({"rec_id": [], "source_id": [], "ra": [], "dec": [], "pmra": [], "pmdec": [], "phot_g_mean_mag": []})
+
+
+def test_launch_gaia_upload_job_polls_until_completed(monkeypatch):
+    job = _FakePhaseJob(["QUEUED", "EXECUTING", "COMPLETED"])
+    monkeypatch.setattr(
+        positional_fallback.Gaia, "launch_job_async",
+        lambda query, upload_resource, upload_table_name, background: job,
+    )
+    sleeps = []
+    monkeypatch.setattr(positional_fallback.time, "sleep", lambda s: sleeps.append(s))
+
+    result = positional_fallback._launch_gaia_upload_job("SELECT 1", Table(), "pending")
+
+    assert result is job
+    assert len(sleeps) == 2  # polled between QUEUED->EXECUTING and EXECUTING->COMPLETED
+
+
+def test_launch_gaia_upload_job_raises_on_error_phase(monkeypatch):
+    job = _FakePhaseJob(["QUEUED", "ERROR"])
+    monkeypatch.setattr(
+        positional_fallback.Gaia, "launch_job_async",
+        lambda query, upload_resource, upload_table_name, background: job,
+    )
+    monkeypatch.setattr(positional_fallback.time, "sleep", lambda s: None)
+    monkeypatch.setattr(positional_fallback, "GAIA_LAUNCH_JOB_ATTEMPTS", 1)
+
+    with pytest.raises(RuntimeError, match="ERROR"):
+        positional_fallback._launch_gaia_upload_job("SELECT 1", Table(), "pending")
