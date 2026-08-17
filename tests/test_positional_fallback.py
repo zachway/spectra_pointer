@@ -152,3 +152,90 @@ def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeyp
     assert method == "shitty_positional_match"
     assert status == "needs_review"  # never 'matched', by design
     assert theta == pytest.approx(5.0)
+
+
+def test_gaia_queries_are_bucketed_by_decade_not_worst_case_for_whole_chunk(conn, monkeypatch):
+    """A chunk spanning two decades should issue one Gaia query per decade
+    bucket, each padded only for its own records' epoch spread -- not one
+    query padded for the single oldest record in the whole chunk.
+    """
+    calls = []
+
+    def fake_cone_search(records, radius_arcsec, max_years):
+        calls.append((len(records), max_years))
+        return {}
+
+    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+
+    recent = RawObservation(
+        archive_obs_id="bucket-recent", archive_url="http://example.test/bucket-recent",
+        ra=50.0, dec=20.0, obs_date=date(2020, 1, 1),
+    )
+    old = RawObservation(
+        archive_obs_id="bucket-old", archive_url="http://example.test/bucket-old",
+        ra=60.0, dec=30.0, obs_date=date(1986, 1, 1),
+    )
+    run_shitty_positional_match(conn, "unit_test", [recent, old])
+
+    assert len(calls) == 2, "expected one Gaia query per decade bucket, not one for the whole chunk"
+    sizes_and_years = sorted(calls, key=lambda c: c[1])
+    (_, small_max_years), (_, big_max_years) = sizes_and_years
+    # The recent (2020) record's own padding should be small (~4 years from
+    # Gaia's 2016.0 epoch), nowhere near the old (1986) record's ~30 years --
+    # the whole point of bucketing is that the recent record's query isn't
+    # forced to pay for the old one's much wider drift budget.
+    assert small_max_years < 10
+    assert big_max_years > 25
+
+
+def test_gaia_query_buckets_are_symmetric_around_gaia_epoch(conn, monkeypatch):
+    """Records equally far before vs. after Gaia's 2016.0 epoch need
+    identical padding and should share one bucket/query -- calendar-decade
+    bucketing would miss this (2010 and 2022 are both ~6 years from 2016.0
+    but fall in different calendar decades).
+    """
+    calls = []
+
+    def fake_cone_search(records, radius_arcsec, max_years):
+        calls.append(len(records))
+        return {}
+
+    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+
+    before = RawObservation(
+        archive_obs_id="sym-before", archive_url="http://example.test/sym-before",
+        ra=50.0, dec=20.0, obs_date=date(2010, 1, 1),  # 6 years before 2016.0
+    )
+    after = RawObservation(
+        archive_obs_id="sym-after", archive_url="http://example.test/sym-after",
+        ra=60.0, dec=30.0, obs_date=date(2022, 1, 1),  # 6 years after 2016.0
+    )
+    run_shitty_positional_match(conn, "unit_test", [before, after])
+
+    assert calls == [2], "both records are ~6 years from the Gaia epoch and should share one query"
+
+
+def test_gaia_query_buckets_split_calendar_adjacent_but_epoch_distant_records(conn, monkeypatch):
+    """2019 and 2020 are calendar-adjacent but a naive calendar-decade
+    bucket would still split e.g. 2009/2020 despite both being far from
+    2016.0 in the same direction -- confirm distance-from-epoch, not
+    calendar year, drives bucketing."""
+    calls = []
+
+    def fake_cone_search(records, radius_arcsec, max_years):
+        calls.append(max_years)
+        return {}
+
+    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+
+    near = RawObservation(
+        archive_obs_id="near-epoch", archive_url="http://example.test/near-epoch",
+        ra=50.0, dec=20.0, obs_date=date(2017, 1, 1),  # 1 year from 2016.0
+    )
+    far = RawObservation(
+        archive_obs_id="far-epoch", archive_url="http://example.test/far-epoch",
+        ra=60.0, dec=30.0, obs_date=date(1995, 1, 1),  # 21 years from 2016.0
+    )
+    run_shitty_positional_match(conn, "unit_test", [near, far])
+
+    assert sorted(calls) == pytest.approx([1, 21], abs=0.01)

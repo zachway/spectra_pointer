@@ -88,6 +88,14 @@ logger = logging.getLogger(__name__)
 # full 2' this was explored out to.
 SHITTY_MATCH_RADIUS_ARCSEC = 60.0
 
+# How coarsely to bucket a chunk's records by observation year before sizing
+# each bucket's own PM-padded live-Gaia search radius (see run_shitty_
+# positional_match) -- confirmed live 2026-08-17 this matters in practice:
+# dao's backlog alone spans 1986-2026, and a single flat max_years across
+# that whole range pads the search radius to ~369" (6.1') for every record,
+# not just the handful actually that old.
+GAIA_QUERY_TIME_BUCKET_YEARS = 10
+
 # See module docstring point 4. Confirmed live against this project's own
 # data (2026-08-17): ~32% of records with 2+ candidates within 2' clear this
 # gap -- a real, non-trivial population, not noise.
@@ -317,13 +325,34 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
             ids, propagated = matcher._propagate(propagate_rows, epoch)
             propagated_by_epoch_and_star[epoch] = dict(zip(ids, propagated))
 
-    # Coarse, padded fetch (see _gaia_cone_search_batch) -- max_years sizes
-    # the query's own search radius to the batch's worst-case epoch baseline
-    # (matcher.GAIA_DR3_REF_EPOCH is Gaia DR3's fixed 2016.0 for every
-    # source, so this is knowable before any query runs, same reasoning as
-    # matcher.match_records's own radius_deg sizing).
-    max_years = max(abs(epoch - matcher.GAIA_DR3_REF_EPOCH) for epoch in by_epoch)
-    live_hits_raw = _gaia_cone_search_batch(positional, SHITTY_MATCH_RADIUS_ARCSEC, max_years)
+    # Coarse, padded fetch (see _gaia_cone_search_batch) -- bucketed by
+    # distance from Gaia DR3's own fixed 2016.0 epoch, not by calendar
+    # decade. A single worst-case radius forces every record to pay for
+    # whichever one observation in the chunk happens to be oldest --
+    # confirmed live: dao's own backlog spans 1986-2026, padding the search
+    # radius to ~369" (6.1', ~36x the unpadded area) for every record in a
+    # chunk even though most of them are far more recent and need much
+    # less. Bucketing by *calendar* decade would still needlessly split,
+    # e.g., a 2019 and a 2020 record into separate buckets/queries despite
+    # both being only ~3-4 years from 2016.0 -- and wouldn't exploit that
+    # padding is symmetric (a record 6 years before 2016 needs exactly the
+    # padding as one 6 years after). Bucketing by |year - 2016| in fixed-
+    # width tiers instead groups by what actually drives the padding, while
+    # still bounding the extra Gaia round-trips per chunk to a handful.
+    epoch_buckets: dict[int, list[int]] = defaultdict(list)
+    for i, r in enumerate(positional):
+        years_from_gaia_epoch = abs(r.obs_date.year - matcher.GAIA_DR3_REF_EPOCH)
+        epoch_buckets[int(years_from_gaia_epoch // GAIA_QUERY_TIME_BUCKET_YEARS)].append(i)
+
+    live_hits_raw: dict[int, list[tuple]] = {}
+    for idxs in epoch_buckets.values():
+        bucket_records = [positional[i] for i in idxs]
+        bucket_max_years = max(
+            abs(matcher._to_jyear(r.obs_date) - matcher.GAIA_DR3_REF_EPOCH) for r in bucket_records
+        )
+        bucket_hits = _gaia_cone_search_batch(bucket_records, SHITTY_MATCH_RADIUS_ARCSEC, bucket_max_years)
+        for local_rec_id, hits in bucket_hits.items():
+            live_hits_raw[idxs[local_rec_id]] = hits
 
     # Dedup live candidates by gaia_source_id across the whole batch (the
     # same nearby star can show up as a raw candidate for many records) so
