@@ -120,6 +120,7 @@ CREATE TABLE spectroscopy_holdings (
                              'direct_gaia_column',   -- archive already carries Gaia source_id
                              'name_resolved',         -- archive's target_name matched a tracked star's SIMBAD alias
                              'positional_easy_match', -- tight-radius, single-candidate match
+                             'shitty_positional_match', -- wide-radius, brightness-disambiguated fallback -- always needs_review, see sync/positional_fallback.py
                              'lr_matched',            -- full likelihood-ratio match (not built yet)
                              'manual'
                          )),
