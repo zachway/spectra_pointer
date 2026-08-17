@@ -1820,6 +1820,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('Gemini Observatory Archive — IGRINS', 'IGRINS'): 'R ≈ 45,000',
     ('HARPS-N (TNG)', 'HARPS-N'): 'R ≈ 115,000',
     ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): 'R ≈ 25,000–86,000 (mode-dependent)',
+    ('HEROS at Ondrejov', 'HEROS (Ondrejov)'): 'R ≈ 20,000',
+    ('HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)', 'HPOL'): 'R ≈ 130–1,050 (era/channel-dependent; Reticon 1989-94, CCD 1995+)',
     ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): 'R ≈ 85,000',
     ('IACOB Spectroscopic Database (IAC)', 'NOT'): 'R ≈ 25,000–67,000 (FIES mode-dependent)',
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): 'R ≈ 600–8,000 (grating-dependent)',
@@ -1854,6 +1856,15 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('Las Cumbres Observatory -- NRES', 'NRES'): 'R ≈ 48,000–53,000',
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): 'R ≈ 100,000',
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): 'R ≈ 600–2,000 (Kast, grating-dependent)',
+    ('MAST', 'LWP'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE)',
+    ('MAST', 'SWP'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE)',
+    ('MAST', 'LWR'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE — LWP\'s pre-1983 predecessor camera, same optics)',
+    ('MAST', 'ASTRO-1 WUPPE'): 'R ≈ 230–530 (~6 Å resolution element, Astro-1 shuttle mission)',
+    ('MAST', 'ASTRO-2 WUPPE'): 'R ≈ 230–530 (~6 Å resolution element, Astro-2 shuttle mission)',
+    ('MAST', 'BEFS'): 'R ≈ 3,000 (ORFEUS-SPAS)',
+    ('MAST', 'TUES'): 'R ≈ 10,000–13,000 (ORFEUS-SPAS echelle)',
+    ('MAST', 'FUV'): 'R ≈ 300–620 (~3 Å resolution element, HUT)',
+    ('MAST', 'DS/S'): 'R ≈ 200–400 (EUVE Deep Survey/Spectrometer, SW/MW/LW channels combined)',
     ('MAST', 'WFC3/IR'): 'R ≈ 130 (grism mode)',
     ('MAST', 'COS/FUV'): 'R ≈ 2,400–24,000 (grating-dependent)',
     ('MAST', 'STIS/CCD'): 'R ≈ 500–114,000 (mode-dependent)',
@@ -1912,6 +1923,8 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'SPIRou'): 'R ≈ 70,000',
     ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'HARPSpol'): 'R ≈ 115,000',
     ('RAVE', 'RAVE'): 'R ≈ 7,500',
+    ('Ritter Observatory (PREST)', 'Ritter Echelle'): 'R ≈ 26,000 (H-alpha region, both CCD camera generations; briefly R ≈ 50,000 in 1997 with a narrower slit)',
+    ('Ritter Observatory (PREST)', 'Ritter LDS'): 'R ≈ 1,000–6,000 (grating-dependent; R ≈ 6,000 default)',
     ('SALT HRS (SAAO SSDA)', 'HRS'): 'R ≈ 15,000–65,000 (LR/MR/HR/HS mode)',
     ('SDSS Legacy Optical', 'SDSS/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
     ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
@@ -2043,6 +2056,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('Gemini Observatory Archive — IGRINS', 'IGRINS'): (1450, 2450),
     ('HARPS-N (TNG)', 'HARPS-N'): (383, 693),
     ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): (377, 900),
+    ('HEROS at Ondrejov', 'HEROS (Ondrejov)'): (350, 870),
+    ('HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)', 'HPOL'): (320, 1050),
     ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): (377, 900),
     ('IACOB Spectroscopic Database (IAC)', 'NOT'): (370, 830),
     ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): (500, 1000),
@@ -2077,6 +2092,15 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('Las Cumbres Observatory -- NRES', 'NRES'): (380, 860),
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): (374, 970),
     ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): (330, 1000),
+    ('MAST', 'LWP'): (185, 335),
+    ('MAST', 'SWP'): (115, 198),
+    ('MAST', 'LWR'): (185, 335),
+    ('MAST', 'ASTRO-1 WUPPE'): (140, 320),
+    ('MAST', 'ASTRO-2 WUPPE'): (140, 320),
+    ('MAST', 'BEFS'): (40, 120),
+    ('MAST', 'TUES'): (91, 141),
+    ('MAST', 'FUV'): (91.2, 185),
+    ('MAST', 'DS/S'): (7.0, 76.0),
     ('MAST', 'WFC3/IR'): (800, 1700),
     ('MAST', 'COS/FUV'): (90, 205),
     ('MAST', 'STIS/CCD'): (164, 1030),
@@ -2126,6 +2150,8 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'SPIRou'): (980, 2350),
     ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'HARPSpol'): (378, 691),
     ('RAVE', 'RAVE'): (841, 879),
+    ('Ritter Observatory (PREST)', 'Ritter Echelle'): (410, 683),
+    ('Ritter Observatory (PREST)', 'Ritter LDS'): (610, 670),
     ('SALT HRS (SAAO SSDA)', 'HRS'): (370, 890),
     ('SDSS Legacy Optical', 'SDSS/BOSS'): (360, 1040),
     ('SDSS-V — APOGEE', 'APOGEE'): (1514, 1696),
@@ -2350,7 +2376,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'RAVE': 'https://www.rave-survey.org/',
     'CARMENES': 'http://carmenes.cab.inta-csic.es/',
     'CARMENES (CAHA archive, VIS+NIR)': 'https://caha.sdc.cab.inta-csic.es/',
-    'LBT — PEPSI, MODS, LUCI': 'https://archive.lbto.org/',
+    'LBT — PEPSI': 'https://archive.lbto.org/',
     'Lick / Mt. Hamilton (Shane + APF)': 'https://mthamilton.ucolick.org/',
     'FEROS Public Spectra (GAVO)': 'https://dc.g-vo.org/',
     'Flash/Heros Public Spectra (GAVO)': 'https://dc.g-vo.org/',
@@ -2380,6 +2406,9 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'SVO CAB Stellar Libraries': 'http://svo2.cab.inta-csic.es/',
     'IRSA Space-Mission Stellar Collections': 'https://irsa.ipac.caltech.edu/',
     'XMM-Newton RGS': 'https://nxsa.esac.esa.int/',
+    'HEROS at Ondrejov': 'http://vos2.asu.cas.cz/',
+    'HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)': 'https://archive.stsci.edu/hpol/',
+    'Ritter Observatory (PREST)': 'https://astro1.panet.utoledo.edu/~wwritter/archive/',
 }
 
 INSTRUMENTS_TEMPLATE = """
@@ -3789,6 +3818,21 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     "astroarchive.noirlab.edu", "oirsa.cfa.harvard.edu:8080",
     "ssda.saao.ac.za", "dr19.sdss.org", "skyserver.sdss.org",
     "data.sdss.org",
+    # Below: found missing via a live audit against every archive_code's
+    # actual sampled archive_url host (2026-08-17) -- this set had fallen
+    # out of sync with the real host list as archives were added, silently
+    # disabling the triage "view headers" link for ~22 archives (a UX gap,
+    # not a security hole -- the allowlist defaults closed). Each host
+    # verified against its own sync/archives/*.py module's TAP_URL/BASE_URL/
+    # SEARCH_URL/etc. before being added here.
+    "basebe.obspm.fr", "carmenes.cab.inta-csic.es", "cda.harvard.edu",
+    "data.desi.lbl.gov", "gea.esac.esa.int", "vos2.asu.cas.cz",
+    "archive.stsci.edu", "cloud.iac.es", "irsa.ipac.caltech.edu",
+    "irtfdata.ifa.hawaii.edu", "archive-api.lco.global",
+    "neid.ipac.caltech.edu", "www.not.iac.es", "voarchive.asu.cas.cz",
+    "www.polarbase.ovgso.fr", "cdsarc.cds.unistra.fr",
+    "astro1.panet.utoledo.edu", "svocats.cab.inta-csic.es",
+    "nxsa.esac.esa.int",
 }
 
 _FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks
