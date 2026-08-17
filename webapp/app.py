@@ -85,7 +85,7 @@ if _REDIRECT_BASE_URL:
 </head>
 <body>
   <h1>This site has moved</h1>
-  <p>Spectra Database has been renamed <strong>The Spectra Pointer</strong>
+  <p>Spectra Database has been renamed <b>The Spectra Pointer</b>
     and now lives at a new address:</p>
   <p><a href="{target}">{target}</a></p>
   <p class="note">This address ({_REDIRECT_BASE_URL}) will be taken offline
@@ -602,6 +602,7 @@ SHARED_STYLE = """
     dd { margin: 0; }
     table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
     th, td { text-align: left; padding: 0.3rem 0.5rem; border-bottom: 1px solid #000; }
+    table.compact th, table.compact td { padding: 0.15rem 0.4rem; font-size: 0.85rem; }
     a { color: #000; }
     .error { font-weight: bold; border: 1px solid #000; padding: 0.5rem; }
     .note { font-style: italic; }
@@ -649,8 +650,8 @@ PAGE_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">A numeric search is interpreted as a Gaia source_id or a Bright Star Catalogue (HR) number.</p>
-  <p class="note"><b>This webapp is under active development! If you find bugs or want features please file an issue <a href="https://github.com/zachway/spectra_pointer"> here </a> or email me at zway1 [at] gsu.edu </b></p>
+  <p class="note">A numeric search is read as a Gaia source_id or Bright Star Catalogue (HR) number.</p>
+  <p class="note">Under active development — file bugs or feature requests <a href="https://github.com/zachway/spectra_pointer">on GitHub</a> or email zway1 [at] gsu.edu.</p>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit" name="mode" value="name">Search</button>
@@ -667,14 +668,14 @@ PAGE_TEMPLATE = """
       <button type="submit" name="mode" value="radius">Search radius</button>
       <label class="unmatched-toggle">
         <input type="checkbox" name="search_unmatched" value="1"{{ " checked" if search_unmatched else "" }}>
-        Search unmatched records (<span class="caveat-tip" tabindex="0" title="Includes records we could NOT confidently match to a known star, alongside ones we could -- check the Match status column. Scans far more data than the search above and will be noticeably slower. Names and positions are exactly as reported by the source archive, unverified by us, and may be inaccurate or junk -- especially for skipped/needs-review rows.">hover/click for caveats</span>)
+        Search unmatched records (<span class="caveat-tip" tabindex="0" title="Includes records not confidently matched to a known star (see Match status), alongside matched ones. Slower -- scans much more data. Names/positions are exactly as reported by the archive, unverified, and can be inaccurate for skipped/needs-review rows.">hover/click for caveats</span>)
       </label>
     </div>
 
     <details class="advanced-search">
       <summary>Advanced search</summary>
-      <p class="note">Narrows whichever search you run above (by name/ID or by sky position) to spectra from a
-        specific archive, instrument, resolving-power range, wavelength range, and/or reduction status.</p>
+      <p class="note">Narrows either search above to a specific archive, instrument, resolving-power range,
+        wavelength range, and/or reduction status.</p>
       <div class="advanced-grid">
         <label>Archive
           <select name="adv_archive" id="adv-archive">
@@ -713,10 +714,9 @@ PAGE_TEMPLATE = """
           <input type="number" name="adv_wave_max" id="adv-wave-max" value="{{ adv_wave_max }}" placeholder="e.g. 900">
         </label>
       </div>
-      <p class="note">Resolving powers are hand-compiled per-instrument averages/typical values -- often spanning
-        several gratings or modes -- taken from each instrument's published specs, not a per-observation
-        measurement. Treat a range match as approximate, not authoritative for any single spectrum; see the
-        <a href="/instruments">Instruments</a> tab for each instrument's full source range.</p>
+      <p class="note">Resolving powers are hand-compiled per-instrument typical values from published specs
+        (often spanning several gratings/modes), not per-observation measurements. Treat a match as approximate;
+        see the <a href="/instruments">Instruments</a> tab for each instrument's full range.</p>
     </details>
   </form>
   <script>
@@ -773,9 +773,9 @@ PAGE_TEMPLATE = """
         {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if search_unmatched %}&amp;search_unmatched=1{% endif %}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
       </p>
       {% if radial_results %}
-      <table>
+      <table{% if search_unmatched %} class="compact"{% endif %}>
         {% if search_unmatched %}
-        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Match status</th><th>Link</th></tr>
+        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Status</th><th>Link</th></tr>
         {% for r in radial_results %}
         <tr>
           <td>{{ r.archive_display_name }}</td>
@@ -902,8 +902,9 @@ PAGE_TEMPLATE = """
   <hr>
 
   <h2>Batch lookup</h2>
-  <p class="note">Paste or upload a list of Gaia source_ids and/or star names, one per line. Name lookups (anything non-numeric) are capped at {{ max_name_lookups }} per batch; source_id lookups are not.
-    {% if adv_active %}The advanced search filters set above apply here too -- "Holdings" below counts only matching observations.{% endif %}</p>
+  <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
+    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't.
+    {% if adv_active %}Advanced filters above apply here too -- "Holdings" counts only matching observations.{% endif %}</p>
   <form method="post" action="batch" enctype="multipart/form-data" id="batch-form">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
@@ -1436,7 +1437,7 @@ LEADERBOARD_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">Fixed 6-month periods. At each period, two top-10 lists are computed: the 10 stars with the most cumulative (all-time-so-far) observations, and the 10 with the most observations within that period alone. Every star that ever broke into either list, at any period, gets a line in both charts below — so there can be more than 10 lines total, and a line can start partway through the timeline (whenever that star first qualified) and stop appearing again once it drops out of that period's top 10, rather than dragging a stale line across the whole chart. Only counts holdings with a known observation date — some archives (DESI, SDSS-V) don't report per-observation dates at all, so a star's true total (see Stats below) can be higher than what's reflected here. Log scale, so a period with zero observations for a star just leaves a gap rather than a dip to zero.</p>
+  <p class="note">Fixed 6-month periods. Each period computes two top-10 lists: most cumulative (all-time) observations, and most observations within that period alone. Any star that ever made either list gets a line below, appearing only for the periods it qualified — not dragged across the whole timeline. Only dated holdings count; DESI and SDSS-V report no per-observation dates, so a star's true total (see Stats below) can be higher. Log scale: zero observations in a period shows as a gap, not a dip to zero.</p>
   <h2>Cumulative observations</h2>
   {% if cumulative_traces %}
     <div id="cumulative-plot"></div>
@@ -1515,7 +1516,7 @@ LEADERBOARD_TEMPLATE = """
       {% endfor %}
     </table>
   {% else %}
-    <p class="note">Nothing in the last {{ trending_years }} years yet — most tracked holdings are decades-old archival spectra, and the bulk direct-Gaia-column archives (DESI, SDSS-V) don't carry per-observation dates at all, so "trending" will stay sparse until enough recently-dated archives (ESO, MAST, KOA, NOIRLab) are synced.</p>
+    <p class="note">Nothing in the last {{ trending_years }} years yet — most holdings are decades-old archival spectra, and DESI/SDSS-V carry no per-observation dates, so this stays sparse until more recently-dated archives (ESO, MAST, KOA, NOIRLab) sync.</p>
   {% endif %}
 
   <h3>Holdings by archive</h3>
@@ -2427,7 +2428,7 @@ INSTRUMENTS_TEMPLATE = """
 
   <hr>
   <h2>Tracked instruments</h2>
-  <p class="note">Every distinct instrument name seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) for each -- hand-maintained from published instrument specs, not derived from the database. A star can have no spectrum from a listed instrument and still be correctly tracked -- this only says the instrument is covered by the sync, not that every star has data from it. Many spectrographs offer several gratings or modes with different R; a range is shown where that's the common case rather than picking one mode arbitrarily. "n/a" marks instruments that are primarily imagers; "&mdash;" marks ones not yet looked up.</p>
+  <p class="note">Every instrument seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) hand-maintained from published specs, not derived from the database. This says the instrument is covered by the sync, not that every star has data from it. A range is shown where R varies by grating/mode. "n/a" marks imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
   <details>
     <summary class="summary-row">
@@ -2445,7 +2446,7 @@ INSTRUMENTS_TEMPLATE = """
 
   <hr>
   <h2>Where each instrument points</h2>
-  <p class="note">A sample of up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the {{ top_n }} instruments with the most of them, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage (northern vs. southern observatories, survey footprints, pointed vs. all-sky programs). Click a legend entry to isolate one instrument.</p>
+  <p class="note">Up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the top {{ top_n }} instruments, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage. Click a legend entry to isolate one.</p>
   {% if instrument_sky_fig %}
     <div id="instrument-sky"></div>
     <script>
@@ -2459,7 +2460,7 @@ INSTRUMENTS_TEMPLATE = """
   <hr>
   <h2>Star overlap between archives</h2>
   {% if archive_items|length >= 2 %}
-  <p class="note">How many stars have spectra from more than one source. "Archives" is the coarse view (which observatories/surveys share targets); "Instruments" breaks archives that host several instruments (e.g. Gemini, KOA) apart -- e.g. HARPS vs. HARPS-N vs. ELODIE. The heatmap shows every pair at once (color = # shared stars; the diagonal, unshaded, is each set's own total). Below it, pick 2 or 3 sets for an exact, proportionally-sized Venn diagram.</p>
+  <p class="note">How many stars have spectra from more than one source. "Archives" is the coarse view; "Instruments" splits multi-instrument archives apart (e.g. HARPS vs. HARPS-N vs. ELODIE). The heatmap shows every pair at once (color = shared stars; the diagonal is each set's own total). Pick 2-3 sets below for a proportional Venn diagram.</p>
   <div class="overlap-controls">
     <button type="button" class="granularity-btn active" id="granularity-archives" onclick="setOverlapGranularity('archives')">Archives</button>
     <button type="button" class="granularity-btn" id="granularity-instruments" onclick="setOverlapGranularity('instruments')">Instruments</button>
@@ -3012,10 +3013,10 @@ ARCHIVE_STATUS_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">Per-archive sync status, observation date coverage, and match breakdown, precomputed at export time (see the Leaderboard tab note on why) -- refreshed whenever the hosted snapshot is next published, not live. "Last synced" is when this archive's sync last completed a page here, not when the data itself was observed -- for an archive mid-resync when this snapshot was taken, treat its numbers as a work-in-progress, not a final count. "Needs review" and "Skipped" are not dropped -- see More Info for what those mean and how to help resolve them. See the Instruments tab for the per-archive instrument breakdown, including resolving power.</p>
-  <table>
+  <p class="note">Per-archive sync status, date coverage, and match breakdown, precomputed at export time -- refreshed with each snapshot publish, not live. "Last synced" is when the sync last completed a page, not when the data was observed; an archive mid-resync should be read as a work in progress. "Needs review" and "Skipped" aren't dropped -- see More Info for what those mean. See Instruments for the per-archive resolving-power breakdown.</p>
+  <table class="compact">
     <tr>
-      <th>Archive</th><th>Last synced</th><th>Status</th><th>Observations span</th><th>Total</th>
+      <th>Archive</th><th>Synced</th><th>Status</th><th>Span</th><th>Total</th>
       {% for label in category_labels %}<th>{{ label }}</th>{% endfor %}
     </tr>
     {% for a in archives %}
@@ -3032,7 +3033,7 @@ ARCHIVE_STATUS_TEMPLATE = """
 
   <hr>
   <h2>Known gaps</h2>
-  <p class="note">Spectrographs known to exist at an already-implemented archive (or whole archives) that aren't tracked yet -- hand-maintained, not derived from the database. Most rows below come from an exhaustive pass over Wikipedia's full list of ~595 ground-based observatories plus a VO registry sweep, checking each one directly rather than trusting a search summary; every candidate that cleared the bar has already shipped as its own archive module. See More Info for the broader "pointer database" scope note.</p>
+  <p class="note">Spectrographs known to exist at an already-implemented archive (or whole archives) that aren't tracked yet -- hand-maintained, not derived from the database. Most rows come from an exhaustive pass over Wikipedia's list of ~595 ground-based observatories plus a VO registry sweep, checking each directly rather than trusting a search summary; every candidate that cleared the bar has already shipped as its own archive module. See More Info for the broader "pointer database" scope note.</p>
   <table>
     <tr><th>Archive</th><th>Not yet tracked</th><th>Why</th></tr>
     {% for archive, missing, why in not_yet_tracked %}
@@ -3119,7 +3120,7 @@ INFO_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Who's using The Spectra Pointer?</h2>
-  <p class="note">Country-level counts derived from Cloud Run's own request logs — the client IP address on each request, geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept, and Google's own Cloud Logging — not this project — deletes the underlying request logs after 30 days regardless. Counts include every client that requested the site (browsers, crawlers, uptime checks that weren't filtered out as internal/private traffic), not just human visitors, so treat this as roughly indicative rather than precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
+  <p class="note">Country-level counts derived from Cloud Run's request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept, and Google's own Cloud Logging deletes the underlying request logs after 30 days regardless. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
   {% if access_heatmap_countries %}
     <div id="access-heatmap-plot" style="width: 100%; height: 450px;"></div>
     <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries.</p>
@@ -3165,7 +3166,7 @@ INFO_TEMPLATE = """
   <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
   <ol>
     <li><b>direct_gaia_column</b> — the archive already reports a Gaia DR3 source_id for the record (e.g. DESI, LAMOST, GALAH, SDSS-V). This is just a lookup against the tracked-star list, not a positional or name match, so it's the most reliable method.</li>
-    <li><b>name_resolved</b> — no Gaia column, but the archive's reported target name matches one of a tracked star's cached SIMBAD aliases. Tried <i>before</i> position deliberately: Gaia's single-star astrometric solution can be biased for close visual binaries, which can break a positional match even with otherwise-correct proper motion — an identifier match sidesteps that failure mode entirely. Still sanity-checked against the record's own reported position when one is present (within 10 arcmin) — a name match whose own position is nowhere near that star falls through to positional matching instead of being trusted blindly.</li>
+    <li><b>name_resolved</b> — no Gaia column, but the archive's reported target name matches one of a tracked star's cached SIMBAD aliases. Tried <b>before</b> position deliberately: Gaia's single-star astrometric solution can be biased for close visual binaries, which can break a positional match even with otherwise-correct proper motion — an identifier match sidesteps that failure mode entirely. Still sanity-checked against the record's own reported position when one is present (within 10 arcmin) — a name match whose own position is nowhere near that star falls through to positional matching instead of being trusted blindly.</li>
     <li><b>positional_easy_match</b> — no Gaia column and no name match (or a name match that failed the sanity check above). The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a fixed 1.0 arcsecond radius. Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → recorded as <b>skipped</b> (see below) rather than dropped — unless a name match was rejected just above, in which case it's <b>needs_review</b> instead: a rejected name match is often still correct (e.g. the archive's own logged position for that one exposure is simply wrong), so it's kept visible for confirmation rather than dropped with no candidate at all.</li>
   </ol>
   <p class="note">The 1.0" match radius is the same for every archive and instrument. Some instruments have a real, documented systematic offset between their reported pointing and the true catalog position (e.g. finder-camera-derived coordinates) — if that offset ever exceeds 1.0", the record ends up in the skipped queue rather than getting mismatched (the tight radius protects against false positives, at the cost of some real holdings not surfacing automatically).</p>
@@ -3179,7 +3180,7 @@ INFO_TEMPLATE = """
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
 
-  <p class="note">See the Archive Status tab for when each archive was last synced, a per-archive match breakdown, and the known-gaps table; the Instruments tab for the tracked-instruments/resolving-power breakdown; and the Leaderboard tab for catalog-wide holdings-by-archive and matches-by-method breakdowns.</p>
+  <p class="note">See Archive Status for sync dates, per-archive match breakdown, and known gaps; Instruments for the resolving-power breakdown; and Leaderboard for catalog-wide holdings-by-archive/method breakdowns.</p>
 
   <h2>How reduction status is tracked</h2>
   <p>Each holding carries a coarse <b>raw</b> / <b>reduced</b> / <b>unknown</b> label in its "Reduction" column (see the tables below), deliberately simplified from the underlying IVOA ObsCore <code>calib_level</code> scale (0=raw telemetry, 1=instrument-signature-removed, 2=calibrated to standard units, 3=enhanced/combined) — anything above level 1 is bucketed as "reduced" here. This is only set when an archive's sync module has good grounds to know it; otherwise it's left as <b>unknown</b> rather than guessed. Three ways it gets set:</p>
@@ -3192,10 +3193,10 @@ INFO_TEMPLATE = """
   <p class="note"><b>ESO Science Archive</b> (Phase 3, pipeline-reduced) and <b>ESO Archive (Raw)</b> (unreduced exposures) are two separate archive_codes because a substantial slice of ESO's holdings — tens of thousands of raw HARPS/UVES/ESPRESSO frames per well-observed target — has no Phase 3 counterpart at all. Since the two source tables share no join key, a periodic reconciliation pass deletes any raw holding whose instrument and observation date match an already-synced Phase 3 holding for the same star, so a raw exposure disappears once ESO deposits its reduced counterpart rather than double-counting the same observation twice.</p>
 
   <h2>Needs-review queue</h2>
-  <p class="note">Either an ambiguous positional match (2+ tracked stars fell within the 1.0" radius of the archive's reported position) or a name match rejected as implausible with no positional candidate to fall back on (see How matching works above) — in both cases no single star was assigned automatically. Most recent {{ needs_review|length }} shown{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
+  <p class="note">Either an ambiguous positional match (2+ tracked stars within 1.0" of the reported position) or a rejected name match with no positional fallback (see How matching works above) — no single star was assigned automatically. Showing the {{ needs_review|length }} most recent{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
   {% if needs_review %}
-    <table>
-      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Best separation</th><th>Reduction</th></tr>
+    <table class="compact">
+      <tr><th>Archive</th><th>Reported name</th><th>RA, Dec</th><th>Date</th><th>Separation</th><th>Reduction</th></tr>
       {% for r in needs_review %}
       <tr>
         <td>{{ r.display_name }}</td>
@@ -3212,7 +3213,7 @@ INFO_TEMPLATE = """
   {% endif %}
 
   <h2>Skipped records</h2>
-  <p class="note">No candidate at all — nothing within the match radius, an untracked direct Gaia id, or missing/invalid position data. Persisted with the raw reported name/position specifically so they can be reviewed later (e.g. manually or crowd-sourced attachment to a Gaia source), not discarded.</p>
+  <p class="note">No candidate at all — nothing within the match radius, an untracked direct Gaia id, or missing/invalid position. Kept with the raw reported name/position for later review (manual or crowd-sourced), not discarded.</p>
   <table>
     <tr><th>Archive</th><th>Skipped</th></tr>
     {% for r in skipped_by_archive %}
@@ -3222,8 +3223,8 @@ INFO_TEMPLATE = """
 
   <h3 id="skipped-list">{% if archive_filter %}{{ archive_filter }} — {% endif %}Most recent skipped{% if archive_filter %} <a href="/info">(clear filter)</a>{% endif %}</h3>
   {% if skipped %}
-    <table>
-      <tr><th>Archive</th><th>Reported name</th><th>Reported RA, Dec</th><th>Date</th><th>Reduction</th></tr>
+    <table class="compact">
+      <tr><th>Archive</th><th>Reported name</th><th>RA, Dec</th><th>Date</th><th>Reduction</th></tr>
       {% for r in skipped %}
       <tr>
         <td>{{ r.display_name }}</td>
@@ -3927,7 +3928,6 @@ TRIAGE_TEMPLATE = """
     .triage-row label { display: block; margin: 0.2rem 0; }
     .triage-row input[type=text] { font-family: monospace; }
     .finder-links a { margin-right: 1rem; }
-    .prior-submissions { font-style: italic; }
     .cone-result { display: block; margin: 0.2rem 0 0.2rem 1.4rem; }
     .record-list { font-size: 0.9rem; }
     .record-entries { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; margin-top: 0.3rem; }
@@ -3950,21 +3950,15 @@ TRIAGE_TEMPLATE = """
   <p class="note">Triaging as <b>{{ submitter }}</b> (<a href="/triage?change_submitter=1">not you?</a>) --
     records you've already submitted a classification for are filtered out of your queue below.</p>
   <p class="note">
-    These are spectroscopy_holdings rows with match_status = 'skipped' -- the
-    automated matcher (see <a href="/info">More Info</a>) found no name or
-    positional candidate at all for them. Rows are grouped by (archive,
-    reported target name) rather than shown one-per-record, so the same
-    identifier doesn't resurface over and over -- a classification is
-    submitted once and recorded against every underlying record sharing that
-    name. Shown one at a time, shuffled per-visitor (named/high-record-count
-    groups still weighted to surface earlier) rather than a fixed queue, so
-    different contributors aren't all working through the identical
-    sequence. Submissions below do <b>not</b> update the database directly:
-    they accumulate as independent votes (recorded to a public file,
-    imported into the real skip_classifications table the next time this
-    project's export job runs) and only get applied once a quorum of
-    contributors agree (design sketch -- the apply step is a documented
-    stub, not wired up yet).
+    Rows with match_status = 'skipped' -- the automated matcher (see
+    <a href="/info">More Info</a>) found no name or positional candidate.
+    Grouped by (archive, reported name) rather than one-per-record, so a
+    classification applies to every record sharing that name at once. Shown
+    one at a time, shuffled per-visitor and weighted toward named or
+    high-record-count groups, so contributors don't all work the same sequence.
+    Submissions do <b>not</b> update the database directly -- they accumulate
+    as votes (recorded to a public file, imported at the next export) and
+    apply once a quorum agrees (design sketch -- apply step not wired up yet).
   </p>
 
   {% if error %}
@@ -4018,7 +4012,7 @@ TRIAGE_TEMPLATE = """
     {% endif %}
 
     {% if r.prior_submissions %}
-    <p class="prior-submissions">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} under this name:
+    <p class="note">{{ r.prior_submissions|length }} prior submission{{ "s" if r.prior_submissions|length != 1 else "" }} under this name:
       {% for s in r.prior_submissions %}{{ s.outcome }} ({{ s.submitter }}){% if not loop.last %}; {% endif %}{% endfor %}
     </p>
     {% endif %}
@@ -4038,7 +4032,7 @@ TRIAGE_TEMPLATE = """
       </label>
 
       <label><input type="radio" name="outcome" value="attach_bright_star">
-        Attach to bright star (too bright for Gaia to have detected at all):
+        Attach to bright star (too bright for Gaia):
         <input type="text" name="bright_star_target" placeholder="Bright Star (HR) number or star name" size="28">
       </label>
 
@@ -4090,10 +4084,9 @@ TRIAGE_GATE_TEMPLATE = """
   </div>""" + NAV_HTML + """
   <h2>Triage: skipped records</h2>
   <p class="note">
-    Enter the name/handle you'll be submitting classifications under. It's
-    remembered in a cookie on this browser (~6 months) and used to filter
-    your queue below so you're not shown records you've already classified
-    in a previous session.
+    Enter the name/handle you'll submit classifications under. Remembered in
+    a cookie (~6 months) to filter out records you've already classified in
+    a previous session.
   </p>
   <form method="get" action="/triage">
     <label>Name/handle: <input type="text" name="submitter" required size="24" autofocus></label>
