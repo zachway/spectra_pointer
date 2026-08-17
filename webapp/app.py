@@ -59,6 +59,7 @@ from flask import Flask, Response, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
+from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 
 app = Flask(__name__)
 
@@ -102,7 +103,7 @@ MAX_NAME_LOOKUPS = 2000
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
-    "leaderboard", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
+    "leaderboard", "diversity", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
     "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
     "needs_review", "skipped_by_archive", "skipped", "spectroscopy_holdings_by_position",
@@ -1428,7 +1429,7 @@ LEADERBOARD_TEMPLATE = """
   <meta charset="utf-8">
   <title>The Spectra Pointer — Leaderboard</title>
   <style>""" + SHARED_STYLE + """
-    #cumulative-plot, #period-plot { width: 100%; height: 500px; margin-top: 1rem; }
+    #cumulative-plot, #period-plot, #loglam-plot, #instrument-count-plot { width: 100%; height: 500px; margin-top: 1rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -1490,6 +1491,63 @@ LEADERBOARD_TEMPLATE = """
     </script>
   {% else %}
     <p>No dated observations yet.</p>
+  {% endif %}
+
+  <hr>
+  <h2>Most diversely observed — cumulative wavelength coverage</h2>
+  <p class="note">For each star, every distinct instrument it's ever been observed with (repeat observations from the same instrument don't count twice) contributes its own published wavelength range's width in dex (log₁₀ of max/min wavelength) — summed, not merged, so overlapping ranges between two instruments both count in full and a star seen only in disjoint bands (e.g. an X-ray grating and an optical echelle) can still rank high. Today's top stars by either this metric or the instrument-count one below are shown; a line holds flat between new instruments, not dips to zero. Only instruments with a known published range (see <a href="/instruments">Instruments</a>) contribute — an unrecognized instrument still counts toward the instrument-count chart below, just not this one.</p>
+  {% if loglam_traces %}
+    <div id="loglam-plot"></div>
+    <script>
+      const diversityPeriodLabels = {{ diversity_period_labels | tojson }};
+      const loglamSourceIds = {{ loglam_traces | tojson }}.map(t => t.source_id);
+      const loglamTraces = {{ loglam_traces | tojson }}.map(t => ({
+        x: diversityPeriodLabels, y: t.counts, name: t.label,
+        mode: 'lines+markers', line: { shape: 'hv' }, marker: { size: 4 }, type: 'scatter',
+        connectgaps: false,
+        hovertemplate: '%{fullData.name}<extra></extra>',
+      }));
+      Plotly.newPlot('loglam-plot', loglamTraces, {
+        xaxis: { title: 'Period' },
+        yaxis: { title: 'Cumulative wavelength coverage (dex)' },
+        hovermode: 'closest',
+        showlegend: false,
+      }, { responsive: true });
+      document.getElementById('loglam-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].curveNumber;
+        window.location.href = '/?q=' + loglamSourceIds[idx];
+      });
+    </script>
+  {% else %}
+    <p>No dated, instrument-tagged observations yet.</p>
+  {% endif %}
+
+  <hr>
+  <h2>Most popular — cumulative distinct instruments</h2>
+  <p class="note">Same underlying instrument history as the coverage chart above, just counted rather than weighted by wavelength range — how many different instruments have ever been pointed at each star, over time. A proxy for "most sought-after target" independent of any one instrument's own observing cadence.</p>
+  {% if instrument_count_traces %}
+    <div id="instrument-count-plot"></div>
+    <script>
+      const instrumentCountSourceIds = {{ instrument_count_traces | tojson }}.map(t => t.source_id);
+      const instrumentCountTraces = {{ instrument_count_traces | tojson }}.map(t => ({
+        x: diversityPeriodLabels, y: t.counts, name: t.label,
+        mode: 'lines+markers', line: { shape: 'hv' }, marker: { size: 4 }, type: 'scatter',
+        connectgaps: false,
+        hovertemplate: '%{fullData.name}<extra></extra>',
+      }));
+      Plotly.newPlot('instrument-count-plot', instrumentCountTraces, {
+        xaxis: { title: 'Period' },
+        yaxis: { title: 'Cumulative distinct instruments' },
+        hovermode: 'closest',
+        showlegend: false,
+      }, { responsive: true });
+      document.getElementById('instrument-count-plot').on('plotly_click', function(data) {
+        const idx = data.points[0].curveNumber;
+        window.location.href = '/?q=' + instrumentCountSourceIds[idx];
+      });
+    </script>
+  {% else %}
+    <p>No dated, instrument-tagged observations yet.</p>
   {% endif %}
 
   <hr>
@@ -1569,6 +1627,67 @@ LEADERBOARD_TEMPLATE = """
 """
 
 
+# Shared shape for every /leaderboard chart: each source row is one (star,
+# period) cell carrying one or more numeric value_fields, already nulled out
+# by scripts.export_to_parquet for periods a star isn't "cast" in (see
+# LEADERBOARD_FINAL_QUERY/DIVERSITY_FINAL_QUERY) -- this just regroups those
+# rows into one Plotly trace list per value_field. Used for both the
+# `leaderboard` table (within_n/cumulative_n) and the `diversity` table
+# (cum_instrument_count/cum_loglam_covered) below, which are two independent
+# precomputed tables with their own period sets and cast-star selections, not
+# a single shared one -- each call gets its own period_labels back.
+def _period_traces_by_star(rows: list[dict], value_fields: list[str]) -> tuple[list[str], dict[str, list[dict]]]:
+    if not rows:
+        return [], {f: [] for f in value_fields}
+
+    period_keys = sorted({(r["yr"], r["half"]) for r in rows})
+    period_labels = [f"{yr} H{half}" for yr, half in period_keys]
+
+    # Grouped by star_id, not gaia_source_id: a small number of BSC5-
+    # sourced stars (bright naked-eye stars with no credible Gaia
+    # counterpart -- see db/migrations/0001_star_id_surrogate_key.sql)
+    # have a NULL gaia_source_id, which broke both of these -- sorted()
+    # can't order None against int (confirmed live, 500ing every request
+    # once one such star cracked a top-N list), and even fixed up, every
+    # NULL-gaia_source_id star would collide on the same dict key and
+    # stomp each other's data. star_id is the one identifier every
+    # tracked star always has.
+    by_star: dict[int, dict] = defaultdict(dict)
+    labels_by_id: dict[int, str] = {}
+    gaia_id_by_star: dict[int, int | None] = {}
+    bsc_hr_by_star: dict[int, int | None] = {}
+    for r in rows:
+        by_star[r["star_id"]][(r["yr"], r["half"])] = r
+        labels_by_id[r["star_id"]] = r["label"]
+        gaia_id_by_star[r["star_id"]] = r["gaia_source_id"]
+        bsc_hr_by_star[r["star_id"]] = r["bsc_hr_number"]
+
+    traces_by_field: dict[str, list[dict]] = {f: [] for f in value_fields}
+    for sid in sorted(by_star):
+        by_period = by_star[sid]
+        # Gaia source_ids are 19-digit integers, well past JS's 53-bit
+        # safe-integer range — serialized as a string so a click-through
+        # can't get silently rounded by the browser (same issue fixed
+        # for the CMD/Sky Map click-throughs). BSC5 stars have no
+        # gaia_source_id at all, so their click-through source_id falls
+        # back to bsc_hr_number -- the same fallback the "Most observed"/
+        # "Trending"/"Nearest"/"Fastest movers" tables and the `/` search
+        # route itself (star_search_id) already use -- rather than
+        # str(None), which used to send the click-through to a literal
+        # "/?q=None" search.
+        gaia_id = gaia_id_by_star[sid]
+        source_id = str(gaia_id) if gaia_id is not None else str(bsc_hr_by_star[sid])
+        for field in value_fields:
+            traces_by_field[field].append(
+                {
+                    "label": labels_by_id[sid],
+                    "source_id": source_id,
+                    "counts": [by_period[k][field] if k in by_period else None for k in period_keys],
+                }
+            )
+    return period_labels, traces_by_field
+
+
 @app.route("/leaderboard")
 def leaderboard():
     cur = get_cursor()
@@ -1583,62 +1702,25 @@ def leaderboard():
     # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
     cur.execute("SELECT star_id, gaia_source_id, bsc_hr_number, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
     rows = _rows_as_dicts(cur)
+    period_labels, leaderboard_traces = _period_traces_by_star(rows, ["within_n", "cumulative_n"])
+    period_traces = leaderboard_traces["within_n"]
+    cumulative_traces = leaderboard_traces["cumulative_n"]
 
-    period_labels: list[str] = []
-    cumulative_traces: list[dict] = []
-    period_traces: list[dict] = []
-
-    if rows:
-        period_keys = sorted({(r["yr"], r["half"]) for r in rows})
-        period_labels = [f"{yr} H{half}" for yr, half in period_keys]
-
-        # Grouped by star_id, not gaia_source_id: a small number of BSC5-
-        # sourced stars (bright naked-eye stars with no credible Gaia
-        # counterpart -- see db/migrations/0001_star_id_surrogate_key.sql)
-        # have a NULL gaia_source_id, which broke both of these -- sorted()
-        # can't order None against int (confirmed live, 500ing every request
-        # once one such star cracked a top-N list), and even fixed up, every
-        # NULL-gaia_source_id star would collide on the same dict key and
-        # stomp each other's data. star_id is the one identifier every
-        # tracked star always has.
-        by_star: dict[int, dict] = defaultdict(dict)
-        labels_by_id: dict[int, str] = {}
-        gaia_id_by_star: dict[int, int | None] = {}
-        bsc_hr_by_star: dict[int, int | None] = {}
-        for r in rows:
-            by_star[r["star_id"]][(r["yr"], r["half"])] = r
-            labels_by_id[r["star_id"]] = r["label"]
-            gaia_id_by_star[r["star_id"]] = r["gaia_source_id"]
-            bsc_hr_by_star[r["star_id"]] = r["bsc_hr_number"]
-
-        for sid in sorted(by_star):
-            by_period = by_star[sid]
-            # Gaia source_ids are 19-digit integers, well past JS's 53-bit
-            # safe-integer range — serialized as a string so a click-through
-            # can't get silently rounded by the browser (same issue fixed
-            # for the CMD/Sky Map click-throughs). BSC5 stars have no
-            # gaia_source_id at all, so their click-through source_id falls
-            # back to bsc_hr_number -- the same fallback the "Most observed"/
-            # "Trending"/"Nearest"/"Fastest movers" tables and the `/` search
-            # route itself (star_search_id) already use -- rather than
-            # str(None), which used to send the click-through to a literal
-            # "/?q=None" search.
-            gaia_id = gaia_id_by_star[sid]
-            source_id = str(gaia_id) if gaia_id is not None else str(bsc_hr_by_star[sid])
-            cumulative_traces.append(
-                {
-                    "label": labels_by_id[sid],
-                    "source_id": source_id,
-                    "counts": [by_period[k]["cumulative_n"] if k in by_period else None for k in period_keys],
-                }
-            )
-            period_traces.append(
-                {
-                    "label": labels_by_id[sid],
-                    "source_id": source_id,
-                    "counts": [by_period[k]["within_n"] if k in by_period else None for k in period_keys],
-                }
-            )
+    # Same precomputed-table shape as `leaderboard` above, but for the two
+    # "diversity" metrics -- see scripts.export_to_parquet._export_diversity
+    # for how these are built (today's top-DIVERSITY_TOP_N stars by either
+    # metric, each one's own cumulative trajectory over time, forward-filled
+    # across periods with no new instrument). A separate table/query rather
+    # than folded into `leaderboard` since it has its own cast-star selection
+    # and, because DESI/SDSS-V/etc. report no per-observation instrument on
+    # every row, potentially a different period span.
+    cur.execute("SELECT star_id, gaia_source_id, bsc_hr_number, label, yr, half, cum_instrument_count, cum_loglam_covered FROM diversity ORDER BY star_id, yr, half")
+    diversity_rows = _rows_as_dicts(cur)
+    diversity_period_labels, diversity_traces = _period_traces_by_star(
+        diversity_rows, ["cum_instrument_count", "cum_loglam_covered"]
+    )
+    instrument_count_traces = diversity_traces["cum_instrument_count"]
+    loglam_traces = diversity_traces["cum_loglam_covered"]
 
     # stats_summary is precomputed by scripts.export_to_parquet — most-
     # observed, trending, total_holdings, by-archive, by-method, nearest,
@@ -1678,6 +1760,9 @@ def leaderboard():
         period_labels=period_labels,
         cumulative_traces=cumulative_traces,
         period_traces=period_traces,
+        diversity_period_labels=diversity_period_labels,
+        instrument_count_traces=instrument_count_traces,
+        loglam_traces=loglam_traces,
         most_observed=most_observed, trending=trending, trending_years=trending_years,
         total_stars=total_stars, total_holdings=total_holdings,
         by_archive=by_archive, by_method=by_method,
@@ -1950,220 +2035,10 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('XMM-Newton RGS', 'RGS2'): 'R ≈ 150–800 (first order, wavelength-dependent)',
 }
 
-# Wavelength coverage (nm, vacuum/air distinction not tracked -- published
-# specs quoted at whatever precision the instrument's own documentation
-# uses) per (archive display_name, instrument) -- same hand-maintained,
-# same-key shape as INSTRUMENT_RESOLVING_POWER above (same reasoning: not
-# derivable from the database, no per-observation column for it). Powers the
-# /?q=... search page's wavelength-coverage chart -- see
-# _wavelength_coverage_bars. The chart's x-axis is log-scaled (see
-# 'wavelength-plot' in the page template), so X-ray gratings sit fine on the
-# same chart as optical/IR instruments, just far to the left of everything
-# else -- Chandra's HETG/LETG and XMM-Newton's RGS1/RGS2 are included below
-# for that reason. Otherwise deliberately a strict subset of
-# INSTRUMENT_RESOLVING_POWER's keys: n/a (imaging-only) entries are omitted
-# outright, and a handful of obscure/retired instruments this project
-# couldn't confirm a real published range for (e.g. CFHT's PYTHIAS,
-# HERZBERG, OSIS, PUMA, SISFP, ISIS; Gemini's CIRPASS/OSCIR; NOIRLab's sami;
-# ESO's APEXHET, a submm heterodyne receiver with no meaningful nm range;
-# HST's COS-STIS combined mode) are left out rather than guessed -- a
-# missing key just means that instrument's bar doesn't render, the same
-# graceful-degradation shape as INSTRUMENT_RESOLVING_POWER's own "—". A few
-# instruments (GALAH/HERMES, LAMOST-MRS) are non-contiguous multi-band
-# spectrographs -- the tuple here is the outer envelope (first band's blue
-# edge to last band's red edge), not literal continuous coverage; the chart
-# doesn't attempt to render the internal gap.
-INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
-    ('Asiago Observatory (Echelle)', 'Echelle + Andor iKon DW436-BV'): (360, 730),
-    ('Asiago Observatory (Echelle)', 'echelle hi-res Spectrograph'): (360, 730),
-    ('Asiago Observatory (Echelle)', 'Echelle Hi-Res Spectrograph'): (360, 730),
-    ('Asiago Observatory (Echelle)', 'ECHELLE REOSC'): (360, 730),
-    ('CARMENES', 'CARMENES VIS'): (520, 960),
-    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES NIR'): (960, 1710),
-    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES VIS'): (520, 960),
-    ('CFHT / CADC', 'SPIRou'): (980, 2350),
-    ('CFHT / CADC', 'ESPaDOnS'): (370, 1050),
-    ('CFHT / CADC', 'FTS'): (450, 1100),
-    ('CFHT / CADC', 'TIGER'): (400, 700),
-    ('CFHT / CADC', 'MOS'): (370, 900),
-    ('CFHT / CADC', 'SIS'): (370, 1000),
-    ('CFHT / CADC', 'GECKO'): (300, 1000),
-    ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): (0.12, 3.1),
-    ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): (0.12, 3.1),
-    ('Chandra X-ray Observatory', 'HETG (HRC-I)'): (0.12, 3.1),
-    ('Chandra X-ray Observatory', 'LETG (HRC-S)'): (0.12, 17.5),
-    ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): (0.12, 6.0),
-    ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): (0.12, 6.0),
-    ('Chandra X-ray Observatory', 'LETG (HRC-I)'): (0.12, 17.5),
-    ('DAO (Dominion Astrophysical Observatory)', 'McKellar Spectrograph'): (350, 900),
-    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectrograph'): (350, 900),
-    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectropolarimeter'): (350, 900),
-    ('DESI', 'DESI'): (360, 980),
-    ('ELODIE (OHP)', 'ELODIE'): (390, 680),
-    ('ESO Science Archive', 'GIRAFFE'): (370, 900),
-    ('ESO Science Archive', 'HARPS'): (378, 691),
-    ('ESO Science Archive', 'XSHOOTER'): (300, 2480),
-    ('ESO Science Archive', 'VIMOS'): (360, 1000),
-    ('ESO Science Archive', 'FORS2'): (330, 1100),
-    ('ESO Science Archive', 'UVES'): (300, 1100),
-    ('ESO Science Archive', 'FEROS'): (350, 920),
-    ('ESO Science Archive', 'NIRPS'): (980, 1800),
-    ('ESO Science Archive', 'ESPRESSO'): (380, 788),
-    ('ESO Science Archive', 'EFOSC'): (330, 1100),
-    ('ESO Science Archive', 'KMOS'): (800, 2500),
-    ('ESO Science Archive', 'CRIRES'): (950, 5300),
-    ('ESO Science Archive', 'SOFI'): (950, 2500),
-    ('ESO Science Archive', 'FORS1'): (330, 1100),
-    ('ESO Science Archive', 'MUSE'): (480, 930),
-    ('ESO Science Archive', 'SINFONI'): (1100, 2450),
-    ('ESO Archive (Raw)', 'HARPS'): (378, 691),
-    ('ESO Archive (Raw)', 'XSHOOTER'): (300, 2480),
-    ('ESO Archive (Raw)', 'FORS2'): (330, 1100),
-    ('ESO Archive (Raw)', 'FORS1'): (330, 1100),
-    ('ESO Archive (Raw)', 'UVES'): (300, 1100),
-    ('ESO Archive (Raw)', 'FEROS'): (350, 920),
-    ('ESO Archive (Raw)', 'NIRPS'): (980, 1800),
-    ('ESO Archive (Raw)', 'ESPRESSO'): (380, 788),
-    ('ESO Archive (Raw)', 'EFOSC'): (330, 1100),
-    ('ESO Archive (Raw)', 'CRIRES'): (950, 5300),
-    ('ESO Archive (Raw)', 'SOFI'): (950, 2500),
-    ('FEROS Public Spectra (GAVO)', 'FEROS'): (350, 920),
-    ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): (350, 870),
-    ('GALAH', 'GALAH (HERMES)'): (471, 789),
-    ('GTC (Gran Telescopio CANARIAS)', 'EMIR'): (900, 2500),
-    ('GTC (Gran Telescopio CANARIAS)', 'OSIRIS'): (365, 1000),
-    ('GTC (Gran Telescopio CANARIAS)', 'MEGARA'): (365, 1000),
-    ('GTC (Gran Telescopio CANARIAS)', 'HORuS'): (383, 690),
-    ('GTC (Gran Telescopio CANARIAS)', 'CANARICAM'): (8000, 25000),
-    ('Gaia RVS', 'Gaia RVS'): (846, 870),
-    ('Gemini Observatory Archive', 'GNIRS'): (900, 2500),
-    ('Gemini Observatory Archive', 'GMOS-N'): (360, 1000),
-    ('Gemini Observatory Archive', 'GMOS-S'): (360, 1000),
-    ('Gemini Observatory Archive', 'PHOENIX'): (1000, 5000),
-    ('Gemini Observatory Archive', 'GPI'): (900, 2400),
-    ('Gemini Observatory Archive', 'NIRI'): (1000, 2500),
-    ('Gemini Observatory Archive', 'NIFS'): (940, 2500),
-    ('Gemini Observatory Archive', 'F2'): (900, 2500),
-    ('Gemini Observatory Archive', 'GRACES'): (500, 1050),
-    ('Gemini Observatory Archive', 'MAROON-X'): (500, 920),
-    ('Gemini Observatory Archive', 'michelle'): (7900, 25300),
-    ('Gemini Observatory Archive', 'TEXES'): (5000, 25000),
-    ('Gemini Observatory Archive', 'TReCS'): (8000, 25000),
-    ('Gemini Observatory Archive', 'GHOST'): (363, 1000),
-    ('Gemini Observatory Archive', 'FLAMINGOS'): (1000, 2500),
-    ('Gemini Observatory Archive', 'bHROS'): (350, 1050),
-    ('Gemini Observatory Archive — GHOST', 'GHOST'): (363, 1000),
-    ('Gemini Observatory Archive — IGRINS', 'IGRINS'): (1450, 2450),
-    ('HARPS-N (TNG)', 'HARPS-N'): (383, 693),
-    ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): (377, 900),
-    ('HEROS at Ondrejov', 'HEROS (Ondrejov)'): (350, 870),
-    ('HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)', 'HPOL'): (320, 1050),
-    ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): (377, 900),
-    ('IACOB Spectroscopic Database (IAC)', 'NOT'): (370, 830),
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): (500, 1000),
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): (300, 550),
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): (500, 1000),
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): (300, 550),
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (SASS)'): (5200, 38000),
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (Std Stars)'): (5200, 38000),
-    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS'): (2400, 45200),
-    ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): (7700, 22600),
-    ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): (4500, 28300),
-    ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): (700, 5300),
-    ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
-    ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
-    ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
-    ('IRTF Legacy Archive', 'CSHELL'): (1000, 5500),
-    ('Keck Observatory Archive', 'NIRSPEC'): (950, 5500),
-    ('Keck Observatory Archive', 'HIRES'): (300, 1000),
-    ('Keck Observatory Archive', 'MOSFIRE'): (970, 2450),
-    ('Keck Observatory Archive', 'LRIS'): (300, 1100),
-    ('Keck Observatory Archive', 'NIRES'): (940, 2450),
-    ('Keck Observatory Archive', 'OSIRIS'): (1000, 2400),
-    ('Keck Observatory Archive', 'DEIMOS'): (410, 1100),
-    ('Keck Observatory Archive', 'KPF'): (445, 870),
-    ('Keck Observatory Archive', 'ESI'): (390, 1090),
-    ('LAMOST', 'LAMOST'): (370, 900),
-    ('LAMOST — MRS', 'LAMOST-MRS'): (495, 685),
-    ('LBT — PEPSI', 'MODS'): (320, 1000),
-    ('LBT — PEPSI', 'LUCI'): (850, 2500),
-    ('LBT — PEPSI', 'PEPSI'): (383, 907),
-    ('Las Cumbres Observatory -- FLOYDS', 'FLOYDS'): (320, 1000),
-    ('Las Cumbres Observatory -- NRES', 'NRES'): (380, 860),
-    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): (374, 970),
-    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): (330, 1000),
-    ('MAST', 'LWP'): (185, 335),
-    ('MAST', 'SWP'): (115, 198),
-    ('MAST', 'LWR'): (185, 335),
-    ('MAST', 'ASTRO-1 WUPPE'): (140, 320),
-    ('MAST', 'ASTRO-2 WUPPE'): (140, 320),
-    ('MAST', 'BEFS'): (40, 120),
-    ('MAST', 'TUES'): (91, 141),
-    ('MAST', 'FUV'): (91.2, 185),
-    ('MAST', 'DS/S'): (7.0, 76.0),
-    ('MAST', 'WFC3/IR'): (800, 1700),
-    ('MAST', 'COS/FUV'): (90, 205),
-    ('MAST', 'STIS/CCD'): (164, 1030),
-    ('MAST', 'NICMOS/NIC3'): (1400, 2500),
-    ('MAST', 'HRS/2'): (115, 320),
-    ('MAST', 'FOS/RD'): (160, 850),
-    ('MAST', 'STIS/FUV-MAMA'): (115, 170),
-    ('MAST', 'FOS/BL'): (130, 550),
-    ('MAST', 'COS/NUV'): (165, 320),
-    ('MAST', 'STIS/NUV-MAMA'): (165, 310),
-    ('MAST', 'COS'): (90, 320),
-    ('MAST', 'STIS'): (115, 1030),
-    ('MAST', 'HRS/1'): (105, 320),
-    ('MAST', 'ACS/WFC'): (550, 1050),
-    ('MAST', 'ACS/HRC'): (170, 1050),
-    ('MAST', 'ACS/SBC'): (115, 180),
-    ('MAST — JWST', 'NIRSPEC/MSA'): (600, 5300),
-    ('MAST — JWST', 'NIRCAM/GRISM'): (2400, 5000),
-    ('MAST — JWST', 'NIRSPEC/SLIT'): (600, 5300),
-    ('MAST — JWST', 'NIRISS/WFSS'): (800, 2200),
-    ('MAST — JWST', 'MIRI/SLIT'): (5000, 12000),
-    ('MAST — JWST', 'NIRSPEC'): (600, 5300),
-    ('MAST — JWST', 'MIRI/SLITLESS'): (5000, 12000),
-    ('MAST — JWST', 'NIRISS/SOSS'): (600, 2800),
-    ('NAOJ (Subaru HDS, via JVO)', 'HDS'): (300, 1000),
-    ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): (900, 2500),
-    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): (380, 930),
-    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): (380, 930),
-    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): (370, 830),
-    ('NOIRLab Astro Data Archive', 'goodman'): (320, 900),
-    ('NOIRLab Astro Data Archive', 'echelle'): (350, 900),
-    ('NOIRLab Astro Data Archive', 'chiron'): (410, 870),
-    ('NOIRLab Astro Data Archive', 'triplespec'): (950, 2460),
-    ('NOIRLab Astro Data Archive', 'ghts_red'): (500, 900),
-    ('NOIRLab Astro Data Archive', 'arcoiris'): (700, 2450),
-    ('NOIRLab Astro Data Archive', 'cosmos'): (350, 950),
-    ('NOIRLab Astro Data Archive', 'kosmos'): (330, 1000),
-    ('NOIRLab Astro Data Archive', 'ghts_blue'): (320, 700),
-    ('OIRSA (CfA)', 'Hectospec'): (370, 920),
-    ('OIRSA (CfA)', 'Hectochelle'): (500, 900),
-    ('OIRSA (CfA)', 'echelle'): (350, 900),
-    ('OIRSA (CfA)', 'FAST'): (350, 750),
-    ('Ondrejov Observatory (CCD700)', 'COUDE700'): (625, 670),
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'ESPaDOnS'): (370, 1050),
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'Narval'): (370, 1000),
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'neo-Narval'): (370, 1000),
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'SPIRou'): (980, 2350),
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'HARPSpol'): (378, 691),
-    ('RAVE', 'RAVE'): (841, 879),
-    ('Ritter Observatory (PREST)', 'Ritter Echelle'): (410, 683),
-    ('Ritter Observatory (PREST)', 'Ritter LDS'): (610, 670),
-    ('SALT HRS (SAAO SSDA)', 'HRS'): (370, 890),
-    ('SDSS Legacy Optical', 'SDSS/BOSS'): (360, 1040),
-    ('SDSS-V — APOGEE', 'APOGEE'): (1514, 1696),
-    ('SDSS-V — Optical', 'SDSS-V/BOSS'): (360, 1040),
-    ('SOPHIE (OHP)', 'SOPHIE'): (387, 694),
-    ('SVO CAB Stellar Libraries', 'MILES'): (352.5, 750.0),
-    ('SVO CAB Stellar Libraries', 'STELIB'): (320.0, 950.0),
-    ('SVO CAB Stellar Libraries', 'XSL'): (300.0, 2480.0),
-    ('SVO CAB Stellar Libraries', 'CaT'): (834.8, 882.8),
-    ('XMM-Newton RGS', 'RGS1'): (0.5, 3.8),
-    ('XMM-Newton RGS', 'RGS2'): (0.5, 3.8),
-}
+# Hand-maintained per-(archive, instrument) published wavelength range --
+# moved to its own module (webapp/instrument_wavelengths.py) so
+# scripts/export_to_parquet.py can import it too, for the leaderboard's
+# diversity/coverage metrics -- see that module's own docstring.
 
 # The search page's advanced-search panel: filter by archive, instrument,
 # resolving-power range, wavelength range, and/or reduction status, layered

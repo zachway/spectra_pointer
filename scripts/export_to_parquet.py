@@ -21,12 +21,15 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import shutil
 import tempfile
 
 import duckdb
 import psycopg
+
+from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -348,6 +351,176 @@ def _export_leaderboard(con: duckdb.DuckDBPyConnection, path: str) -> None:
         )
 
     _atomic_copy(con, _localize(LEADERBOARD_FINAL_QUERY), path)
+
+
+DIVERSITY_TOP_N = 20
+
+# Two more /leaderboard charts, alongside the observation-count ones above:
+# "most diversely observed" (broadest total wavelength coverage from the
+# distinct instruments ever pointed at a star, in dex -- sum of each
+# distinct instrument's own log10(wave_max/wave_min), not a literal
+# overlap-aware union of ranges: a star seen by two spectrographs whose
+# ranges mostly overlap still gets both instruments' full widths added, and
+# a star seen by disjoint bands (e.g. an X-ray grating and an optical
+# echelle) gets a wider total than the gap between those bands would
+# suggest if you tried to read this as one contiguous span. "Covered" here
+# means "how much distinct wavelength real estate its instrument mix
+# spans", the same simplification INSTRUMENT_WAVELENGTH_RANGE_NM's own
+# multi-band-envelope caveat already accepts for single instruments -- true
+# interval-merge is a fair amount more SQL for a metric nobody asked to be
+# that precise) and "most popular" (raw count of distinct instruments ever
+# pointed at a star, no wavelength dict needed at all). Repeat holdings from
+# the same instrument contribute nothing further to either metric, by
+# construction below (only a star+instrument pair's *first* period counts).
+#
+# Unlike LEADERBOARD_TOP_N's within-period/cumulative pair, both of these
+# metrics are inherently cumulative only (there's no meaningful "new
+# instruments this half-year alone" chart) -- so, simpler than
+# _export_leaderboard's period-by-period sweep (which exists specifically to
+# re-rank *every* period, since a star's rank among all ~6M+ tracked stars
+# at some past period can't be known from present-day data alone), this
+# picks today's top DIVERSITY_TOP_N stars by either metric just once, then
+# reconstructs their own historical trajectory -- valid here because each
+# star's trajectory is a simple non-decreasing running total, fully
+# determined by that one star's own per-period deltas (a window-function
+# SUM), not by comparison against every other star at each past period the
+# way a rank is.
+DIVERSITY_COUNTS_QUERY = """
+SELECT DISTINCT
+    h.star_id,
+    year(h.obs_date) AS yr,
+    CASE WHEN month(h.obs_date) <= 6 THEN 1 ELSE 2 END AS half,
+    a.display_name || '::' || h.instrument AS instrument_key
+FROM pg.spectroscopy_holdings h
+JOIN pg.archives a ON a.archive_code = h.archive_code
+WHERE h.obs_date IS NOT NULL AND h.star_id IS NOT NULL AND h.instrument IS NOT NULL
+"""
+
+DIVERSITY_FINAL_QUERY = f"""
+SELECT
+    s.star_id, s.gaia_source_id, s.bsc_hr_number,
+    {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS label,
+    g.yr, g.half, g.cum_instrument_count, g.cum_loglam_covered
+FROM diversity_grid_filled g
+JOIN pg.stars s ON s.star_id = g.star_id
+ORDER BY s.star_id, g.yr, g.half
+"""
+
+
+def _instrument_log_width_rows() -> list[tuple[str, float]]:
+    # Same "archive display_name::instrument" key shape DIVERSITY_COUNTS_QUERY
+    # builds in SQL -- see that query's instrument_key column.
+    rows = []
+    for (display_name, instrument), (wave_min, wave_max) in INSTRUMENT_WAVELENGTH_RANGE_NM.items():
+        if wave_min <= 0 or wave_max <= wave_min:
+            continue
+        rows.append((f"{display_name}::{instrument}", math.log10(wave_max / wave_min)))
+    return rows
+
+
+def _export_diversity(con: duckdb.DuckDBPyConnection, path: str) -> None:
+    con.execute(f"CREATE OR REPLACE TEMP TABLE diversity_counts AS {_localize(DIVERSITY_COUNTS_QUERY)}")
+
+    # Every known instrument's log-wavelength width, keyed the same way as
+    # diversity_counts.instrument_key -- a star+instrument pair with no entry
+    # here (see INSTRUMENT_WAVELENGTH_RANGE_NM's own "left out rather than
+    # guessed" cases) still counts toward cum_instrument_count below, just
+    # contributes 0 to cum_loglam_covered via the LEFT JOIN + coalesce further
+    # down, same graceful-degradation shape as the search page's chart.
+    con.execute("CREATE OR REPLACE TEMP TABLE instrument_log_width (instrument_key VARCHAR PRIMARY KEY, log_width DOUBLE)")
+    con.executemany("INSERT INTO instrument_log_width VALUES (?, ?)", _instrument_log_width_rows())
+
+    # A dense 1..N period index (not the raw yr/half pair) so "ORDER BY
+    # period" below is a plain integer sort/window frame, and so periods
+    # with literally zero (star, instrument) first-sightings still get a
+    # slot for the forward-fill grid further down.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE diversity_periods AS
+        SELECT yr, half, ROW_NUMBER() OVER (ORDER BY yr, half) AS period_idx
+        FROM (SELECT DISTINCT yr, half FROM diversity_counts)
+    """)
+
+    # First period each (star, instrument) pair was ever seen -- later
+    # sightings of the same pair (repeat observations, or the same
+    # instrument again in a later period) don't move this, which is exactly
+    # the "don't count the same instrument twice" dedup both leaderboard
+    # metrics need.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE instrument_first_seen AS
+        SELECT dc.star_id, dc.instrument_key, min(p.period_idx) AS period_idx
+        FROM diversity_counts dc
+        JOIN diversity_periods p USING (yr, half)
+        GROUP BY dc.star_id, dc.instrument_key
+    """)
+
+    # Collapse each star's newly-first-seen instruments within a period into
+    # that period's delta -- count and log-width both just sum over however
+    # many new instruments arrived that period (0 for most star/period
+    # combos, hence not a dense grid).
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE diversity_period_deltas AS
+        SELECT
+            ifs.star_id, ifs.period_idx,
+            count(*) AS new_instrument_count,
+            sum(coalesce(lw.log_width, 0)) AS new_loglam
+        FROM instrument_first_seen ifs
+        LEFT JOIN instrument_log_width lw ON lw.instrument_key = ifs.instrument_key
+        GROUP BY ifs.star_id, ifs.period_idx
+    """)
+
+    # Running totals, one row per (star, period-they-had-an-update) --
+    # sparse, not yet a full star x all-periods grid.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE diversity_cum AS
+        SELECT star_id, period_idx,
+            SUM(new_instrument_count) OVER (PARTITION BY star_id ORDER BY period_idx) AS cum_instrument_count,
+            SUM(new_loglam) OVER (PARTITION BY star_id ORDER BY period_idx) AS cum_loglam_covered
+        FROM diversity_period_deltas
+    """)
+
+    # Each star's own final (as-of-today) totals -- QUALIFY keeps just the
+    # last period_idx row per star, cheap since diversity_cum is already one
+    # row per (star, update period), bounded by real star x instrument
+    # activity rather than the full tracked-star population.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE diversity_final AS
+        SELECT star_id, cum_instrument_count, cum_loglam_covered
+        FROM diversity_cum
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY star_id ORDER BY period_idx DESC) = 1
+    """)
+
+    # Cast stars: union of today's top DIVERSITY_TOP_N by each metric --
+    # small (at most 2x DIVERSITY_TOP_N), same "only chart the stars that
+    # ever made a top-N list" shape as leaderboard's cast_stars.
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE diversity_cast_stars AS
+        (SELECT star_id FROM diversity_final ORDER BY cum_instrument_count DESC, star_id LIMIT {DIVERSITY_TOP_N})
+        UNION
+        (SELECT star_id FROM diversity_final ORDER BY cum_loglam_covered DESC, star_id LIMIT {DIVERSITY_TOP_N})
+    """)
+
+    # Full cast_stars x all-periods grid, forward-filled across periods a
+    # cast star had no new instrument (a plain LEFT JOIN would otherwise
+    # leave those periods NULL, showing as a break in the line even though
+    # the true cumulative value just held steady) -- IGNORE NULLS carries
+    # each star's last real value forward; genuinely-before-this-star's-
+    # first-instrument periods stay NULL, same "don't drag the line across
+    # time it doesn't apply to" behavior as leaderboard's own charts.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE diversity_grid_filled AS
+        SELECT star_id, yr, half,
+            LAST_VALUE(cum_instrument_count IGNORE NULLS) OVER (PARTITION BY star_id ORDER BY period_idx) AS cum_instrument_count,
+            LAST_VALUE(cum_loglam_covered IGNORE NULLS) OVER (PARTITION BY star_id ORDER BY period_idx) AS cum_loglam_covered
+        FROM (
+            SELECT cs.star_id, p.yr, p.half, p.period_idx, dc.cum_instrument_count, dc.cum_loglam_covered
+            FROM diversity_cast_stars cs
+            CROSS JOIN diversity_periods p
+            LEFT JOIN diversity_cum dc ON dc.star_id = cs.star_id AND dc.period_idx = p.period_idx
+        )
+    """)
+
+    _atomic_copy(con, _localize(DIVERSITY_FINAL_QUERY), path)
+
 
 # Precomputed "most observed" star list for the CMD page — was a random
 # USING SAMPLE over `stars` (cheap: no join needed), changed to the N
@@ -959,6 +1132,10 @@ def export_tables(database_url: str, out_dir: str) -> None:
         leaderboard_path = os.path.join(out_dir, "leaderboard.parquet")
         _export_leaderboard(con, leaderboard_path)
         logger.info("exported leaderboard -> %s", leaderboard_path)
+
+        diversity_path = os.path.join(out_dir, "diversity.parquet")
+        _export_diversity(con, diversity_path)
+        logger.info("exported diversity -> %s", diversity_path)
 
         cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
         _atomic_copy(con, _localize(CMD_STARS_QUERY), cmd_stars_path)
