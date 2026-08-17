@@ -2375,7 +2375,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'RAVE': 'https://www.rave-survey.org/',
     'CARMENES': 'http://carmenes.cab.inta-csic.es/',
     'CARMENES (CAHA archive, VIS+NIR)': 'https://caha.sdc.cab.inta-csic.es/',
-    'LBT — PEPSI, MODS, LUCI': 'https://archive.lbto.org/',
+    'LBT — PEPSI': 'https://archive.lbto.org/',
     'Lick / Mt. Hamilton (Shane + APF)': 'https://mthamilton.ucolick.org/',
     'FEROS Public Spectra (GAVO)': 'https://dc.g-vo.org/',
     'Flash/Heros Public Spectra (GAVO)': 'https://dc.g-vo.org/',
@@ -3817,6 +3817,21 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     "astroarchive.noirlab.edu", "oirsa.cfa.harvard.edu:8080",
     "ssda.saao.ac.za", "dr19.sdss.org", "skyserver.sdss.org",
     "data.sdss.org",
+    # Below: found missing via a live audit against every archive_code's
+    # actual sampled archive_url host (2026-08-17) -- this set had fallen
+    # out of sync with the real host list as archives were added, silently
+    # disabling the triage "view headers" link for ~22 archives (a UX gap,
+    # not a security hole -- the allowlist defaults closed). Each host
+    # verified against its own sync/archives/*.py module's TAP_URL/BASE_URL/
+    # SEARCH_URL/etc. before being added here.
+    "basebe.obspm.fr", "carmenes.cab.inta-csic.es", "cda.harvard.edu",
+    "data.desi.lbl.gov", "gea.esac.esa.int", "vos2.asu.cas.cz",
+    "archive.stsci.edu", "cloud.iac.es", "irsa.ipac.caltech.edu",
+    "irtfdata.ifa.hawaii.edu", "archive-api.lco.global",
+    "neid.ipac.caltech.edu", "www.not.iac.es", "voarchive.asu.cas.cz",
+    "www.polarbase.ovgso.fr", "cdsarc.cds.unistra.fr",
+    "astro1.panet.utoledo.edu", "svocats.cab.inta-csic.es",
+    "nxsa.esac.esa.int",
 }
 
 _FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks
