@@ -146,6 +146,15 @@ JOIN gaiadr3.gaia_source AS g
 GAIA_LAUNCH_JOB_ATTEMPTS = 5
 GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 
+# How often to poll and log an in-flight async job's phase. Gaia.launch_job_
+# async(background=False) (the default) blocks internally inside astroquery
+# until the job finishes, with no visibility into whether it's PENDING,
+# QUEUED, or EXECUTING the whole time -- confirmed live 2026-08-17: a real
+# prod run sat with ~0% CPU and zero log output for 30+ minutes on a single
+# chunk with no way to tell whether it was stuck or just slow. background=
+# True plus polling here trades a few extra round trips for that visibility.
+GAIA_JOB_POLL_SECONDS = 10
+
 
 def _launch_gaia_upload_job(query: str, upload_resource, upload_table_name: str):
     """Gaia.launch_job_async, retried on transient TAP failures -- same
@@ -156,11 +165,33 @@ def _launch_gaia_upload_job(query: str, upload_resource, upload_table_name: str)
     cross-match against gaia_source, even for a handful of rows -- the sync
     endpoint's time budget doesn't fit this query shape, only the async one
     does.
+
+    Launched with background=True and polled explicitly (see
+    GAIA_JOB_POLL_SECONDS) rather than left to astroquery's own internal
+    blocking wait, so a stuck/slow job is visible in logs as it happens
+    instead of as silence.
     """
     last_exc: Exception | None = None
     for attempt in range(GAIA_LAUNCH_JOB_ATTEMPTS):
         try:
-            return Gaia.launch_job_async(query, upload_resource=upload_resource, upload_table_name=upload_table_name)
+            job = Gaia.launch_job_async(
+                query, upload_resource=upload_resource, upload_table_name=upload_table_name, background=True,
+            )
+            start = time.monotonic()
+            last_phase = None
+            while not job.is_finished():
+                phase = job.get_phase(update=True)
+                if phase != last_phase:
+                    logger.info("Gaia job %s: %s (%.0fs elapsed)", job.jobid, phase, time.monotonic() - start)
+                    last_phase = phase
+                if job.is_finished():
+                    break
+                time.sleep(GAIA_JOB_POLL_SECONDS)
+            final_phase = job.get_phase()
+            logger.info("Gaia job %s: %s (%.0fs total)", job.jobid, final_phase, time.monotonic() - start)
+            if final_phase != "COMPLETED":
+                raise RuntimeError(f"Gaia job {job.jobid} ended in phase {final_phase}, not COMPLETED")
+            return job
         except Exception as exc:
             last_exc = exc
             if attempt < GAIA_LAUNCH_JOB_ATTEMPTS - 1:
