@@ -103,11 +103,15 @@ NEW_TEST_GAIA_ID = 900000000000500001
 
 class _FakeXmatchJob:
     def get_results(self):
+        # ra/dec placed exactly 5" north of the test record's (50.0, 20.0)
+        # position, zero proper motion -- separation stays 5" regardless of
+        # which epoch it gets propagated to.
         return Table({
             "rec_id": [0],
             "source_id": [NEW_TEST_GAIA_ID],
+            "ra": [50.0], "dec": [20.0 + 5.0 / 3600.0],
+            "pmra": [0.0], "pmdec": [0.0],
             "phot_g_mean_mag": [10.0],
-            "dist_arcsec": [5.0],
         })
 
 

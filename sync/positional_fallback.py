@@ -8,15 +8,20 @@ magnitude percentile table and the candidate-density/distance/magnitude-gap
 analysis this is built on):
 
 1. Widen the search to SHITTY_MATCH_RADIUS_ARCSEC (60", not matcher.py's 1")
-   against our own tracked `stars`, *and* run a live Gaia DR3 cone search at
-   the same radius -- our own `stars` table is a small subset of what Gaia
-   actually sees in the field (confirmed live: a G=7.24 star sitting 3.5"
-   from a record with zero tracked candidates, simply never discovered).
-   60" was chosen over matcher.py's own 2' exploration because the accepted-
-   match distance from that analysis scaled almost 1:1 with the search
-   radius past ~90" -- the tell that a wider radius is finding "the only
-   star in an empty patch of sky," not correctly disambiguating a real
-   target.
+   against our own tracked `stars`, *and* run a live Gaia DR3 cone search to
+   the same effective radius -- our own `stars` table is a small subset of
+   what Gaia actually sees in the field (confirmed live: a G=7.24 star
+   sitting 3.5" from a record with zero tracked candidates, simply never
+   discovered). Both sides are proper-motion-propagated to each record's own
+   observation epoch before that 60" cutoff is applied precisely (the live
+   Gaia query itself is fetched with a wider, epoch-baseline-padded radius
+   first -- see _gaia_cone_search_batch -- so a fast-mover found by the
+   coarse fetch isn't missed just because Gaia's own DR3 position is fixed
+   at 2016.0 and this project's oldest archives span decades). 60" was
+   chosen over matcher.py's own 2' exploration because the accepted-match
+   distance from that analysis scaled almost 1:1 with the search radius past
+   ~90" -- the tell that a wider radius is finding "the only star in an
+   empty patch of sky," not correctly disambiguating a real target.
 2. A BSC5-tracked star in range wins outright: nothing Gaia sees in the same
    field can outshine a star bright enough that Gaia itself couldn't measure
    it (see ingest.add_star.add_bsc_star's own docstring for why those ~70
@@ -124,8 +129,7 @@ ARCHIVE_FAINTNESS_CEILING_MAG: dict[str, float] = {
 DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 
 GAIA_XMATCH_RADIUS_QUERY = """
-SELECT u.rec_id, g.source_id, g.phot_g_mean_mag,
-       DISTANCE(POINT('ICRS', g.ra, g.dec), POINT('ICRS', u.ra, u.dec)) * 3600.0 AS dist_arcsec
+SELECT u.rec_id, g.source_id, g.ra, g.dec, g.pmra, g.pmdec, g.phot_g_mean_mag
 FROM tap_upload.pending AS u
 JOIN gaiadr3.gaia_source AS g
   ON 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', u.ra, u.dec, {radius_deg}))
@@ -233,21 +237,25 @@ def _load_tracked_candidates(conn: psycopg.Connection, target_ra: list[float], t
         return cur.fetchall()
 
 
-def _gaia_cone_search_batch(records: list[RawObservation], radius_arcsec: float) -> dict[int, list[tuple]]:
+def _gaia_cone_search_batch(records: list[RawObservation], radius_arcsec: float, max_years: float) -> dict[int, list[tuple]]:
     """Batched Gaia DR3 cone search via table upload -- one TAP round trip for
     the whole chunk instead of one per record (same batching reasoning as
     ingest.add_star's own batch queries: Gaia's TAP+ endpoint starts erroring
     after ~10 back-to-back queries in a short window).
 
-    Returns rec_id (index into `records`) -> [(gaia_source_id, phot_g_mean_mag, dist_arcsec), ...].
-
-    Does NOT propagate proper motion -- Gaia's own ra/dec is DR3's fixed
-    2016.0-epoch position, compared directly against the record's raw,
-    un-propagated ra/dec. At this fallback's 60" search radius that's a minor
-    simplification (proper motion over a few years/decades is rarely more
-    than a few arcsec even for fast-moving stars -- see matcher.MAX_PM_ARCSEC_PER_YEAR
-    for the true worst case), not the sub-arcsec precision matcher.py's own
-    1" positional_easy_match needs to get right.
+    Returns rec_id (index into `records`) -> [(gaia_source_id, ra, dec, pmra, pmdec, phot_g_mean_mag), ...]
+    -- raw astrometry, NOT yet propagated or filtered to radius_arcsec. The
+    query's own search radius is padded by max_years' worth of worst-case
+    proper motion (matcher.MAX_PM_ARCSEC_PER_YEAR, same reasoning as
+    matcher._load_candidate_stars) so a fast-mover isn't missed outright by
+    a search centered on Gaia's fixed 2016.0-epoch position when the record
+    itself may be decades older -- this project's oldest archives (DAO,
+    Lick, ...) genuinely span that range. The caller (run_shitty_
+    positional_match) is responsible for propagating these to each record's
+    own actual observation epoch and filtering precisely down to
+    radius_arcsec, exactly as it already does for tracked `stars`
+    candidates -- this coarse, padded fetch only narrows Gaia's ~1.8B rows
+    down to a manageable candidate set.
     """
     if not records:
         return {}
@@ -256,41 +264,20 @@ def _gaia_cone_search_batch(records: list[RawObservation], radius_arcsec: float)
         "ra": [r.ra for r in records],
         "dec": [r.dec for r in records],
     })
-    query = GAIA_XMATCH_RADIUS_QUERY.format(radius_deg=radius_arcsec / 3600.0)
+    padded_radius_deg = (radius_arcsec + matcher.MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
+    query = GAIA_XMATCH_RADIUS_QUERY.format(radius_deg=padded_radius_deg)
     job = _launch_gaia_upload_job(query, upload, "pending")
     table = job.get_results()
 
     out: dict[int, list[tuple]] = defaultdict(list)
     for row in table:
-        out[int(row["rec_id"])].append(
-            (int(row["source_id"]), clean_float(row["phot_g_mean_mag"]), float(row["dist_arcsec"]))
-        )
-    return out
-
-
-def _build_candidates_for_record(
-    tracked_by_gaia_id: dict[int, Candidate],
-    tracked_untagged: list[Candidate],
-    live_hits: list[tuple],
-) -> list[Candidate]:
-    """Merge a record's tracked-star candidates with its live-Gaia cone-search
-    hits, reconciling by gaia_source_id so a star that's both tracked *and*
-    independently found live doesn't get counted twice.
-    """
-    by_gaia_id = dict(tracked_by_gaia_id)
-    candidates = list(tracked_untagged)
-    for gaia_source_id, phot_g_mean_mag, dist_arcsec in live_hits:
-        if gaia_source_id in by_gaia_id:
-            continue
-        candidates.append(Candidate(
-            star_id=None,
-            gaia_source_id=gaia_source_id,
-            source_catalog="gaia_untracked",
-            separation_arcsec=dist_arcsec,
-            phot_g_mean_mag=phot_g_mean_mag,
+        out[int(row["rec_id"])].append((
+            int(row["source_id"]),
+            float(row["ra"]), float(row["dec"]),
+            clean_float(row["pmra"]), clean_float(row["pmdec"]),
+            clean_float(row["phot_g_mean_mag"]),
         ))
-    candidates.extend(by_gaia_id.values())
-    return candidates
+    return out
 
 
 def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
@@ -330,17 +317,39 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
             ids, propagated = matcher._propagate(propagate_rows, epoch)
             propagated_by_epoch_and_star[epoch] = dict(zip(ids, propagated))
 
-    live_hits = _gaia_cone_search_batch(positional, SHITTY_MATCH_RADIUS_ARCSEC)
+    # Coarse, padded fetch (see _gaia_cone_search_batch) -- max_years sizes
+    # the query's own search radius to the batch's worst-case epoch baseline
+    # (matcher.GAIA_DR3_REF_EPOCH is Gaia DR3's fixed 2016.0 for every
+    # source, so this is knowable before any query runs, same reasoning as
+    # matcher.match_records's own radius_deg sizing).
+    max_years = max(abs(epoch - matcher.GAIA_DR3_REF_EPOCH) for epoch in by_epoch)
+    live_hits_raw = _gaia_cone_search_batch(positional, SHITTY_MATCH_RADIUS_ARCSEC, max_years)
+
+    # Dedup live candidates by gaia_source_id across the whole batch (the
+    # same nearby star can show up as a raw candidate for many records) so
+    # each one is only propagated once per epoch, same as tracked stars.
+    live_astrometry: dict[int, tuple] = {}
+    for hits in live_hits_raw.values():
+        for gaia_source_id, ra, dec, pmra, pmdec, phot_g_mean_mag in hits:
+            live_astrometry[gaia_source_id] = (ra, dec, matcher.GAIA_DR3_REF_EPOCH, pmra, pmdec, phot_g_mean_mag)
+
+    propagated_by_epoch_and_live_id: dict[float, dict[int, SkyCoord]] = {}
+    if live_astrometry:
+        propagate_rows = [(gid, row[0], row[1], row[2], row[3], row[4]) for gid, row in live_astrometry.items()]
+        for epoch in by_epoch:
+            ids, propagated = matcher._propagate(propagate_rows, epoch)
+            propagated_by_epoch_and_live_id[epoch] = dict(zip(ids, propagated))
 
     with conn.cursor() as cur:
         for epoch, indices in by_epoch.items():
             propagated_by_star_id = propagated_by_epoch_and_star.get(epoch, {})
+            propagated_by_live_id = propagated_by_epoch_and_live_id.get(epoch, {})
             for i in indices:
                 r = positional[i]
                 target = SkyCoord(ra=r.ra * u.deg, dec=r.dec * u.deg)
 
-                tracked_candidates = []
-                tracked_by_gaia_id: dict[int, Candidate] = {}
+                by_gaia_id: dict[int, Candidate] = {}
+                tracked_untagged = []
                 for star_id, gaia_source_id, source_catalog, ra, dec, ref_epoch, pmra, pmdec, phot_g_mean_mag in star_positions.values():
                     sep = propagated_by_star_id[star_id].separation(target).arcsec
                     if sep > SHITTY_MATCH_RADIUS_ARCSEC:
@@ -353,11 +362,31 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
                         phot_g_mean_mag=phot_g_mean_mag,
                     )
                     if gaia_source_id is not None:
-                        tracked_by_gaia_id[gaia_source_id] = cand
+                        by_gaia_id[gaia_source_id] = cand
                     else:
-                        tracked_candidates.append(cand)
+                        tracked_untagged.append(cand)
 
-                candidates = _build_candidates_for_record(tracked_by_gaia_id, tracked_candidates, live_hits.get(i, []))
+                # PM-propagated the same way as tracked stars above -- see
+                # _gaia_cone_search_batch's docstring for why this matters
+                # (a fast-mover found by the padded coarse fetch can still
+                # sit outside the true 60" radius once precisely propagated
+                # to this record's own epoch, and must be filtered out here,
+                # not trusted just for having appeared in the raw hit list).
+                for gaia_source_id, _ra, _dec, _pmra, _pmdec, phot_g_mean_mag in live_hits_raw.get(i, []):
+                    if gaia_source_id in by_gaia_id:
+                        continue  # already tracked -- richer record wins
+                    sep = propagated_by_live_id[gaia_source_id].separation(target).arcsec
+                    if sep > SHITTY_MATCH_RADIUS_ARCSEC:
+                        continue
+                    by_gaia_id[gaia_source_id] = Candidate(
+                        star_id=None,
+                        gaia_source_id=gaia_source_id,
+                        source_catalog="gaia_untracked",
+                        separation_arcsec=sep,
+                        phot_g_mean_mag=phot_g_mean_mag,
+                    )
+
+                candidates = tracked_untagged + list(by_gaia_id.values())
                 winner, reason = pick_best_candidate(archive_code, candidates)
 
                 if winner is None:
