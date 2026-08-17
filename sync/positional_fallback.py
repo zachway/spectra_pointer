@@ -136,10 +136,20 @@ ARCHIVE_FAINTNESS_CEILING_MAG: dict[str, float] = {
 }
 DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 
+# gaiadr3.gaia_source_lite, not the full gaia_source -- same row count, but
+# only 51 columns instead of 150+, and it's Gaia's own documented
+# optimization for exactly this kind of query ("substantially improve the
+# performance of various types of ADQL queries" -- ESA Gaia archive's
+# "Writing queries" help page, sec. 2.1). Confirmed live 2026-08-17 that
+# gaia_source_lite carries every column this query needs (source_id, ra,
+# dec, pmra, pmdec, phot_g_mean_mag). The dedicated Gaia.cross_match /
+# cross_match_basic helpers were also checked and ruled out for this use
+# case -- their radius argument is hard-capped at 10", well under
+# SHITTY_MATCH_RADIUS_ARCSEC (60", before PM padding).
 GAIA_XMATCH_RADIUS_QUERY = """
 SELECT u.rec_id, g.source_id, g.ra, g.dec, g.pmra, g.pmdec, g.phot_g_mean_mag
 FROM tap_upload.pending AS u
-JOIN gaiadr3.gaia_source AS g
+JOIN gaiadr3.gaia_source_lite AS g
   ON 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', u.ra, u.dec, {radius_deg}))
 """
 
