@@ -13,15 +13,7 @@ analysis this is built on):
    what Gaia actually sees in the field (confirmed live: a G=7.24 star
    sitting 3.5" from a record with zero tracked candidates, simply never
    discovered). Both sides are proper-motion-propagated to each record's own
-   observation epoch before that 60" cutoff is applied precisely (the live
-   Gaia query itself is fetched with a wider, epoch-baseline-padded radius
-   first -- see _gaia_cone_search_batch -- so a fast-mover found by the
-   coarse fetch isn't missed just because Gaia's own DR3 position is fixed
-   at 2016.0 and this project's oldest archives span decades). 60" was
-   chosen over matcher.py's own 2' exploration because the accepted-match
-   distance from that analysis scaled almost 1:1 with the search radius past
-   ~90" -- the tell that a wider radius is finding "the only star in an
-   empty patch of sky," not correctly disambiguating a real target.
+   observation epoch before that 60" cutoff is applied precisely.
 2. A BSC5-tracked star in range wins outright: nothing Gaia sees in the same
    field can outshine a star bright enough that Gaia itself couldn't measure
    it (see ingest.add_star.add_bsc_star's own docstring for why those ~70
@@ -46,14 +38,10 @@ analysis this is built on):
    (e.g. a G=13.96 source at 56.8" vs. a G=16.92 source at only 6.6" in the
    same field) -- this is also the mechanism that protects against a
    transient (nova/CV) whose quiescent Gaia magnitude doesn't reflect what
-   made it observable: if its correctly-positioned, close-but-modest-
-   magnitude counterpart loses purely on brightness to an unrelated bright
-   neighbor further off, that's exactly the ambiguous case this should
-   refuse to call rather than confidently picking the brighter, wrong star.
-   Unlike the faintness ceilings and contrast threshold, this specific ratio
-   has NOT been empirically calibrated against known-good matches the way
-   INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC was (see sync.matcher) -- treat
-   it as a starting guard, not a tuned constant.
+   made it observable. Unlike the faintness ceilings and contrast threshold,
+   this specific ratio has NOT been empirically calibrated against known-good
+   matches the way INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC was (see
+   sync.matcher) -- treat it as a starting guard, not a tuned constant.
 
 Never produces match_status='matched' -- every result lands in needs_review,
 regardless of how strong the evidence looks, since the underlying signal
@@ -63,6 +51,52 @@ transient (a supernova in a host galaxy, say) isn't a star this database can
 correctly resolve to at all -- for those, this mostly just fails to find any
 plausible candidate (no real point source matches), which fails safe rather
 than fails wrong.
+
+Query architecture (rewritten 2026-08-18, replacing an upload+CONTAINS design
+that shipped across PRs #110/#112/#114/#115): the original approach uploaded
+each batch of our own records to Gaia's TAP+ service and cross-matched them
+against gaiadr3.gaia_source_lite via CONTAINS(POINT, CIRCLE) -- a spatial
+join Gaia's query planner apparently can't optimize well for an uploaded
+table, confirmed live overnight 2026-08-17/18: individual jobs ranged from
+5 minutes to over 2 hours (occasionally hitting Gaia's hard 7200s server-side
+abort), and because run_shitty_positional_match only committed once per
+whole multi-bucket chunk, 16+ hours of real Gaia work produced zero durable
+rows.
+
+This version instead walks Gaia's own HEALPix indexing scheme directly. Per
+ESA's Gaia DR3 documentation ("Source Identifiers -- Assignment and Usage
+throughout DPAC", GAIA-C3-TN-ARI-BAS-020), source_id's high bits (36-63)
+encode the source's nested HEALPix level-12 pixel: healpix_L = source_id >>
+(35 + 2*(12-L)) for any level L <= 12. That means "every Gaia source in this
+patch of sky" can be fetched with a plain `source_id BETWEEN x AND y` range
+scan against gaia_source_lite's own primary-key ordering -- no upload table,
+no per-point spatial join at all. Confirmed live 2026-08-18: a single real
+cell (level 7, ~0.21 sq deg) returned 5,724 rows in 366s -- faster than most
+of the old design's CONTAINS jobs, but not a dramatic win either, and a
+matched live check against the real 13.1M-record backlog found it touches
+100% of all possible cells at level 5, 97% at level 6, and 75% at level 7 --
+i.e. this project's pending records are spread across essentially the whole
+sky at any coarse-to-moderate granularity, so coarser levels don't reduce
+round-trip count much, they just make each round trip heavier. Net result:
+fully sequential processing of the whole backlog is on the order of months
+at any level tested -- this rewrite fixes correctness (real proper-motion
+handling) and durability (per-cell commits instead of one commit per giant
+multi-hour chunk), but closing the remaining throughput gap needs a
+separate lever (running multiple Gaia jobs concurrently instead of one at a
+time, and/or a one-time bulk pull of the relevant Gaia catalog slice into a
+local table so future runs skip Gaia's TAP service entirely) -- not yet
+implemented. See GAIA_HEALPIX_LEVEL's own comment for why level 7
+specifically was chosen given that tradeoff.
+
+The new shape also removes the record-chunking and per-archive looping the
+old design needed: instead of "for each archive, for each chunk of records,
+query Gaia," this walks "for each HEALPix cell any pending record (across
+every requested archive at once) falls in, fetch that cell's Gaia pool once
+and match everything in it" -- a HEALPix cell doesn't care which archive a
+record belongs to, so archives sharing sky coverage now share Gaia round
+trips instead of each re-querying overlapping regions. Commits happen once
+per cell rather than once per whole run, so a crash mid-run only loses at
+most one cell's worth of (re-runnable) work.
 """
 
 from __future__ import annotations
@@ -70,12 +104,13 @@ from __future__ import annotations
 import logging
 import time
 from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 
+import astropy_healpix as ah
 import psycopg
 from astropy import units as u
 from astropy.coordinates import SkyCoord
-from astropy.table import Table
 from astroquery.gaia import Gaia
 
 from ingest.add_star import add_stars_batch
@@ -87,36 +122,6 @@ logger = logging.getLogger(__name__)
 # See module docstring point 1 for why 60", not matcher.py's tight 1" or the
 # full 2' this was explored out to.
 SHITTY_MATCH_RADIUS_ARCSEC = 60.0
-
-# How coarsely to bucket a chunk's records by observation year before sizing
-# each bucket's own PM-padded live-Gaia search radius (see run_shitty_
-# positional_match) -- confirmed live 2026-08-17 this matters in practice:
-# dao's backlog alone spans 1986-2026, and a single flat max_years across
-# that whole range pads the search radius to ~369" (6.1') for every record,
-# not just the handful actually that old.
-GAIA_QUERY_TIME_BUCKET_YEARS = 10
-
-# Coarse (RA, Dec) grid cell size (degrees) for grouping a chunk's records by
-# sky position before querying Gaia, nested underneath the epoch bucketing
-# above -- purely a performance grouping, not a correctness filter: every
-# record still gets its own precise CONTAINS/CIRCLE search regardless of
-# which sky bucket it landed in, so a boundary-adjacent record can never be
-# missed the way a bug in an actual spatial WHERE-filter on gaia_source_lite
-# could. The motivation is locality: Gaia's own archive documentation treats
-# HEALPix indexing as central to how gaia_source(_lite) is organized, so a
-# batch of upload points scattered across the whole sky plausibly touches
-# many more disjoint regions of that index than the same batch grouped by
-# proximity. Confirmed live 2026-08-17 that dao's own candidate pool is
-# genuinely scattered (419 of a possible 648 10x10 degree cells populated,
-# full RA range, dec -72 to +90), so this isn't just a theoretical concern
-# for this archive. Deliberately (RA, Dec) together, not RA alone -- RA-only
-# binning badly mis-clusters near the poles, where a small angular
-# separation can span a huge RA range. NOT yet empirically validated against
-# real timing data (unlike GAIA_QUERY_TIME_BUCKET_YEARS's necessity, this is
-# a plausible lever, not a proven one) -- and it trades fewer/heavier Gaia
-# round-trips for more/lighter ones, so the right cell size is a real,
-# untuned open question.
-GAIA_QUERY_SKY_BUCKET_DEG = 15.0
 
 # See module docstring point 4. Confirmed live against this project's own
 # data (2026-08-17): ~32% of records with 2+ candidates within 2' clear this
@@ -158,21 +163,52 @@ ARCHIVE_FAINTNESS_CEILING_MAG: dict[str, float] = {
 }
 DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 
+# HEALPix level (nested scheme) used to bucket both our own pending records
+# and Gaia's own source_id-encoded pixel index -- see module docstring for
+# the source_id encoding this relies on.
+#
+# Level 7 (nside=128) gives ~0.21 sq deg/cell (~27.5' across). Safety margin
+# confirmed live 2026-08-18 against this project's real backlog (13.1M
+# pending records spanning obs_date 1978-02-25 to 2026-08-17): worst-case
+# proper-motion drift is 38 years * MAX_PM_ARCSEC_PER_YEAR = ~6.5', plus
+# SHITTY_MATCH_RADIUS_ARCSEC=60" = ~7.5' worst-case total reach -- comfortably
+# under the ~27.5' cell width (~3.65x margin), so a true candidate for a
+# record in cell C can only ever live in C or its immediate ring of
+# neighbours (see _healpix_cell_and_ring), never further out.
+#
+# Level, not size, was the real open question: the same live check found the
+# backlog touches 100% of all possible cells at level 5 and 97% at level 6 --
+# i.e. coarser levels don't meaningfully reduce the number of Gaia round
+# trips needed once you're already near full-sky coverage, they only make
+# each individual round trip heavier. Level 7 (146,827 occupied cells,
+# confirmed ~366s each for one real cell) was chosen over that or level 8
+# (ESA's own documented level for source_id-range queries, safety margin
+# ~1.83x -- tighter but still positive) specifically for morgan's practical
+# constraints: smaller per-query result sets, and per-cell commits (see
+# run_shitty_positional_match) landing more often, so progress is visible
+# and a crash loses less. NOT chosen to minimize total wall-clock time --
+# at any level tested, fully sequential processing of the whole backlog is
+# on the order of months; see module docstring's note on remaining
+# throughput levers (concurrency, or a one-time bulk catalog pull) still
+# needed to close that gap.
+GAIA_HEALPIX_LEVEL = 7
+
+_HEALPIX = ah.HEALPix(nside=2**GAIA_HEALPIX_LEVEL, order="nested", frame="icrs")
+
 # gaiadr3.gaia_source_lite, not the full gaia_source -- same row count, but
 # only 51 columns instead of 150+, and it's Gaia's own documented
 # optimization for exactly this kind of query ("substantially improve the
 # performance of various types of ADQL queries" -- ESA Gaia archive's
-# "Writing queries" help page, sec. 2.1). Confirmed live 2026-08-17 that
-# gaia_source_lite carries every column this query needs (source_id, ra,
-# dec, pmra, pmdec, phot_g_mean_mag). The dedicated Gaia.cross_match /
-# cross_match_basic helpers were also checked and ruled out for this use
-# case -- their radius argument is hard-capped at 10", well under
-# SHITTY_MATCH_RADIUS_ARCSEC (60", before PM padding).
-GAIA_XMATCH_RADIUS_QUERY = """
-SELECT u.rec_id, g.source_id, g.ra, g.dec, g.pmra, g.pmdec, g.phot_g_mean_mag
-FROM tap_upload.pending AS u
-JOIN gaiadr3.gaia_source_lite AS g
-  ON 1 = CONTAINS(POINT('ICRS', g.ra, g.dec), CIRCLE('ICRS', u.ra, u.dec, {radius_deg}))
+# "Writing queries" help page, sec. 2.1). The dedicated Gaia.cross_match /
+# cross_match_basic helpers were checked and ruled out for this use case --
+# their radius argument is hard-capped at 10", well under
+# SHITTY_MATCH_RADIUS_ARCSEC (60", before PM padding); source_id range
+# scanning sidesteps that limitation entirely since it isn't a radius search
+# at all.
+GAIA_HEALPIX_POOL_QUERY = """
+SELECT source_id, ra, dec, pmra, pmdec, phot_g_mean_mag
+FROM gaiadr3.gaia_source_lite
+WHERE {ranges_clause}
 """
 
 GAIA_LAUNCH_JOB_ATTEMPTS = 5
@@ -182,21 +218,38 @@ GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 # async(background=False) (the default) blocks internally inside astroquery
 # until the job finishes, with no visibility into whether it's PENDING,
 # QUEUED, or EXECUTING the whole time -- confirmed live 2026-08-17: a real
-# prod run sat with ~0% CPU and zero log output for 30+ minutes on a single
-# chunk with no way to tell whether it was stuck or just slow. background=
-# True plus polling here trades a few extra round trips for that visibility.
+# prod run sat with ~0% CPU and zero log output for 30+ minutes with no way
+# to tell whether it was stuck or just slow. background=True plus polling
+# here trades a few extra round trips for that visibility.
 GAIA_JOB_POLL_SECONDS = 10
 
+# How many HEALPix cells' Gaia fetches to keep in flight at once (see
+# run_shitty_positional_match) -- confirmed live 2026-08-18 that Gaia's
+# TAP+ service does not give a clean multiplicative speedup from client-side
+# concurrency. At 5-way: 2 of 5 launches failed transiently (recovered by
+# the retry logic above) and real per-job slowdown once running (a cell that
+# took 366s isolated took 987s under 5-way load; individual jobs ranged
+# 806-1886s+, one didn't finish in ~40 minutes) -- consistent with
+# server-side fair-share throttling for concurrent jobs from the same
+# session, not something fixable client-side. At 2-way, re-tested the same
+# way: both launches succeeded cleanly (no transient failures), and the one
+# cell also tested at 5-way was faster (861s vs. 1265s at 5-way, still
+# slower than the 366s fully-isolated baseline) -- a real but partial
+# improvement, not a clean 2x. One of the two test cells didn't finish in
+# ~35 minutes at 2-way either, matching its own behaviour at 5-way, so that
+# appears to be a slow/dense cell rather than a concurrency artifact. Chosen
+# as the safer point on this tradeoff given the 5-way failures; not
+# exhaustively tuned against 3+.
+GAIA_FETCH_CONCURRENCY = 2
 
-def _launch_gaia_upload_job(query: str, upload_resource, upload_table_name: str):
+
+def _launch_gaia_job(query: str):
     """Gaia.launch_job_async, retried on transient TAP failures -- same
-    reasoning as ingest.add_star._launch_gaia_job (not reused directly since
-    that one doesn't accept upload_resource/upload_table_name), but the async
-    variant specifically: confirmed live that the synchronous endpoint
-    (Gaia.launch_job) hard-times-out (HTTP 408) on an uploaded-table
-    cross-match against gaia_source, even for a handful of rows -- the sync
-    endpoint's time budget doesn't fit this query shape, only the async one
-    does.
+    reasoning as ingest.add_star._launch_gaia_job (a different module's
+    sync-based retry helper, not reused directly here since this one needs
+    the async/polling variant): confirmed live that the synchronous endpoint
+    (Gaia.launch_job) injects a client-side TOP 2000 and isn't suitable for
+    an unbounded-size result like a HEALPix cell's full source pool.
 
     Launched with background=True and polled explicitly (see
     GAIA_JOB_POLL_SECONDS) rather than left to astroquery's own internal
@@ -206,9 +259,7 @@ def _launch_gaia_upload_job(query: str, upload_resource, upload_table_name: str)
     last_exc: Exception | None = None
     for attempt in range(GAIA_LAUNCH_JOB_ATTEMPTS):
         try:
-            job = Gaia.launch_job_async(
-                query, upload_resource=upload_resource, upload_table_name=upload_table_name, background=True,
-            )
+            job = Gaia.launch_job_async(query, background=True)
             start = time.monotonic()
             last_phase = None
             while not job.is_finished():
@@ -229,7 +280,7 @@ def _launch_gaia_upload_job(query: str, upload_resource, upload_table_name: str)
             if attempt < GAIA_LAUNCH_JOB_ATTEMPTS - 1:
                 delay = GAIA_LAUNCH_JOB_BACKOFF_SECONDS * (2**attempt)
                 logger.warning(
-                    "Gaia TAP upload cross-match failed (attempt %d/%d), retrying in %ds: %s",
+                    "Gaia TAP range-scan failed (attempt %d/%d), retrying in %ds: %s",
                     attempt + 1, GAIA_LAUNCH_JOB_ATTEMPTS, delay, exc,
                 )
                 time.sleep(delay)
@@ -249,17 +300,28 @@ def faintness_ceiling_mag(archive_code: str) -> float:
     return ARCHIVE_FAINTNESS_CEILING_MAG.get(archive_code, DEFAULT_FAINTNESS_CEILING_MAG)
 
 
-def _sky_bucket(ra: float, dec: float) -> tuple[int, int]:
-    """See GAIA_QUERY_SKY_BUCKET_DEG -- a coarse grouping key only, purely
-    for query-batching locality, never a search boundary: every record still
-    gets its own precise CONTAINS/CIRCLE search regardless of which bucket
-    it lands in, so a record can never be missed by landing in the "wrong"
-    bucket. The one known imprecision is the RA=0/360 seam (a point at
-    359.9 and one at 0.1 are ~0.2 deg apart on sky but land in different
-    buckets) -- harmless for the same reason, just a missed locality
-    grouping for that pair, not a missed match.
-    """
-    return (int(ra // GAIA_QUERY_SKY_BUCKET_DEG), int(dec // GAIA_QUERY_SKY_BUCKET_DEG))
+def _healpix_cell(ra: float, dec: float) -> int:
+    return int(_HEALPIX.lonlat_to_healpix(ra * u.deg, dec * u.deg))
+
+
+def _healpix_source_id_range(pix: int) -> tuple[int, int]:
+    """See module docstring's source_id encoding. shift=35 converts a level-
+    12 pixel index to source_id's leading bits; the extra 2*(12-level) widens
+    that to whatever coarser GAIA_HEALPIX_LEVEL pixel this project actually
+    buckets by (each level up merges 4 child pixels into 1, i.e. 2 more bits)."""
+    shift = 35 + 2 * (12 - GAIA_HEALPIX_LEVEL)
+    return pix << shift, ((pix + 1) << shift) - 1
+
+
+def _healpix_cell_and_ring(pix: int) -> list[int]:
+    """pix plus its (up to 8) immediate neighbours -- see GAIA_HEALPIX_LEVEL
+    for why this ring is guaranteed wide enough to catch every true
+    candidate for any record whose own cell is pix. Near the poles HEALPix
+    cells are irregular and neighbours() can repeat/omit entries; harmless
+    here since this only ever widens or leaves unchanged the fetched area,
+    never narrows it below a full ring."""
+    neighbours = [int(n) for n in _HEALPIX.neighbours(pix) if n >= 0]
+    return sorted(set([pix, *neighbours]))
 
 
 def pick_best_candidate(archive_code: str, candidates: list[Candidate]) -> tuple[Candidate | None, str]:
@@ -321,154 +383,99 @@ def _load_tracked_candidates(conn: psycopg.Connection, target_ra: list[float], t
         return cur.fetchall()
 
 
-def _gaia_cone_search_batch(records: list[RawObservation], radius_arcsec: float, max_years: float) -> dict[int, list[tuple]]:
-    """Batched Gaia DR3 cone search via table upload -- one TAP round trip for
-    the whole chunk instead of one per record (same batching reasoning as
-    ingest.add_star's own batch queries: Gaia's TAP+ endpoint starts erroring
-    after ~10 back-to-back queries in a short window).
-
-    Returns rec_id (index into `records`) -> [(gaia_source_id, ra, dec, pmra, pmdec, phot_g_mean_mag), ...]
-    -- raw astrometry, NOT yet propagated or filtered to radius_arcsec. The
-    query's own search radius is padded by max_years' worth of worst-case
-    proper motion (matcher.MAX_PM_ARCSEC_PER_YEAR, same reasoning as
-    matcher._load_candidate_stars) so a fast-mover isn't missed outright by
-    a search centered on Gaia's fixed 2016.0-epoch position when the record
-    itself may be decades older -- this project's oldest archives (DAO,
-    Lick, ...) genuinely span that range. The caller (run_shitty_
-    positional_match) is responsible for propagating these to each record's
-    own actual observation epoch and filtering precisely down to
-    radius_arcsec, exactly as it already does for tracked `stars`
-    candidates -- this coarse, padded fetch only narrows Gaia's ~1.8B rows
-    down to a manageable candidate set.
+def _gaia_healpix_pool(pixels: list[int]) -> list[tuple]:
+    """Every Gaia source in the given set of HEALPix pixels, via a plain
+    source_id range scan (see module docstring) -- raw 2016.0-epoch
+    astrometry, not yet propagated to any particular observation epoch.
     """
-    if not records:
-        return {}
-    upload = Table({
-        "rec_id": list(range(len(records))),
-        "ra": [r.ra for r in records],
-        "dec": [r.dec for r in records],
-    })
-    padded_radius_deg = (radius_arcsec + matcher.MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
-    query = GAIA_XMATCH_RADIUS_QUERY.format(radius_deg=padded_radius_deg)
-    job = _launch_gaia_upload_job(query, upload, "pending")
+    ranges_clause = " OR ".join(
+        f"source_id BETWEEN {lo} AND {hi}"
+        for lo, hi in (_healpix_source_id_range(p) for p in pixels)
+    )
+    query = GAIA_HEALPIX_POOL_QUERY.format(ranges_clause=ranges_clause)
+    job = _launch_gaia_job(query)
     table = job.get_results()
-
-    out: dict[int, list[tuple]] = defaultdict(list)
-    for row in table:
-        out[int(row["rec_id"])].append((
+    return [
+        (
             int(row["source_id"]),
             float(row["ra"]), float(row["dec"]),
             clean_float(row["pmra"]), clean_float(row["pmdec"]),
             clean_float(row["phot_g_mean_mag"]),
-        ))
+        )
+        for row in table
+    ]
+
+
+def _search_around(targets: SkyCoord, propagated: SkyCoord, ids: list, radius_arcsec: float) -> dict[int, list[tuple]]:
+    """target-local-index -> [(candidate_id, separation_arcsec), ...] --
+    vectorized KD-tree cross-match (astropy's search_around_sky), same
+    pattern matcher.match_records already uses for its own candidate pool.
+    search_around_sky's first return value indexes its *argument*
+    (propagated), the second indexes self (targets) -- the reverse of what
+    the field names suggest. Verified empirically (see matcher.py's own note).
+    """
+    idx_cat, idx_target, sep2d, _ = targets.search_around_sky(propagated, radius_arcsec * u.arcsec)
+    out: dict[int, list[tuple]] = defaultdict(list)
+    for cat_i, target_i, sep in zip(idx_cat, idx_target, sep2d):
+        out[int(target_i)].append((ids[cat_i], sep.arcsec))
     return out
 
 
-def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
-    """Entry point -- operates only on records that already carry a raw
-    position (ra/dec/obs_date); a record with no position at all isn't in
-    scope for this fallback. Always writes match_status='needs_review', never
-    'matched' -- see module docstring.
+def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[str, RawObservation]], pool: list[tuple], radius_deg: float) -> dict:
+    """The local (DB + matching) work for one already-fetched HEALPix cell --
+    split out from the Gaia fetch (_gaia_healpix_pool) so the fetch
+    (network-bound, minutes) and this (DB + vectorized matching, fast) can be
+    pipelined across cells instead of the whole run waiting on one fetch at a
+    time -- see GAIA_FETCH_CONCURRENCY and run_shitty_positional_match.
     """
     counts = {"shitty_matched": 0, "no_confident_candidate": 0}
+    cell_records = [r for _, r in cell_entries]
 
-    positional = [
-        r for r in records
-        if r.ra is not None and r.dec is not None and r.obs_date is not None and -90.0 <= r.dec <= 90.0
-    ]
-    if not positional:
-        return counts
-
-    radius_deg = SHITTY_MATCH_RADIUS_ARCSEC / 3600.0
-    tracked_rows = _load_tracked_candidates(conn, [r.ra for r in positional], [r.dec for r in positional], radius_deg)
+    tracked_rows = _load_tracked_candidates(
+        conn, [r.ra for r in cell_records], [r.dec for r in cell_records], radius_deg,
+    )
     star_positions = {row[0]: row for row in tracked_rows}  # star_id -> full row
 
+    live_astrometry = {
+        source_id: (ra, dec, matcher.GAIA_DR3_REF_EPOCH, pmra, pmdec, mag)
+        for source_id, ra, dec, pmra, pmdec, mag in pool
+    }
+
     # Grouped by observation epoch, same reasoning as matcher.match_records:
-    # a batch here can span an archive's whole backlog (years to decades),
-    # and propagating every tracked star to only one record's epoch while
-    # reusing that for every other record would silently misplace any
+    # a cell's records can span an archive's whole backlog (years to
+    # decades), and propagating every candidate to only one record's epoch
+    # while reusing that for every other record would silently misplace any
     # fast-mover proportional to how far its actual epoch is from the one
-    # used -- exactly the bug matcher.py's own by_epoch grouping exists to
-    # avoid.
+    # used.
     by_epoch: dict[float, list[int]] = defaultdict(list)
-    for i, r in enumerate(positional):
-        by_epoch[matcher._to_jyear(r.obs_date)].append(i)
-
-    propagated_by_epoch_and_star: dict[float, dict[int, SkyCoord]] = {}
-    if star_positions:
-        propagate_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]
-        for epoch in by_epoch:
-            ids, propagated = matcher._propagate(propagate_rows, epoch)
-            propagated_by_epoch_and_star[epoch] = dict(zip(ids, propagated))
-
-    # Coarse, padded fetch (see _gaia_cone_search_batch) -- bucketed by
-    # distance from Gaia DR3's own fixed 2016.0 epoch, not by calendar
-    # decade. A single worst-case radius forces every record to pay for
-    # whichever one observation in the chunk happens to be oldest --
-    # confirmed live: dao's own backlog spans 1986-2026, padding the search
-    # radius to ~369" (6.1', ~36x the unpadded area) for every record in a
-    # chunk even though most of them are far more recent and need much
-    # less. Bucketing by *calendar* decade would still needlessly split,
-    # e.g., a 2019 and a 2020 record into separate buckets/queries despite
-    # both being only ~3-4 years from 2016.0 -- and wouldn't exploit that
-    # padding is symmetric (a record 6 years before 2016 needs exactly the
-    # padding as one 6 years after). Bucketing by |year - 2016| in fixed-
-    # width tiers instead groups by what actually drives the padding, while
-    # still bounding the extra Gaia round-trips per chunk to a handful.
-    epoch_buckets: dict[int, list[int]] = defaultdict(list)
-    for i, r in enumerate(positional):
-        years_from_gaia_epoch = abs(r.obs_date.year - matcher.GAIA_DR3_REF_EPOCH)
-        epoch_buckets[int(years_from_gaia_epoch // GAIA_QUERY_TIME_BUCKET_YEARS)].append(i)
-
-    # Sky-position bucketing nested underneath the epoch bucketing (see
-    # GAIA_QUERY_SKY_BUCKET_DEG) -- groups each epoch bucket's records by
-    # coarse (RA, Dec) cell before querying, so one Gaia round-trip searches
-    # a spatially clustered batch of points instead of one scattered across
-    # the whole sky.
-    live_hits_raw: dict[int, list[tuple]] = {}
-    for epoch_idxs in epoch_buckets.values():
-        sky_buckets: dict[tuple[int, int], list[int]] = defaultdict(list)
-        for i in epoch_idxs:
-            sky_buckets[_sky_bucket(positional[i].ra, positional[i].dec)].append(i)
-
-        for idxs in sky_buckets.values():
-            bucket_records = [positional[i] for i in idxs]
-            bucket_max_years = max(
-                abs(matcher._to_jyear(r.obs_date) - matcher.GAIA_DR3_REF_EPOCH) for r in bucket_records
-            )
-            bucket_hits = _gaia_cone_search_batch(bucket_records, SHITTY_MATCH_RADIUS_ARCSEC, bucket_max_years)
-            for local_rec_id, hits in bucket_hits.items():
-                live_hits_raw[idxs[local_rec_id]] = hits
-
-    # Dedup live candidates by gaia_source_id across the whole batch (the
-    # same nearby star can show up as a raw candidate for many records) so
-    # each one is only propagated once per epoch, same as tracked stars.
-    live_astrometry: dict[int, tuple] = {}
-    for hits in live_hits_raw.values():
-        for gaia_source_id, ra, dec, pmra, pmdec, phot_g_mean_mag in hits:
-            live_astrometry[gaia_source_id] = (ra, dec, matcher.GAIA_DR3_REF_EPOCH, pmra, pmdec, phot_g_mean_mag)
-
-    propagated_by_epoch_and_live_id: dict[float, dict[int, SkyCoord]] = {}
-    if live_astrometry:
-        propagate_rows = [(gid, row[0], row[1], row[2], row[3], row[4]) for gid, row in live_astrometry.items()]
-        for epoch in by_epoch:
-            ids, propagated = matcher._propagate(propagate_rows, epoch)
-            propagated_by_epoch_and_live_id[epoch] = dict(zip(ids, propagated))
+    for local_i, r in enumerate(cell_records):
+        by_epoch[matcher._to_jyear(r.obs_date)].append(local_i)
 
     with conn.cursor() as cur:
-        for epoch, indices in by_epoch.items():
-            propagated_by_star_id = propagated_by_epoch_and_star.get(epoch, {})
-            propagated_by_live_id = propagated_by_epoch_and_live_id.get(epoch, {})
-            for i in indices:
-                r = positional[i]
-                target = SkyCoord(ra=r.ra * u.deg, dec=r.dec * u.deg)
+        for epoch, local_idxs in by_epoch.items():
+            epoch_records = [cell_records[i] for i in local_idxs]
+            targets = SkyCoord(ra=[r.ra for r in epoch_records] * u.deg, dec=[r.dec for r in epoch_records] * u.deg)
+
+            tracked_hits: dict[int, list[tuple]] = {}
+            if star_positions:
+                star_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]
+                star_ids, star_propagated = matcher._propagate(star_rows, epoch)
+                tracked_hits = _search_around(targets, star_propagated, star_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+
+            live_hits: dict[int, list[tuple]] = {}
+            if live_astrometry:
+                live_rows = [(gid, row[0], row[1], row[2], row[3], row[4]) for gid, row in live_astrometry.items()]
+                live_ids, live_propagated = matcher._propagate(live_rows, epoch)
+                live_hits = _search_around(targets, live_propagated, live_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+
+            for pos, local_i in enumerate(local_idxs):
+                archive_code, r = cell_entries[local_i]
 
                 by_gaia_id: dict[int, Candidate] = {}
                 tracked_untagged = []
-                for star_id, gaia_source_id, source_catalog, ra, dec, ref_epoch, pmra, pmdec, phot_g_mean_mag in star_positions.values():
-                    sep = propagated_by_star_id[star_id].separation(target).arcsec
-                    if sep > SHITTY_MATCH_RADIUS_ARCSEC:
-                        continue
+                for star_id, sep in tracked_hits.get(pos, []):
+                    row = star_positions[star_id]
+                    _, gaia_source_id, source_catalog, _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = row
                     cand = Candidate(
                         star_id=star_id,
                         gaia_source_id=gaia_source_id,
@@ -481,18 +488,13 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
                     else:
                         tracked_untagged.append(cand)
 
-                # PM-propagated the same way as tracked stars above -- see
-                # _gaia_cone_search_batch's docstring for why this matters
-                # (a fast-mover found by the padded coarse fetch can still
-                # sit outside the true 60" radius once precisely propagated
-                # to this record's own epoch, and must be filtered out here,
-                # not trusted just for having appeared in the raw hit list).
-                for gaia_source_id, _ra, _dec, _pmra, _pmdec, phot_g_mean_mag in live_hits_raw.get(i, []):
+                # PM-propagated the same way as tracked stars above -- only
+                # 60"-precise once propagated to this record's own epoch,
+                # not trusted just for having appeared in the raw cell pool.
+                for gaia_source_id, sep in live_hits.get(pos, []):
                     if gaia_source_id in by_gaia_id:
                         continue  # already tracked -- richer record wins
-                    sep = propagated_by_live_id[gaia_source_id].separation(target).arcsec
-                    if sep > SHITTY_MATCH_RADIUS_ARCSEC:
-                        continue
+                    _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = live_astrometry[gaia_source_id]
                     by_gaia_id[gaia_source_id] = Candidate(
                         star_id=None,
                         gaia_source_id=gaia_source_id,
@@ -524,4 +526,71 @@ def run_shitty_positional_match(conn: psycopg.Connection, archive_code: str, rec
                 counts["shitty_matched"] += 1
                 logger.info("%s: shitty_positional_match %s -> star_id %d (%s)", archive_code, r.archive_obs_id, star_id, reason)
     conn.commit()
+    logger.info("healpix cell %d: %d records processed -> %s", cell, len(cell_records), counts)
+    return counts
+
+
+def run_shitty_positional_match(conn: psycopg.Connection, records_by_archive: dict[str, list[RawObservation]]) -> dict:
+    """Entry point -- operates only on records that already carry a raw
+    position (ra/dec/obs_date); a record with no position at all isn't in
+    scope for this fallback. Always writes match_status='needs_review', never
+    'matched' -- see module docstring.
+
+    Takes every requested archive's records at once (not one archive/chunk
+    at a time -- see module docstring) and buckets them by HEALPix cell:
+    the unit of Gaia work is now "one cell's source pool," shared by however
+    many archives happen to have pending records in that patch of sky.
+    Commits once per cell, so a crash mid-run loses at most one cell's worth
+    of (re-runnable) work.
+
+    Fetches (the network-bound part, minutes per cell) are pipelined up to
+    GAIA_FETCH_CONCURRENCY at a time; the DB + matching work for a completed
+    cell (_process_cell, fast) runs on this thread while further fetches
+    continue in the background. See GAIA_FETCH_CONCURRENCY's own comment for
+    why 2, not more.
+    """
+    counts = {"shitty_matched": 0, "no_confident_candidate": 0}
+
+    entries: list[tuple[str, RawObservation]] = []
+    for archive_code, records in records_by_archive.items():
+        for r in records:
+            if r.ra is not None and r.dec is not None and r.obs_date is not None and -90.0 <= r.dec <= 90.0:
+                entries.append((archive_code, r))
+    if not entries:
+        return counts
+
+    by_cell: dict[int, list[int]] = defaultdict(list)
+    for i, (_, r) in enumerate(entries):
+        by_cell[_healpix_cell(r.ra, r.dec)].append(i)
+
+    radius_deg = SHITTY_MATCH_RADIUS_ARCSEC / 3600.0
+    cells = list(by_cell.items())
+
+    with ThreadPoolExecutor(max_workers=GAIA_FETCH_CONCURRENCY) as executor:
+        cell_iter = iter(cells)
+        in_flight: dict[Future, tuple[int, list[int]]] = {}
+
+        def submit_next() -> None:
+            item = next(cell_iter, None)
+            if item is None:
+                return
+            cell, idxs = item
+            fut = executor.submit(_gaia_healpix_pool, _healpix_cell_and_ring(cell))
+            in_flight[fut] = (cell, idxs)
+
+        for _ in range(GAIA_FETCH_CONCURRENCY):
+            submit_next()
+
+        while in_flight:
+            done, _ = wait(list(in_flight.keys()), return_when=FIRST_COMPLETED)
+            for fut in done:
+                cell, idxs = in_flight.pop(fut)
+                pool = fut.result()
+                submit_next()  # keep the pipeline full as soon as a slot frees up
+
+                cell_entries = [entries[i] for i in idxs]
+                cell_counts = _process_cell(conn, cell, cell_entries, pool, radius_deg)
+                for key, value in cell_counts.items():
+                    counts[key] = counts.get(key, 0) + value
+
     return counts

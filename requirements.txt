@@ -1,5 +1,6 @@
 astroquery
 astropy
+astropy-healpix
 skyplothelper[plotly]
 psycopg[binary]
 beautifulsoup4

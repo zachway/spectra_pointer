@@ -14,6 +14,12 @@ on a tight schedule -- unlike scripts.reprocess_against_new_stars, nothing
 about *this* fallback's inputs changes between runs except newly-tracked
 stars and whatever Gaia itself updates.
 
+No per-archive/per-chunk looping here -- run_shitty_positional_match takes
+every requested archive's candidates at once and paces itself by HEALPix
+cell internally (see sync/positional_fallback.py's module docstring), so
+archives sharing sky coverage share Gaia round trips instead of each
+re-querying overlapping regions.
+
 Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.shitty_positional_match
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.shitty_positional_match --only eso lick
@@ -32,14 +38,6 @@ from sync.positional_fallback import run_shitty_positional_match
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
-
-# Each chunk is one live Gaia TAP upload-cross-match round trip (see
-# sync.positional_fallback._gaia_cone_search_batch) -- smaller than
-# ingest.add_star's BATCH_CHUNK_SIZE=5000 (a plain ID lookup) since a spatial
-# cross-match against gaiadr3.gaia_source is much heavier per row. Not yet
-# stress-tested at scale; a reasonable starting point, not an empirically
-# tuned value the way the other constants in this project are.
-CHUNK_SIZE = 500
 
 
 def _load_candidates(conn: psycopg.Connection, only_archives: list[str] | None) -> dict:
@@ -65,18 +63,7 @@ def run(conn: psycopg.Connection, only_archives: list[str] | None = None) -> dic
     total_candidates = sum(len(v) for v in by_archive.values())
     logger.info("shitty_positional_match: %d candidates across %d archives", total_candidates, len(by_archive))
 
-    totals: dict[str, int] = {}
-    for archive_code, records in by_archive.items():
-        for i in range(0, len(records), CHUNK_SIZE):
-            chunk = records[i : i + CHUNK_SIZE]
-            counts = run_shitty_positional_match(conn, archive_code, chunk)
-            for key, value in counts.items():
-                totals[key] = totals.get(key, 0) + value
-            logger.info(
-                "%s: processed %d/%d -> %s",
-                archive_code, min(i + CHUNK_SIZE, len(records)), len(records), counts,
-            )
-    return totals
+    return run_shitty_positional_match(conn, by_archive)
 
 
 def main() -> None:
