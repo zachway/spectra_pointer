@@ -7,7 +7,11 @@ from sync import positional_fallback
 from sync.base import RawObservation
 from sync.positional_fallback import (
     Candidate,
+    GAIA_HEALPIX_LEVEL,
     MAG_CONTRAST_THRESHOLD_MAG,
+    _healpix_cell,
+    _healpix_cell_and_ring,
+    _healpix_source_id_range,
     faintness_ceiling_mag,
     pick_best_candidate,
     run_shitty_positional_match,
@@ -90,24 +94,54 @@ def test_close_bright_winner_not_blocked_by_distant_fainter_candidate():
     assert winner is close_bright
 
 
-# Integration test: exercises the one path the pure pick_best_candidate unit
-# tests above can't reach -- a live-Gaia hit with no existing `stars` row at
-# all gets registered as a new star (via ingest.add_star.add_stars_batch)
-# before the holding is upserted. Both live Gaia calls involved (the upload
-# cross-match here, and add_stars_batch's own batch astrometry lookup) are
-# mocked, following the same monkeypatch.setattr(...Gaia, "launch_job", ...)
-# pattern test_add_star.py already uses.
+# -- HEALPix helpers -----------------------------------------------------
+# See sync/positional_fallback.py's module docstring: source_id's high bits
+# encode a nested-scheme HEALPix pixel per ESA's own documentation
+# (GAIA-C3-TN-ARI-BAS-020), so these are checked against that encoding
+# directly rather than against any live Gaia data.
+
+def test_healpix_source_id_range_matches_documented_encoding():
+    shift = 35 + 2 * (12 - GAIA_HEALPIX_LEVEL)
+    lo, hi = _healpix_source_id_range(0)
+    assert lo == 0
+    assert hi == (1 << shift) - 1
+
+    lo2, hi2 = _healpix_source_id_range(1)
+    assert lo2 == hi + 1  # pixel 1's range starts right after pixel 0's ends
+
+
+def test_healpix_cell_and_ring_includes_self_and_neighbours():
+    pix = _healpix_cell(200.0, 30.0)
+    ring = _healpix_cell_and_ring(pix)
+    assert pix in ring
+    assert len(ring) >= 5  # itself + most of a ring of 8 (poles can have fewer)
+
+
+def test_healpix_cell_is_stable_for_nearby_points():
+    # Two points a few arcsec apart, nowhere near a pixel boundary, must
+    # land in the same cell -- this is the whole basis for batching Gaia
+    # round trips by cell instead of by record.
+    assert _healpix_cell(150.0, 10.0) == _healpix_cell(150.0001, 10.0001)
+
+
+# -- Integration test: exercises the one path the pure pick_best_candidate
+# unit tests above can't reach -- a live-Gaia hit with no existing `stars`
+# row at all gets registered as a new star (via ingest.add_star.
+# add_stars_batch) before the holding is upserted. Both live Gaia calls
+# involved (the HEALPix pool fetch here, and add_stars_batch's own batch
+# astrometry lookup) are mocked, following the same
+# monkeypatch.setattr(...Gaia, "launch_job", ...) pattern test_add_star.py
+# already uses.
 
 NEW_TEST_GAIA_ID = 900000000000500001
 
 
-class _FakeXmatchJob:
+class _FakeHealpixPoolJob:
     def get_results(self):
         # ra/dec placed exactly 5" north of the test record's (50.0, 20.0)
         # position, zero proper motion -- separation stays 5" regardless of
         # which epoch it gets propagated to.
         return Table({
-            "rec_id": [0],
             "source_id": [NEW_TEST_GAIA_ID],
             "ra": [50.0], "dec": [20.0 + 5.0 / 3600.0],
             "pmra": [0.0], "pmdec": [0.0],
@@ -128,8 +162,8 @@ class _FakeAstrometryJob:
 
 def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeypatch):
     monkeypatch.setattr(
-        positional_fallback, "_launch_gaia_upload_job",
-        lambda query, upload, name: _FakeXmatchJob(),
+        positional_fallback, "_launch_gaia_job",
+        lambda query: _FakeHealpixPoolJob(),
     )
     from ingest import add_star as add_star_module
     monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
@@ -138,7 +172,7 @@ def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeyp
         archive_obs_id="shitty-2", archive_url="http://example.test/shitty-2",
         ra=50.0, dec=20.0, obs_date=date(2020, 1, 1),
     )
-    counts = run_shitty_positional_match(conn, "unit_test", [rec])
+    counts = run_shitty_positional_match(conn, {"unit_test": [rec]})
     assert counts["shitty_matched"] == 1
 
     with conn.cursor() as cur:
@@ -154,99 +188,9 @@ def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeyp
     assert theta == pytest.approx(5.0)
 
 
-def test_gaia_queries_are_bucketed_by_decade_not_worst_case_for_whole_chunk(conn, monkeypatch):
-    """A chunk spanning two decades should issue one Gaia query per decade
-    bucket, each padded only for its own records' epoch spread -- not one
-    query padded for the single oldest record in the whole chunk.
-    """
-    calls = []
-
-    def fake_cone_search(records, radius_arcsec, max_years):
-        calls.append((len(records), max_years))
-        return {}
-
-    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
-
-    recent = RawObservation(
-        archive_obs_id="bucket-recent", archive_url="http://example.test/bucket-recent",
-        ra=50.0, dec=20.0, obs_date=date(2020, 1, 1),
-    )
-    old = RawObservation(
-        archive_obs_id="bucket-old", archive_url="http://example.test/bucket-old",
-        ra=60.0, dec=30.0, obs_date=date(1986, 1, 1),
-    )
-    run_shitty_positional_match(conn, "unit_test", [recent, old])
-
-    assert len(calls) == 2, "expected one Gaia query per decade bucket, not one for the whole chunk"
-    sizes_and_years = sorted(calls, key=lambda c: c[1])
-    (_, small_max_years), (_, big_max_years) = sizes_and_years
-    # The recent (2020) record's own padding should be small (~4 years from
-    # Gaia's 2016.0 epoch), nowhere near the old (1986) record's ~30 years --
-    # the whole point of bucketing is that the recent record's query isn't
-    # forced to pay for the old one's much wider drift budget.
-    assert small_max_years < 10
-    assert big_max_years > 25
-
-
-def test_gaia_query_buckets_are_symmetric_around_gaia_epoch(conn, monkeypatch):
-    """Records equally far before vs. after Gaia's 2016.0 epoch need
-    identical padding and should share one bucket/query -- calendar-decade
-    bucketing would miss this (2010 and 2022 are both ~6 years from 2016.0
-    but fall in different calendar decades).
-    """
-    calls = []
-
-    def fake_cone_search(records, radius_arcsec, max_years):
-        calls.append(len(records))
-        return {}
-
-    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
-
-    # Same sky position for both -- isolating epoch-bucketing behavior from
-    # the separate sky-position bucketing (see GAIA_QUERY_SKY_BUCKET_DEG),
-    # which would otherwise also split these into two buckets/queries.
-    before = RawObservation(
-        archive_obs_id="sym-before", archive_url="http://example.test/sym-before",
-        ra=50.0, dec=20.0, obs_date=date(2010, 1, 1),  # 6 years before 2016.0
-    )
-    after = RawObservation(
-        archive_obs_id="sym-after", archive_url="http://example.test/sym-after",
-        ra=50.0, dec=20.0, obs_date=date(2022, 1, 1),  # 6 years after 2016.0
-    )
-    run_shitty_positional_match(conn, "unit_test", [before, after])
-
-    assert calls == [2], "both records are ~6 years from the Gaia epoch and should share one query"
-
-
-def test_gaia_query_buckets_split_calendar_adjacent_but_epoch_distant_records(conn, monkeypatch):
-    """2019 and 2020 are calendar-adjacent but a naive calendar-decade
-    bucket would still split e.g. 2009/2020 despite both being far from
-    2016.0 in the same direction -- confirm distance-from-epoch, not
-    calendar year, drives bucketing."""
-    calls = []
-
-    def fake_cone_search(records, radius_arcsec, max_years):
-        calls.append(max_years)
-        return {}
-
-    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
-
-    near = RawObservation(
-        archive_obs_id="near-epoch", archive_url="http://example.test/near-epoch",
-        ra=50.0, dec=20.0, obs_date=date(2017, 1, 1),  # 1 year from 2016.0
-    )
-    far = RawObservation(
-        archive_obs_id="far-epoch", archive_url="http://example.test/far-epoch",
-        ra=60.0, dec=30.0, obs_date=date(1995, 1, 1),  # 21 years from 2016.0
-    )
-    run_shitty_positional_match(conn, "unit_test", [near, far])
-
-    assert sorted(calls) == pytest.approx([1, 21], abs=0.01)
-
-
 class _FakePhaseJob:
     """Simulates a real astroquery Job's phase transitions for testing
-    _launch_gaia_upload_job's polling loop without touching the network."""
+    _launch_gaia_job's polling loop without touching the network."""
 
     def __init__(self, phases, jobid="fake-job-1"):
         self._phases = list(phases)
@@ -262,82 +206,103 @@ class _FakePhaseJob:
         return self._phase
 
     def get_results(self):
-        return Table({"rec_id": [], "source_id": [], "ra": [], "dec": [], "pmra": [], "pmdec": [], "phot_g_mean_mag": []})
+        return Table({"source_id": [], "ra": [], "dec": [], "pmra": [], "pmdec": [], "phot_g_mean_mag": []})
 
 
-def test_launch_gaia_upload_job_polls_until_completed(monkeypatch):
+def test_launch_gaia_job_polls_until_completed(monkeypatch):
     job = _FakePhaseJob(["QUEUED", "EXECUTING", "COMPLETED"])
     monkeypatch.setattr(
         positional_fallback.Gaia, "launch_job_async",
-        lambda query, upload_resource, upload_table_name, background: job,
+        lambda query, background: job,
     )
     sleeps = []
     monkeypatch.setattr(positional_fallback.time, "sleep", lambda s: sleeps.append(s))
 
-    result = positional_fallback._launch_gaia_upload_job("SELECT 1", Table(), "pending")
+    result = positional_fallback._launch_gaia_job("SELECT 1")
 
     assert result is job
     assert len(sleeps) == 2  # polled between QUEUED->EXECUTING and EXECUTING->COMPLETED
 
 
-def test_launch_gaia_upload_job_raises_on_error_phase(monkeypatch):
+def test_launch_gaia_job_raises_on_error_phase(monkeypatch):
     job = _FakePhaseJob(["QUEUED", "ERROR"])
     monkeypatch.setattr(
         positional_fallback.Gaia, "launch_job_async",
-        lambda query, upload_resource, upload_table_name, background: job,
+        lambda query, background: job,
     )
     monkeypatch.setattr(positional_fallback.time, "sleep", lambda s: None)
     monkeypatch.setattr(positional_fallback, "GAIA_LAUNCH_JOB_ATTEMPTS", 1)
 
     with pytest.raises(RuntimeError, match="ERROR"):
-        positional_fallback._launch_gaia_upload_job("SELECT 1", Table(), "pending")
+        positional_fallback._launch_gaia_job("SELECT 1")
 
 
-def test_gaia_queries_are_bucketed_by_sky_position_within_an_epoch_bucket(conn, monkeypatch):
-    """Two records in the same epoch bucket but far apart on the sky should
-    still split into separate Gaia queries -- sky bucketing nests underneath
-    epoch bucketing, it doesn't replace it."""
+# -- Cell-batching behavior -----------------------------------------------
+# Replaces the old chunk/epoch/sky-bucket tests: the unit of Gaia work is now
+# a HEALPix cell, shared across every archive's records that land in it, not
+# a per-archive per-decade per-RA/Dec-grid batch.
+
+def test_records_far_apart_on_sky_use_separate_healpix_pool_queries(conn, monkeypatch):
     calls = []
 
-    def fake_cone_search(records, radius_arcsec, max_years):
-        calls.append([(r.ra, r.dec) for r in records])
-        return {}
+    def fake_pool(pixels):
+        calls.append(tuple(pixels))
+        return []
 
-    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
 
-    same_epoch_near = RawObservation(
-        archive_obs_id="sky-a", archive_url="http://example.test/sky-a",
+    a = RawObservation(
+        archive_obs_id="cell-a", archive_url="http://example.test/cell-a",
         ra=10.0, dec=10.0, obs_date=date(2020, 1, 1),
     )
-    same_epoch_far = RawObservation(
-        archive_obs_id="sky-b", archive_url="http://example.test/sky-b",
-        ra=200.0, dec=-40.0, obs_date=date(2020, 1, 1),  # same epoch, far away on sky
+    b = RawObservation(
+        archive_obs_id="cell-b", archive_url="http://example.test/cell-b",
+        ra=200.0, dec=-40.0, obs_date=date(2020, 1, 1),  # far side of the sky
     )
-    run_shitty_positional_match(conn, "unit_test", [same_epoch_near, same_epoch_far])
+    run_shitty_positional_match(conn, {"unit_test": [a, b]})
 
-    assert len(calls) == 2, "same epoch bucket but different sky buckets should still be separate queries"
-    assert {tuple(c) for c in calls} == {((10.0, 10.0),), ((200.0, -40.0),)}
+    assert len(calls) == 2, "records in unrelated HEALPix cells should not share a pool fetch"
 
 
-def test_gaia_queries_merge_nearby_records_in_same_sky_bucket(conn, monkeypatch):
-    """Two records close together on the sky, in the same epoch bucket,
-    should share one Gaia query."""
+def test_nearby_records_share_one_healpix_pool_query(conn, monkeypatch):
     calls = []
 
-    def fake_cone_search(records, radius_arcsec, max_years):
-        calls.append(len(records))
-        return {}
+    def fake_pool(pixels):
+        calls.append(pixels)
+        return []
 
-    monkeypatch.setattr(positional_fallback, "_gaia_cone_search_batch", fake_cone_search)
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
 
     a = RawObservation(
         archive_obs_id="near-a", archive_url="http://example.test/near-a",
-        ra=10.1, dec=10.1, obs_date=date(2020, 1, 1),
+        ra=10.05, dec=10.05, obs_date=date(2020, 1, 1),
     )
     b = RawObservation(
         archive_obs_id="near-b", archive_url="http://example.test/near-b",
-        ra=10.2, dec=10.2, obs_date=date(2020, 3, 1),  # same epoch bucket, close on sky
+        ra=10.06, dec=10.06, obs_date=date(2020, 3, 1),  # different epoch, same cell
     )
-    run_shitty_positional_match(conn, "unit_test", [a, b])
+    run_shitty_positional_match(conn, {"unit_test": [a, b]})
 
-    assert calls == [2]
+    assert len(calls) == 1, "records a few arcsec apart should land in the same HEALPix cell"
+
+
+def test_records_from_different_archives_in_same_cell_share_one_query(conn, monkeypatch):
+    calls = []
+
+    def fake_pool(pixels):
+        calls.append(pixels)
+        return []
+
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
+
+    a = RawObservation(
+        archive_obs_id="arc-a", archive_url="http://example.test/arc-a",
+        ra=10.05, dec=10.05, obs_date=date(2020, 1, 1),
+    )
+    b = RawObservation(
+        archive_obs_id="arc-b", archive_url="http://example.test/arc-b",
+        ra=10.06, dec=10.06, obs_date=date(2020, 1, 1),
+    )
+    run_shitty_positional_match(conn, {"unit_test": [a], "eso_raw": [b]})
+
+    assert len(calls) == 1, "a HEALPix cell's pool fetch should be shared across archives"
