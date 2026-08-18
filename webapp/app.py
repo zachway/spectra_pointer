@@ -1041,6 +1041,24 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
         if not rows:
             cur.execute("SELECT * FROM stars WHERE bsc_hr_number = ?", [n])
             rows = _rows_as_dicts(cur)
+        if not rows:
+            # No bsc5 row carries this HR number -- either it never had one,
+            # or it was merged into its Gaia counterpart (see
+            # scripts/seed_bright_star_catalog.py's proper-motion fix), which
+            # keeps "HR <n>" as a cached alias instead of a bsc_hr_number.
+            # Try it as a name.
+            cur.execute(
+                "SELECT gaia_source_id, bsc_hr_number FROM star_name_index WHERE normalized_name = ? LIMIT 1",
+                [f"hr {n}"],
+            )
+            idx_row = cur.fetchone()
+            if idx_row is not None:
+                gaia_source_id, bsc_hr_number = idx_row
+                if gaia_source_id is not None:
+                    cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [gaia_source_id])
+                else:
+                    cur.execute("SELECT * FROM stars WHERE bsc_hr_number = ?", [bsc_hr_number])
+                rows = _rows_as_dicts(cur)
         if rows:
             return rows[0]
 

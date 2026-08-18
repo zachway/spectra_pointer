@@ -55,10 +55,27 @@ logger = logging.getLogger(__name__)
 # (confirmed live). This size cleared reliably at that time.
 XMATCH_CHUNK_SIZE = 1500
 
-# Generous compared to a typical archive's own position error, to absorb
-# BSC5's dated positions plus real proper motion on nearby bright stars --
-# same reasoning as the original gap analysis, just applied catalog-wide
-# instead of only to the V<3 sample.
+# BSC5's RAJ2000/DEJ2000 are at epoch J2000.0, but gaiadr3.gaia_source's own
+# ra/dec columns are at ref_epoch=2016.0 -- comparing them directly (as this
+# used to) silently fails for any high-proper-motion star, since the ~16yr
+# gap adds real separation no static radius can absorb without also risking
+# false positives on crowded fields. Keid (40 Eridani / HR 1325, pm~4.1"/yr)
+# was missed this way: its un-propagated offset was ~65", 4x the old 15"
+# radius, so seed() routed it down the BSC5 fallback path and created a
+# second `stars` row for a star that already had a perfectly good Gaia-based
+# row from another archive's name resolution -- confirmed live against prod,
+# and the same signature (a Gaia row within a couple hundred arcsec of a
+# BSC5 fallback row) was found for 112 of the catalog's 123 BSC5-path stars.
+# Fix: propagate each Gaia candidate's position back to J2000.0 via the
+# archive's own EPOCH_PROP_POS function before measuring separation --
+# confirmed live it returns a POINT usable directly inside DISTANCE(), and
+# that the propagated position for Keid lands within 0.01" of BSC5's, i.e.
+# BSC5's own position is trustworthy and the join was the only broken part.
+XMATCH_JOIN_RADIUS_ARCSEC = 300.0
+
+# Applied to the epoch-propagated separation (both positions at J2000.0),
+# not the raw one -- this is what XMATCH_RADIUS_ARCSEC used to be applied to
+# naively against Gaia's raw 2016.0 position.
 XMATCH_RADIUS_ARCSEC = 15.0
 
 # A Gaia candidate fainter than the BSC star's own Vmag by more than this is
@@ -70,10 +87,14 @@ SUSPICIOUS_MAG_GAP = 3.0
 XMATCH_QUERY = """
 SELECT u.bsc_row, u.hr,
        g.source_id, g.phot_g_mean_mag,
-       DISTANCE(POINT('ICRS', u.ra, u.dec), POINT('ICRS', g.ra, g.dec)) * 3600 AS sep_arcsec
+       DISTANCE(
+         POINT('ICRS', u.ra, u.dec),
+         EPOCH_PROP_POS(g.ra, g.dec, COALESCE(g.parallax, 0), COALESCE(g.pmra, 0), COALESCE(g.pmdec, 0),
+                        COALESCE(g.radial_velocity, 0), g.ref_epoch, 2000.0)
+       ) * 3600 AS sep_arcsec
 FROM tap_upload.bsc AS u
 JOIN gaiadr3.gaia_source AS g
-  ON 1 = CONTAINS(POINT('ICRS', u.ra, u.dec), CIRCLE('ICRS', g.ra, g.dec, {radius_deg}))
+  ON 1 = CONTAINS(POINT('ICRS', u.ra, u.dec), CIRCLE('ICRS', g.ra, g.dec, {join_radius_deg}))
 """
 
 
@@ -94,7 +115,7 @@ def _load_bsc5_catalog() -> Table:
 def _resolve_gaia_ids(catalog: Table) -> dict[int, int]:
     """hr -> best-candidate gaia_source_id, for stars with a credible match."""
     resolved: dict[int, int] = {}
-    radius_deg = XMATCH_RADIUS_ARCSEC / 3600.0
+    join_radius_deg = XMATCH_JOIN_RADIUS_ARCSEC / 3600.0
 
     for i in range(0, len(catalog), XMATCH_CHUNK_SIZE):
         chunk = catalog[i : i + XMATCH_CHUNK_SIZE]
@@ -107,7 +128,7 @@ def _resolve_gaia_ids(catalog: Table) -> dict[int, int]:
         up.write(upload_path, format="votable", overwrite=True)
 
         job = Gaia.launch_job_async(
-            query=XMATCH_QUERY.format(radius_deg=radius_deg),
+            query=XMATCH_QUERY.format(join_radius_deg=join_radius_deg),
             upload_resource=upload_path,
             upload_table_name="bsc",
         )
@@ -119,6 +140,9 @@ def _resolve_gaia_ids(catalog: Table) -> dict[int, int]:
             gmag = r["phot_g_mean_mag"]
             if np.ma.is_masked(gmag):
                 continue
+            sep = r["sep_arcsec"]
+            if np.ma.is_masked(sep) or sep > XMATCH_RADIUS_ARCSEC:
+                continue  # only within the wide join net because of the epoch-mismatch buffer
             hr = int(r["hr"])
             if hr not in best or gmag < best[hr][0]:
                 best[hr] = (float(gmag), int(r["source_id"]))
