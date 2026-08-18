@@ -306,3 +306,36 @@ def test_records_from_different_archives_in_same_cell_share_one_query(conn, monk
     run_shitty_positional_match(conn, {"unit_test": [a], "eso_raw": [b]})
 
     assert len(calls) == 1, "a HEALPix cell's pool fetch should be shared across archives"
+
+
+def test_all_cells_processed_when_more_cells_than_fetch_concurrency(conn, monkeypatch):
+    """Fetches are pipelined GAIA_FETCH_CONCURRENCY at a time (see
+    run_shitty_positional_match) -- with more occupied cells than that
+    window, every cell must still get fetched and committed, not just the
+    first batch submitted up front."""
+    import threading
+
+    calls = []
+    lock = threading.Lock()
+
+    def fake_pool(pixels):
+        with lock:
+            calls.append(tuple(pixels))
+        return []
+
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
+    monkeypatch.setattr(positional_fallback, "GAIA_FETCH_CONCURRENCY", 2)
+
+    # 5 widely separated records -> 5 distinct HEALPix cells, well beyond
+    # the concurrency window of 2.
+    records = [
+        RawObservation(
+            archive_obs_id=f"pipe-{i}", archive_url=f"http://example.test/pipe-{i}",
+            ra=ra, dec=dec, obs_date=date(2020, 1, 1),
+        )
+        for i, (ra, dec) in enumerate([(10.0, 10.0), (100.0, -30.0), (190.0, 50.0), (280.0, -60.0), (350.0, 5.0)])
+    ]
+    counts = run_shitty_positional_match(conn, {"unit_test": records})
+
+    assert len(calls) == 5, "every occupied cell should be fetched, not just the first concurrency window"
+    assert counts["no_confident_candidate"] == 5, "every record should still be processed and committed"
