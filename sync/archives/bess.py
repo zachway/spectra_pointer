@@ -1,18 +1,16 @@
 """BeSS -- Be Star Spectra database (Observatoire de Paris / OHP), amateur+pro.
 
 http://basebe.obspm.fr/basebe/ -- a ~20-year-old pure-PHP app (Apache
-2.2.16, PHP 5.3.3, no TAP/VO/REST, no client-side JS at all -- confirmed
-live, zero <script>/onclick anywhere). Previously written off after a
-partial investigation as blocked on a real bug (the per-file FITS download
-button returns HTTP 200 with correct headers but a 0-byte body, confirmed
-live, reproduced on multiple IDs) -- but since this project never
-downloads/stores actual file bytes anywhere (every archive_url here is a
-pointer back to the source, same reasoning ing.py's docstring gives), that
-bug turned out to not matter: there's a second, completely different,
-always-public static asset that serves as a perfectly good archive_url --
-see ARCHIVE_URL_TMPL below.
+2.2.16, PHP 5.3.3, no TAP/VO/REST, no client-side JS at all -- observed,
+zero <script>/onclick anywhere). The per-file FITS download button returns
+HTTP 200 with correct headers but a 0-byte body (reproduced on multiple
+IDs); since this project never downloads/stores actual file bytes anywhere
+(every archive_url here is a pointer back to the source, same reasoning
+ing.py's docstring gives), that bug does not matter: there's a second,
+completely different, always-public static asset that serves as a
+perfectly good archive_url -- see ARCHIVE_URL_TMPL below.
 
-Session dance (confirmed live, required): a plain unauthenticated request
+Session dance (observed, required): a plain unauthenticated request
 to StarConsul.php/Consul.php gets a 302 bounce to Accueil.php (StarConsul)
 or a 200 with an empty 0-byte body (Consul, specobj GET) -- both need a
 PHPSESSID first "unlocked" by visiting Accueil.php then MenuIntro.php (the
@@ -32,7 +30,7 @@ confirmed by direct experimentation, not assumed:
     item) lists every Be star with at least one spectrum in BeSS, each row
     ending in a real link `Consul.php?specobj=<url-encoded star name>`
     with that star's spectrum count. GET-ing that link returns the star's
-    actual spectra table (confirmed live: gam Cas, HD5394's real BeSS
+    actual spectra table (observed: gam Cas, HD5394's real BeSS
     name, has 12,723 rows). This module only uses this second path.
 
 Both listings are paginated via a `deb_next` hidden field + a `next`
@@ -44,26 +42,26 @@ opaque continuation token here rather than assumed to have any numeric
 meaning, same "don't assume a hidden field's shape" lesson salt_hrs.py
 documents for its own pagination.
 
-Row format (confirmed live, both listings): stars with zero spectra show
+Row format (observed, both listings): stars with zero spectra show
 a bare "0" with no link in the last column (skipped -- 60 of 100 stars on
 a real sampled page) -- 1506 stars have a real specobj link, per BeSS's
 own Stat.php ("1506 different Be stars"). RA/Dec are plain space-separated
 sexagesimal ("00 56 42.53" / "-17 20 09.57", confirmed negative Dec uses a
 literal leading '-', astropy parses this natively). Date is plain ISO
 "YYYY-MM-DD". Most rows' spectrum id is a bare int in both the `path_<id>`
-hidden field name and the `v_ids=<id>` plot link. A minority (confirmed
-live on BD+62 2346: 2 of 8 rows) are multi-exposure echelle bundles --
+hidden field name and the `v_ids=<id>` plot link. A minority (e.g. BD+62
+2346: 2 of 8 rows) are multi-exposure echelle bundles --
 `path_30to59_2_251098` (a compound key, not a bare int -- used as-is for
 archive_obs_id, still globally unique) and `v_ids=251098+251099+...+251127`
 (every individual order's id, `+`-joined -- only the first is used, as a
 representative single-order plot rather than the combined one, for
-archive_url). A separate minority of rows (confirmed live on gam Cas) list
+archive_url). A separate minority of rows (observed on gam Cas) list
 2-3 observer `<A>` links back to back instead of one -- the observer field
 isn't used for anything here (name/position matching only), but the row
 regex still has to tolerate a variable number of them -- and an
-inconsistently-present closing `</TD>` right after the last one, confirmed
-present on some rows (BD+34 113, RX J0048.5-7302) and absent on others
-(gam Cas) with no visible pattern to which -- to correctly reach the
+inconsistently-present closing `</TD>` right after the last one (present
+on some rows, e.g. BD+34 113, RX J0048.5-7302; absent on others, e.g.
+gam Cas, with no visible pattern to which) -- to correctly reach the
 date/HJD/id fields that follow.
 
 reduction_status: every submission is a wavelength-calibrated 1D extracted
@@ -79,7 +77,7 @@ calib_level rely on, but still clearly not "raw" in this column's 2-way
 sense.
 
 ARCHIVE_URL_TMPL: BeSS renders a PNG plot of every spectrum at a
-predictable static path outside any PHP session -- confirmed live,
+predictable static path outside any PHP session -- observed,
 unauthenticated, across 4 different ids spanning different id ranges:
     Spectres_png/S{id:07d}[:3]/sp_{id:07d}.png
 (discovered by following SendPng.php?v_ids=<id>, a tiny PHP redirector

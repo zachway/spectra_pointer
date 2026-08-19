@@ -225,10 +225,10 @@ def test_name_match_rejected_when_position_is_far_off(conn):
     other physical star sharing the same informal name) must not be force-
     matched onto it — it should fall through to positional matching instead.
     With nothing else tracked nearby, it lands in needs_review rather than
-    skipped: confirmed live that a rejected name match is often actually
-    correct (the archive's own logged position for one exposure was just
-    wrong, not a different star), so it's worth a human's attention rather
-    than being silently dropped with no gaia_source_id at all.
+    skipped: a rejected name match is often actually correct (the archive's
+    own logged position for one exposure was just wrong, not a different
+    star), so it's worth a human's attention rather than being silently
+    dropped with no gaia_source_id at all.
     """
     with conn.cursor() as cur:
         _insert_star(cur, 900000000000000080, 4.9, -3.0, name_aliases=["Mira", "omi Cet"])

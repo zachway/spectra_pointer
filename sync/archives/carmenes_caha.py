@@ -10,24 +10,24 @@ observations alongside every other CAHA instrument.
 Search endpoint found by reading jsp/searchform.jsp's own <form> (POST to
 searchform.jsp itself, action-relative) — no TAP, no documented API, a
 plain HTML results table (parsed here via BeautifulSoup, same tool
-carmenes.py already uses for its own static table). Confirmed live: the
+carmenes.py already uses for its own static table). Observed: the
 instrument checkbox for CARMENES spectroscopy is `carspe_raw`/`carspe_red`
 (found by reading the form's own checkbox `name` attributes — CARMENES is
 listed under "3.5m Telescope: Spectroscopy" alongside CAFE/PMAS/TWIN, not
 obviously named). Sending only those two (all other instruments' checkbox
 fields omitted entirely, which is "unchecked" for an HTML form) scopes the
-search to CARMENES alone — confirmed live, every returned row has
+search to CARMENES alone — observed, every returned row has
 Instrument=CARMENES.
 
-DR1's public zip bundles are VIS-only — confirmed live, every single row
+DR1's public zip bundles are VIS-only — observed, every single row
 of DR1's own table links to a "*_VIS.zip", no NIR counterpart appears
 anywhere on that page. This CAHA-wide archive is the only place NIR shows
-up: each real exposure appears as *two* rows here (confirmed live, e.g.
+up: each real exposure appears as *two* rows here (observed, e.g.
 CAHA_ID 245832/245833 -- same night, same target, one row's "Grism/
 Grating" column reads "vis", the other "nir"). That column is what labels
 `instrument` as "CARMENES VIS" vs "CARMENES NIR" below.
 
-29,379 total CARMENES rows confirmed live (query spanning 2010-2026,
+29,379 total CARMENES rows observed (query spanning 2010-2026,
 CARMENES itself started 2016). Data reaches to 2025-07 as of this
 session (2026-07) -- ~1yr behind, consistent with the same proprietary-
 period model as CAB's other archives (GTC, Asiago).
@@ -57,7 +57,7 @@ next page next run; a page with fewer rows is the current frontier --
 re-fetched every run, but only re-processed if its row count changed
 (new rows appended there since last time). This relies on the archive
 behaving like a stable, append-only, offset-paginated result set
-(confirmed live: fetching the same page twice returns the same rows, and
+(observed: fetching the same page twice returns the same rows, and
 new data lands at increasing CAHA_IDs) -- if that assumption ever breaks,
 UNIQUE(archive_code, archive_obs_id) still prevents corruption, just not
 staleness. Re-processing an unchanged frontier page returns zero new

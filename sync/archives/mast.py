@@ -1,8 +1,8 @@
 """MAST (HST, IUE, FUSE, EUVE, HUT, TUES, BEFS, WUPPE) — VO-TAP service at mast.stsci.edu/vo-tap/, no native Gaia column.
 
 The old objid/obsid reconciliation concern turns out to be moot: each
-ivoa.obscore row already carries a directly-usable access_url (confirmed
-live — a real 722KB FITS file, 200 OK), so there's no need to reconcile
+ivoa.obscore row already carries a directly-usable access_url (verified
+— a 722KB FITS file, 200 OK), so there's no need to reconcile
 namespaces to build a deep link at all.
 
 TAP endpoint found by reading the VO-TAP landing page's own nav links (no
@@ -11,15 +11,15 @@ ivoa.obscore. Real ADQL, real TAP_SCHEMA.
 
 Originally scoped to obs_collection='HST' with access_format='application/
 fits' (filters out the thumbnail/preview jpgs that share the same obs_id).
-Extended to IUE and FUSE: same dataproduct_type='spectrum' filter works
-live for both (955,434 / 1,532,075 total rows respectively), but their
-access_format is 'image/fits', not HST's 'application/fits' — confirmed
-live, that's the entire reason the original "not yet checked" note existed,
-not a genuine access problem.
+Extended to IUE and FUSE: the same dataproduct_type='spectrum' filter
+works for both (955,434 / 1,532,075 total rows respectively), but their
+access_format is 'image/fits', not HST's 'application/fits' — this is
+the entire reason the original "not yet checked" note existed, not a
+genuine access problem.
 
 IUE/FUSE need one more thing HST didn't: a single obs_id there returns many
 rows, one per processing stage/file (raw, calibrated, housekeeping,
-trailer logs, ...) — confirmed live, one IUE obs_id alone had 6 variants,
+trailer logs, ...) — observed, one IUE obs_id alone had 6 variants,
 one FUSE obs_id had 15. HST's access_format filter already yields exactly
 one row per obs_id on its own, so this never showed up before. Both IUE
 and FUSE consistently expose one clearly-canonical merged/calibrated
@@ -36,7 +36,7 @@ all three collections rather than special-casing HST out of it.
 
 No cliff found for obs_collection='HST' alone — unlike CADC (used for
 gemini.py/cfht_cadc.py), ORDER BY t_min is fast here (20,000 rows in 0.7s,
-no truncation). Re-confirmed live with IUE/FUSE included in the same
+no truncation). Re-observed with IUE/FUSE included in the same
 query (despite the extra per-obs_id row multiplicity): still no cliff.
 Standard TOP+ORDER BY+watermark pagination works.
 
@@ -45,7 +45,7 @@ on the very query shape that works for HST/IUE/FUSE — a real server-side
 issue, not a row-count or sort cliff, needs its own investigation pass.
 
 s_ra/s_dec can be masked on real rows (calibration exposures like WAVE/
-DEUTERIUM lamp exposures lack real sky coordinates) — confirmed live, it
+DEUTERIUM lamp exposures lack real sky coordinates) — observed, it
 crashes the matcher's KD-tree build outright if not handled (NaN, not just
 wrong). Filtered via clean_float + dropping records with no position, same
 as the existing ra/dec-required check in sync.matcher.
@@ -54,14 +54,14 @@ Extended to 5 more historical UV rocket/shuttle missions living in this same
 obscore table, found via a VO SSA-registry sweep (their own registered SSA
 services point at archive.stsci.edu, but the same rows are already present
 here in the CAOM table this module already queries): EUVE (9,830 rows), HUT
-(8,726), TUES (4,678), BEFS (2,719), WUPPE (1,429) — all confirmed live with
+(8,726), TUES (4,678), BEFS (2,719), WUPPE (1,429) — all observed with
 real HD-star target names and the same access_format='image/fits' shape as
 EUVE above. Genuinely a same-day extension: no new endpoint, no new query
 shape, just 5 more values in obs_collection.
 
 Note on BEFS specifically: a handful of obs_ids have 2-4 rows *all* ending
 in the canonical `_vo.fits` suffix (e.g. befs1002_spa1_vo.fits through
-_spd1_vo.fits, confirmed live, same obs_id/target_name) — real distinct
+_spd1_vo.fits, observed, same obs_id/target_name) — real distinct
 per-channel spectral segments of one exposure, not duplicates. The existing
 dedup (first `_vo.fits` row wins per obs_id) picks one of them as the
 representative link for that observation, same "one holding per exposure"
@@ -95,7 +95,7 @@ ORDER BY t_min ASC
 PAGE_SIZE = 20000
 
 # MAST's own "VO-ready" merged/calibrated product naming convention for
-# IUE/FUSE (confirmed live on both) -- the one row per obs_id worth
+# IUE/FUSE (observed on both) -- the one row per obs_id worth
 # keeping when an obs_id has several (raw/calibration/housekeeping/...).
 _CANONICAL_SUFFIX = "_vo.fits"
 

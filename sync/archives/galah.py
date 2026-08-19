@@ -26,7 +26,7 @@ FROM galah_dr4.mainspectable
 WHERE mjd > {last_mjd}
 """
 
-# Confirmed live: returns a real FITS file. FILT=B (Blue/CCD1) is one of four
+# Observed: returns a real FITS file. FILT=B (Blue/CCD1) is one of four
 # camera bands (B/G/R/I) per sobject_id — a representative pointer, not
 # exhaustive; the full per-camera listing lives behind the same slink service.
 DEEP_LINK = (

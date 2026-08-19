@@ -9,7 +9,7 @@ the ~97.6% previously assumed for an older DR).
 
 Deep link found the same way — not documented, read out of the viewer page's
 own JS (lrs_spectrum.js sets the download button's href to
-../spectrum/fits/{obsid}): confirmed live at
+../spectrum/fits/{obsid}): observed at
 https://www.lamost.org/dr11/v2.0/spectrum/fits/{obsid}, no auth needed for
 this public DR.
 

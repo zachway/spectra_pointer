@@ -2,10 +2,10 @@
 
 https://archive.gemini.edu/help/api.html
 
-Same class of gap as gemini_ghost.py, confirmed live via caom2.Plane: every
+Same class of gap as gemini_ghost.py, observed via caom2.Plane: every
 one of IGRINS's 43,058 planes in CADC is raw (calibrationLevel=1) -- zero
 reduced (level 2) planes at all, a complete gap rather than GHOST's patchy
-one. Confirmed live via the GOA web UI (IGRINS/science search) that real
+one. Observed via the GOA web UI (IGRINS/science search) that real
 reduced products exist on GOA itself: alongside the bare raw H/K-band
 frames (e.g. SDCH_20180421_0031.fits, SDCK_20180421_0031.fits), many
 observations also have .spec2d.fits (2D-reduced), .spec.fits (1D-extracted),
@@ -23,7 +23,7 @@ exposure has a full reduction chain -- some early/test observations in the
 real result set only ever got the bare raw file -- so this naturally skips
 those, which is the intended behavior (nothing usable to point at yet).
 A substring check, not an exact suffix match -- GOA serves these
-bzip2-compressed (filenames end in .fits.bz2), confirmed live; an
+bzip2-compressed (filenames end in .fits.bz2), observed; an
 endswith("spec_a0v.fits") check silently matched nothing at all against a
 real response, which combined with the WINDOW_DAYS bug below produced a
 convincing but wrong "zero results" first run (see below).
@@ -34,7 +34,7 @@ and sync/archives/_goa_common.py for the full GOA_SESSION_COOKIE story
 to log in elsewhere and refresh the env var by hand).
 
 FIRST_DATE live-confirmed (real result set went back to at least
-2018-04-01). WINDOW_DAYS was originally 180, a guess -- confirmed live to
+2018-04-01). WINDOW_DAYS was originally 180, a guess -- observed to
 be badly wrong: jsonsummary silently caps responses at ~2000 rows (see
 _goa_common.py), and a 180-day window's raw H/K frames alone (2 per
 exposure, sometimes many more once reduction products are included) filled

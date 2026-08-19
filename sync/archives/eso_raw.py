@@ -1,7 +1,7 @@
 """ESO raw archive — dbo.raw table, same TAP endpoint as eso.py's ivoa.ObsCore
 but a genuinely different table: unreduced exposures straight off the
 telescope, not the Phase 3 (science-portal) reduced products eso.py covers.
-Confirmed live to be a real, disjoint gap: ~30k HARPS + ~9k UVES + ~1.6k
+Observed to be a real, disjoint gap: ~30k HARPS + ~9k UVES + ~1.6k
 ESPRESSO raw frames alone around alpha Cen, none of which show up via
 ivoa.ObsCore. Split into its own archive_code (same reasoning as
 gemini_ghost/gemini_igrins/mast_jwst/dao being split from their siblings)
@@ -16,7 +16,7 @@ IFU/INTERFEROMETRY/POLARIMETRY/CORONOGRAPHY -- IFU/MOS/MXU produce cubes or
 multi-slit data, not the single-object 1D spectra this project otherwise
 tracks, consistent with eso.py's own dataproduct_type='spectrum' filter).
 Two instrument codes excluded despite matching that filter: GRIPS19
-(591,639 rows, confirmed live every row has object='SKY MAP' -- an all-sky
+(591,639 rows, observed every row has object='SKY MAP' -- an all-sky
 background monitor, not target spectra) and APEXHET (211,442 rows, a submm
 heterodyne receiver on the APEX 12m radio dish -- wrong wavelength regime
 entirely, already known out of scope, see webapp/app.py's
@@ -29,9 +29,9 @@ of real spectrographs fragment into dozens of near-empty "instruments".
 
 target (not object) is used for raw_target_name -- object is frequently
 overwritten by the observatory for CALIB-adjacent exposures even within
-dp_cat='SCIENCE' (confirmed live: blank for a meaningful fraction of SOFI/
+dp_cat='SCIENCE' (observed: blank for a meaningful fraction of SOFI/
 EFOSC/TIMMI2 rows), while target is "as given by the astronomer" per ESO's
-own column description. Confirmed live this resolves the alpha-Cen-A-vs-B
+own column description. Observed this resolves the alpha-Cen-A-vs-B
 problem plain position can't: raw HARPS frames report target=HD128621 (B)
 distinctly from HD128620 (A), so the identifier-before-position matcher
 path separates them correctly even though the two stars are too close
@@ -42,8 +42,8 @@ construction, no calib_level column needed (same shape as noirlab.py's own
 hardcoded 'raw' for its raw-only query).
 
 ra/dec are not masked when missing (unlike ivoa.ObsCore elsewhere) -- ESO
-instead stamps a fixed sentinel, (-596.52323555, -596.52323555), confirmed
-live to account for 799,630 of 799,637 physically-invalid rows (dec outside
+instead stamps a fixed sentinel, (-596.52323555, -596.52323555), which
+accounts for 799,630 of 799,637 physically-invalid rows (dec outside
 +/-90) in this query, spanning real named targets (e.g. HD-216803, mostly
 old CES-era rows) that just never got a real position recorded. Nulled out
 below (along with the remaining 7 stray out-of-physical-range rows, via a
@@ -61,7 +61,7 @@ from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "http://archive.eso.org/tap_obs"
 
-# Confirmed live: real target spectra, not calibration/monitoring noise.
+# Observed: real target spectra, not calibration/monitoring noise.
 EXCLUDED_INSTRUMENTS = ("GRIPS19", "APEXHET")
 
 QUERY = """
@@ -93,7 +93,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     excluded = ", ".join(f"'{name}'" for name in EXCLUDED_INSTRUMENTS)
     query = QUERY.format(page_size=PAGE_SIZE, excluded=excluded, last_mjd=last_mjd)
     # pyvo defaults maxrec to ~20000 regardless of the ADQL TOP clause --
-    # confirmed live via eso.py's own ivoa.ObsCore query, same TAP service.
+    # observed via eso.py's own ivoa.ObsCore query, same TAP service.
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 
     records = []

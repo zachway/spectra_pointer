@@ -4,15 +4,15 @@ Real DaCHS-backed TAP service at oirsa.cfa.harvard.edu:8080/tap — note the
 :8080 port, not the public :443 site (the archive's own web frontend is a
 stateful dojo/prototype.js search app with no scriptable API; its `/search/*`
 AJAX endpoints 404 for any non-browser client regardless of headers/cookies,
-confirmed live — this TAP service is a completely separate thing, found via
+observed — this TAP service is a completely separate thing, found via
 the reg.g-vo.org registry, not linked from that frontend at all).
 
 Covers all four CfA instruments in one unfiltered pull across the whole
 spectrum table rather than filtering per-instrument — obs_collection is only
 populated for Echelle, as "CfA:Echelle" (FAST/Hectospec/Hectochelle all leave
-it blank, confirmed live), so it's not usable as a collection discriminator;
+it blank, observed), so it's not usable as a collection discriminator;
 instrument_name is read per-row instead, just to label each RawObservation.
-Breakdown confirmed live: FAST (132,452 rows), Hectospec (599,592),
+Breakdown observed: FAST (132,452 rows), Hectospec (599,592),
 Hectochelle (393,267), Echelle (171,278); ~1.3M spectra total.
 
 target_name is only a resolvable star name for FAST/Echelle (e.g.
@@ -20,14 +20,14 @@ target_name is only a resolvable star name for FAST/Echelle (e.g.
 Hectochelle are multi-fiber instruments, so target_name there is a plate/
 configuration id instead (e.g. "SPEC:a0689a2_1"), not a star name — but
 s_ra/s_dec are still per-fiber, per-target positions, not the field center
-(confirmed live: rows sharing one Hectospec target_name carry visibly
+(observed: rows sharing one Hectospec target_name carry visibly
 different s_ra/s_dec, and s_fov is ~1.5 arcsec — a fiber aperture, not an
 MMT field of view) — so positional matching still works correctly per
 target even where the name doesn't. raw_target_name is passed through as-is
 regardless; unresolvable configuration ids are simply skipped by the
 generic discover_stars step, same tolerance as any other unmatched name.
 
-access_url is already a direct per-row file link (confirmed live: a real
+access_url is already a direct per-row file link (observed: a real
 200 with a real Content-Length) — no DataLink resolution step needed, unlike
 dao.py/cfht_cadc.py/gemini.py's CADC-hosted equivalent.
 
@@ -35,12 +35,12 @@ No cliff found: TOP+ORDER BY t_min tested live up to 50,000 rows/page
 (~9s) and even an unbounded TOP 2,000,000 pull of the whole spectrum table
 (~12s) — standard TOP+watermark pagination, same shape as dao.py. No native
 Gaia column — positional match, same as dao.py/cfht_cadc.py. s_ra/s_dec/
-t_min confirmed live to have zero NULLs across the whole table, but read via
+t_min observed to have zero NULLs across the whole table, but read via
 clean_float anyway for consistency with every other ObsCore-based module
 here (masked values are a live-confirmed real pattern elsewhere, e.g.
 mast.py) rather than assuming this holds forever.
 
-calib_level is uniformly 1 across all four instruments (confirmed live,
+calib_level is uniformly 1 across all four instruments (observed,
 2026-08-03: FAST/Hectospec/Hectochelle/Echelle all grouped as calib_level=1,
 no other value present) -- reduction_status_from_calib_level maps this to
 'raw' for every OIRSA row, unlike the other ObsCore archives here where it
@@ -60,7 +60,7 @@ WHERE dataproduct_type = 'spectrum' AND t_min > {last_t_min}
 ORDER BY t_min ASC
 """
 
-# Kept well under the cliff-free range confirmed live (50,000 rows in ~9s).
+# Kept well under the cliff-free range observed (50,000 rows in ~9s).
 PAGE_SIZE = 50000
 
 

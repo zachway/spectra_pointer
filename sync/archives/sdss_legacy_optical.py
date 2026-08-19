@@ -12,18 +12,18 @@ reduction path, so it isn't expected to change release over release --
 just re-point the URL and let the module re-derive its cache fresh.
 
 First cut of this used SkyServer's SqlSearch REST API, paginated 50,000 rows
-at a time by an mjd watermark — confirmed live to work for 18 consecutive
+at a time by an mjd watermark — observed to work for 18 consecutive
 pages (~900K rows) before getting HTTP 403 Forbidden, the signature of
 SkyServer's anti-bot/rate-limiting kicking in after sustained automated
 querying (plain requests.get(), default User-Agent, no delay between
 calls). Switched to DR19's unified "allspec" bulk catalog instead (812MB
-compressed, 14.6M rows spanning every SDSS instrument/era) — confirmed live
+compressed, 14.6M rows spanning every SDSS instrument/era) — observed
 to cover 3.96M BOSS rows in the legacy MJD range (55176-58932) alone, 4x
 what SkyServer had delivered before the block, via a single plain download
 with no rate limit to hit at all.
 
 No CLASS column here (unlike SkyServer's specObj, which the old version
-filtered on CLASS='STAR' server-side) — confirmed live via programname/
+filtered on CLASS='STAR' server-side) — observed via programname/
 survey: BOSS/eBOSS's legacy programs (DEEP_QSO, ELG_NGC/SGC, RM, eFEDS,
 XMMXLL, ...) are cosmology-survey target-selection tags, not a stellar
 filter, so there's no clean way to isolate stars from this file alone.
@@ -50,7 +50,7 @@ the legacy range is exhausted) — except the stopping point here is a known
 fixed constant (LEGACY_MJD_CUTOFF) rather than a live "now".
 
 Two-stage cache, not one -- this went through two failed designs first,
-both confirmed live:
+both observed:
   1. Caching the downloaded .fits.gz directly and re-opening it per page:
      astropy's fits.open() transparently gunzips a .fits.gz path on every
      call, so ~340 pages meant re-decompressing the full 812MB from scratch
@@ -66,10 +66,10 @@ Fixed by distilling down to a *third*, much smaller local cache: the ~3.96M
 legacy rows, narrowed to only the 6 columns actually used, written once as
 Parquet (DuckDB, not astropy, handles this well). Every fetch() call after
 that is a single DuckDB range query against a small Parquet file --
-confirmed live at a few hundred ms, even repeated ~340 times.
+observed at a few hundred ms, even repeated ~340 times.
 
-plate_or_fps_field/fiberid/mjd/specobjid/run2d/ra/dec/cas_url all confirmed
-live as fully populated (no zero/NaN sentinels) for the legacy (instrument=
+plate_or_fps_field/fiberid/mjd/specobjid/run2d/ra/dec/cas_url are all
+fully populated (no zero/NaN sentinels) for the legacy (instrument=
 'boss', mjd<58932) subset — cas_url is a ready-made SkyServer object
 explorer deep link, used directly rather than reconstructed.
 

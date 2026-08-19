@@ -1,14 +1,14 @@
 """HPOL -- Wisconsin H-alpha/HPOL spectropolarimeter archive (STScI), decommissioned 2004.
 
 Not present in MAST's modern VO-TAP obscore table alongside its siblings
-IUE/WUPPE/EUVE/... that mast.py already covers there (confirmed live:
+IUE/WUPPE/EUVE/... that mast.py already covers there (observed:
 obs_collection='HPOL' returns 0 rows against mast.stsci.edu/vo-tap/api/
 v0.1/caom) -- needs its own scraper against the legacy search.php form.
 
 Metadata: a plain POST to archive.stsci.edu/hpol/search.php with every
 filter field blank returns the *entire* archive in one response when
-outputformat=CSV and max_records is set past the true total -- confirmed
-live, 4,836 data rows (matching the archive's own "N rows displayed, but
+outputformat=CSV and max_records is set past the true total -- 4,836
+data rows (matching the archive's own "N rows displayed, but
 4836 are available" banner text seen at the form's default max_records=
 5001), so no incremental pagination is needed for the metadata pull
 itself, same one-shot-bulk-dump shape as elodie.py/rave.py. The form's
@@ -23,7 +23,7 @@ rows carry a real time-of-day; many later rows carry a literal
 "00:00:00" sentinel for unknown time-of-day, date still real either way)
 -- only .date() is used. The server's own CSV output isn't properly
 comma-escaped: a handful of Category values contain a literal comma
-("ASTEROIDS, ETC.", confirmed live, 6 of 4,836 rows) which shifts every
+("ASTEROIDS, ETC.", observed, 6 of 4,836 rows) which shifts every
 field after it -- harmless here since only the first 5 columns (Data ID,
 Target Name, RA, DEC, Obs Start Time) are ever read, all of which sit
 safely before the ragged tail, so a plain split(",") is used instead of
@@ -33,14 +33,14 @@ Download URL: NOT a single deterministic pattern across the whole
 archive, despite an initial spot-check (HEAD on one hpolret_{id}_hw.fits.gz
 URL) suggesting one. HPOL's detector was upgraded from a Reticon to a CCD
 partway through the mission, and the real filename prefix is "hpolret_"
-for some ids and "hpolccd_" for others. Confirmed live this is NOT
+for some ids and "hpolccd_" for others. Observed this is NOT
 reliably derivable from the Data ID's own shape or date: e.g.
 "10-cas_19971019b" (has a blue/red channel-split "b" suffix, CCD era) is
 hpolccd_, but "mars_19921027b"/"venus_19910529b" (the same "b"-suffix
 shape, nearby years) are hpolret_ -- and the two eras genuinely overlap
-(1991-1992 has both, confirmed live on real rows from each). So this
+(1991-1992 has both, observed on real rows from each). So this
 resolves each id's real filename off its own Apache directory listing at
-missions/hpol/data/{data_id}/ instead of guessing (confirmed live,
+missions/hpol/data/{data_id}/ instead of guessing (observed,
 always exactly 2 files per id across a random 30-id sample -- {prefix}_
 {data_id}_hw.fits.gz + a companion .lis.gz, prefix always one of
 hpolret/hpolccd) -- one extra GET per record (~280ms observed), which is
@@ -83,7 +83,7 @@ OUTPUT_COLUMNS = (
     "hpol_posangle,hpol_observatory,hpol_ref,hpol_category,hpol_wuppe,ang_sep"
 )
 
-# Comfortably past the confirmed live total (4,836) -- the largest option
+# Comfortably past the observed total (4,836) -- the largest option
 # the form itself offers (50001), so a full pull works with no further
 # pagination on the metadata side even if a few more rows were ever added
 # to this decommissioned archive.

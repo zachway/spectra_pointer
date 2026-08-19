@@ -46,12 +46,12 @@ TABLES = ["stars", "archives", "spectroscopy_holdings", "archive_sync_state"]
 # OOM-shaped risk as everything else precomputed here.
 #
 # category must be a CASE, not COALESCE(match_method, match_status) --
-# confirmed live that match_method is NOT null on skipped/needs_review rows
+# observed that match_method is NOT null on skipped/needs_review rows
 # (it retains whichever method was *attempted*, e.g. positional_easy_match
 # tried and failed -> skipped, but match_method still says
 # positional_easy_match). COALESCE would pick match_method every time it's
 # non-null, silently recategorizing skipped/needs_review rows under
-# whatever method almost worked -- confirmed live as a real bug: 5.7M
+# whatever method almost worked -- observed as a real bug: 5.7M
 # skipped rows were showing up as "Positional" matches on the Archive
 # Status page instead of "Skipped".
 ARCHIVE_STATUS_QUERY = """
@@ -134,7 +134,7 @@ WHERE rn <= {INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT}
 # Precomputed sample of all stars for the /sky all-sky map -- was a live
 # `USING SAMPLE n` against the full `stars` table on every page load, which
 # forces DuckDB's remote-parquet reader to scan nearly the whole ~500MB+
-# file over HTTP from joy every time (confirmed live: ~27s for a 5,000-row
+# file over HTTP from joy every time (observed: ~27s for a 5,000-row
 # sample against a 9.8M-row table, the dominant cost behind "webapp is
 # sluggish switching tabs"). Precomputed here where the SAMPLE only runs
 # once per export instead of once per tab click; must match webapp.app's
@@ -152,7 +152,7 @@ SKY_SAMPLE_QUERY = f"""
 # Precomputed (normalized name -> identifier) index backing
 # webapp.app._lookup_local_star's name-matching branch. That branch used to
 # filter `stars` directly with normalize() wrapped around input_name/
-# name_aliases in the WHERE clause -- confirmed live that wrapping the
+# name_aliases in the WHERE clause -- observed that wrapping the
 # filtered columns in a function defeats Parquet's row-group min/max pruning
 # entirely (pruning needs a bare column vs. a constant), so *every*
 # name-based search -- i.e. nearly every real query, since people type "HD
@@ -205,7 +205,7 @@ LEADERBOARD_TOP_N = 20
 # was wrong at this catalog's actual scale. webapp.app was then calling
 # Python's sorted() over the full ~2M-star population once per period
 # (~70+ periods, x2 for both the within-period and cumulative rankings) just
-# to keep the top 5 -- confirmed live as what was actually driving the OOM
+# to keep the top 5 -- observed as what was actually driving the OOM
 # (1.1GB+) even after the raw-GROUP-BY-only version of this fix shipped.
 #
 # Second cut moved the ranking into one SQL query using window functions
@@ -214,7 +214,7 @@ LEADERBOARD_TOP_N = 20
 # and can still rank). That worked at ~2M stars / ~70 periods, but LAMOST
 # pushed the real star count with dated observations to 6.1M -- a 6.1M x
 # 74 = ~453M row grid -- which OOM'd DuckDB's 24.9 GiB memory_limit even
-# with disk-spilling enabled (temp_directory set), confirmed live. The
+# with disk-spilling enabled (temp_directory set), observed. The
 # grid was always ~60x bigger than it needed to be: only ~7.3M (star,
 # period) pairs actually have any observations at all.
 #
@@ -565,7 +565,7 @@ LIMIT {CMD_SAMPLE_SIZE}
 # involve a cross join like the Leaderboard did, so each individually is a
 # cheap single-pass aggregation, but "cheap x8, every request, over
 # ever-growing tables, streamed over HTTP into a memory-capped container"
-# adds up the same way -- confirmed live: nearest/fastest-movers/spectral-
+# adds up the same way -- observed: nearest/fastest-movers/spectral-
 # types each took multiple seconds against a 9.8M-row `stars` served over
 # plain HTTP, since ORDER BY/GROUP BY with no filter can't skip row groups.
 # Precomputed here as one small JSON blob instead — total_stars and
@@ -703,7 +703,7 @@ LIMIT {SKIPPED_TOP_N}
 # sitting in needs_review.
 #
 # Deliberately NOT `SELECT * FROM pg.spectroscopy_holdings ORDER BY
-# raw_ra/dec` -- confirmed live via this table's own Parquet column
+# raw_ra/dec` -- observed via this table's own Parquet column
 # metadata that archive_url + archive_obs_id alone account for 61% of the
 # ~1.5GB file (two per-row TEXT columns), and a full-width resort wouldn't
 # even shrink that: `id`'s current compression benefits from loosely
@@ -715,7 +715,7 @@ LIMIT {SKIPPED_TOP_N}
 # results, never for the full candidate set the cone search itself scans.
 #
 # WHERE raw_ra/raw_dec IS NOT NULL cuts straight to the rows a position
-# search could ever return -- confirmed live only 17,911,462 of 48,312,943
+# search could ever return -- observed only 17,911,462 of 48,312,943
 # total holdings rows carry a position at all (many archives, e.g.
 # feros_gavo/flashheros_gavo/salt_hrs/irtf_spex/irtf_ishell, are name-only
 # by design, see this file's own per-archive notes in db/schema.sql). Not
@@ -723,7 +723,7 @@ LIMIT {SKIPPED_TOP_N}
 # "everything not covered by the normal stars-table search's radius", which
 # includes needs_review and even already-matched rows a user might still
 # want to see alongside unmatched ones (match_status is exported so
-# webapp.app can label each result). Confirmed live this whole query,
+# webapp.app can label each result). Observed this whole query,
 # sorted, comes to 320.6MB -- comfortably under the 1GiB Cloud Run limit
 # even loaded alongside the other exported tables, unlike a full-width
 # resorted clone would have been.
@@ -746,7 +746,7 @@ ORDER BY raw_dec
 # /triage page used to run this grouping live against the hosted
 # DuckDB/Parquet snapshot, but a true GROUP BY (archive_code, raw_target_name)
 # over the full skipped set (12M+ rows, 900k+ distinct names) OOM'd the 1 GiB
-# Cloud Run container outright, confirmed live against production -- same
+# Cloud Run container outright, observed against production -- same
 # OOM-shaped risk as everything else precomputed here, just without the
 # option of even a windowed live fallback (there's no cheap way to know which
 # recent rows share a name without grouping first). Computed here instead,
@@ -810,7 +810,7 @@ SELECT
     -- From the single rn=1 row (most recently updated), not independent
     -- per-column min()s -- those can pair one file's RA with a different
     -- file's Dec, producing a synthetic position that matches no real file
-    -- (confirmed live: a noirlab group showed RA from a 2010 exposure and
+    -- (observed: a noirlab group showed RA from a 2010 exposure and
     -- Dec from an unrelated 2011 exposure, ~200 degrees apart from the
     -- group's actual, overwhelmingly common position).
     any_value(raw_ra) FILTER (WHERE rn = 1) AS raw_ra,
@@ -842,7 +842,7 @@ GROUP BY archive_code, display_name, group_key
 -- {TRIAGE_QUEUE_TOP_N} entirely before webapp.app ever sees them.
 --
 -- Repeats the NULLIF(TRIM(any_value(...))) expression rather than
--- referencing the `raw_target_name` output alias -- confirmed live that
+-- referencing the `raw_target_name` output alias -- observed that
 -- referencing the bare alias here binds to `ranked.raw_target_name` (the
 -- raw, ungrouped column of the same name carried through the CTE) instead
 -- of the SELECT list's aggregate, which DuckDB then rejects as ungrouped:
@@ -878,7 +878,7 @@ LIMIT {TRIAGE_QUEUE_TOP_N}
 # has no output row at all (implicit zero) rather than an explicit zero row
 # -- archive_overlap(_triple) stays small on its own (low hundreds of rows,
 # bounded by the handful of archive codes that exist). Instrument overlap
-# needed an explicit cap instead: confirmed live that ~450+ distinct
+# needed an explicit cap instead: observed that ~450+ distinct
 # instrument names made instrument_overlap_triple balloon to ~6.8M rows (not
 # "nowhere near N^3" as originally assumed here) -- webapp.app's /instruments
 # route pulls every row into Python dicts and JSON-serializes them straight
@@ -936,7 +936,7 @@ ORDER BY 1, 2, 3
 # Restricted to the top INSTRUMENT_OVERLAP_TOP_N instruments by matched-holding
 # count -- unlike archive_code (a few dozen values, tops), the catalog has
 # 450+ distinct instrument names, and pair/triple overlap is O(n^2)/O(n^3) in
-# that count. Confirmed live: the unrestricted triple query produced ~6.8M
+# that count. Observed: the unrestricted triple query produced ~6.8M
 # rows, which then OOM'd/timed out the /instruments page (see the long
 # comment above ARCHIVE_OVERLAP_QUERY). Must match webapp.app's
 # INSTRUMENT_OVERLAP_HEATMAP_TOP_N, which already caps the heatmap display to
@@ -1020,14 +1020,14 @@ def export_stats_summary(con: duckdb.DuckDBPyConnection, out_dir: str) -> None:
 # Every derived-table query above was written against pg.spectroscopy_holdings
 # /pg.archives/pg.stars/pg.archive_sync_state -- the live Postgres tables --
 # on the reasoning that DuckDB's postgres scanner would push filters down and
-# only pull the rows each query actually needs. Confirmed live that's not
+# only pull the rows each query actually needs. Observed that's not
 # what happens for these shapes: DuckDB's postgres extension pushes down
 # simple projections/filters on the base scan, but every GROUP BY, window
 # function, and array_agg here (i.e. nearly all of them) still executes in
 # DuckDB after pulling the (often majority-of-the-table) matching rows across
 # the wire -- so each of the ~15 derived queries independently re-transfers
 # its own large share of a 43M-row, 25GB table from Postgres, on top of
-# Postgres's own execution cost for that scan (confirmed live on the actual
+# Postgres's own execution cost for that scan (observed on the actual
 # prod host: a bare count(*) over spectroscopy_holdings took 165s, a GROUP BY
 # over match_status took 227s -- this host's disk, not query shape, is what
 # makes a single full scan that slow).
@@ -1056,7 +1056,7 @@ def _atomic_copy(con: duckdb.DuckDBPyConnection, select_sql: str, path: str) -> 
     # COPY TO writes straight to `path`, with no atomicity -- a request that
     # reads the file mid-write (webapp.app reads this snapshot live over
     # HTTP while exports happen independently, on no fixed schedule) sees a
-    # torn/partial Parquet file and errors out. Confirmed live as the cause
+    # torn/partial Parquet file and errors out. Observed as the cause
     # of a one-off duckdb "don't know what type:" crash on /stats. Writing
     # to a temp path and rename()-ing into place avoids that: rename is
     # atomic on the same filesystem, so readers only ever see a complete
@@ -1072,7 +1072,7 @@ def export_tables(database_url: str, out_dir: str) -> None:
     # An in-memory connection has no temp_directory by default, so DuckDB
     # can't spill oversized intermediate results (e.g. the leaderboard
     # query's star x period grid) to disk -- it just errors out once
-    # memory_limit is hit instead. Confirmed live: LAMOST's addition pushed
+    # memory_limit is hit instead. Observed: LAMOST's addition pushed
     # the leaderboard grid past the box's 24.9 GiB default memory_limit for
     # the first time. Pointing temp_directory somewhere writable lets
     # DuckDB spill instead of OOMing.
@@ -1090,7 +1090,7 @@ def export_tables(database_url: str, out_dir: str) -> None:
             select_sql = f"SELECT * FROM pg.{table}"
             if table == "spectroscopy_holdings":
                 # webapp.app's single-star search filters this table on
-                # star_id over httpfs -- confirmed live that an unclustered
+                # star_id over httpfs -- observed that an unclustered
                 # export means Parquet's row-group min/max stats can't skip
                 # anything on that filter, so a lookup pulls a large chunk
                 # of this (now >1GB) file into memory and tipped the Cloud
@@ -1102,7 +1102,7 @@ def export_tables(database_url: str, out_dir: str) -> None:
                 # Same class of bug as spectroscopy_holdings above, just
                 # discovered later: _lookup_local_star's numeric-query path
                 # filters this table on gaia_source_id over httpfs.
-                # Confirmed live -- an unsorted export of this (now >650MB)
+                # Observed -- an unsorted export of this (now >650MB)
                 # table meant every row group's gaia_source_id min/max
                 # spanned nearly the whole 0..~6.9e18 range, so row-group
                 # pruning couldn't skip anything and a single-ID search
@@ -1232,7 +1232,7 @@ ALLOWED_TRIAGE_OUTCOMES = {
 
 # A name-based vote (see the "Expands one vote-by-name..." comment below)
 # assumes the name identifies one real target, so a handful of matching
-# skipped rows at most -- confirmed live 2026-08-12 that assumption breaks
+# skipped rows at most -- observed 2026-08-12 that assumption breaks
 # for a calibration-frame name like Lick's "WideFlat": it matched 217,237
 # of that one archive's 1.1M skipped rows, and the query planner badly
 # misjudged the cost (estimated 1,934 rows, actual 217,237), turning one

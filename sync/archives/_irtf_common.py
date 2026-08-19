@@ -1,8 +1,8 @@
 """Shared IRSA-hosted IRTF (CAOM2/TAP) fetch logic for irtf_spex.py and irtf_ishell.py.
 
 Both of IRTF's current instruments (SpeX and iSHELL) live in the exact same
-IRSA-hosted CAOM2 tables, differing only in `instrument_name` -- confirmed
-live: iSHELL's shape matches SpeX's in every respect checked (28,126 rows,
+IRSA-hosted CAOM2 tables, differing only in `instrument_name`: iSHELL's
+shape matches SpeX's in every respect checked (28,126 rows,
 every one calibrationlevel=1/raw, the join to exactly one info/text/html
 summary.html artifact per plane holds 1:1 same as SpeX's, target_name uses
 the same underscore-joined catalog-name convention). See irtf_spex.py's
@@ -34,7 +34,7 @@ ORDER BY p.time_bounds_lower ASC
 PAGE_SIZE = 5000
 
 # Strips a trailing reddening annotation like "_AV=+1.16" or "_AV=-0.4" —
-# confirmed live on real SpeX target_name values (see irtf_spex.py).
+# observed on real SpeX target_name values (see irtf_spex.py).
 _AV_SUFFIX = re.compile(r"_AV=[+-]?\d+\.?\d*$")
 
 
@@ -57,11 +57,11 @@ def fetch(cursor: dict, instrument_pattern: str, instrument: str) -> tuple[list[
         planeid = str(row["planeid"])
         mjd = float(row["time_bounds_lower"])
         # IRSA's TAP output rounds time_bounds_lower to 6 decimals for
-        # display (confirmed live via the field's own irsa_format: "12.6f"
+        # display (observed via the field's own irsa_format: "12.6f"
         # metadata), but the server-side WHERE clause compares against the
         # full-precision stored value -- so a boundary row's true value can
         # sit just above the rounded watermark we send back, re-matching
-        # `> {last_mjd}` on the very next page (confirmed live: exactly one
+        # `> {last_mjd}` on the very next page (observed: exactly one
         # repeated planeid at the page boundary). Same same-timestamp
         # id-dedup guard as lco_floyds.py/lco_nres.py's inclusive `start=`
         # workaround, for a different root cause but the same symptom.

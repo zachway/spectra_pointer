@@ -1,6 +1,6 @@
 """One-off: backfill spectroscopy_holdings.reduction_status for rows synced
 before PR #46/#49 added the column (everything currently in production, as
-of 2026-08-03 -- confirmed live: 100% of 40M+ rows read 'unknown').
+of 2026-08-03 -- observed: 100% of 40M+ rows read 'unknown').
 
 sync.matcher's ON CONFLICT upsert only sets a real value when a record is
 re-ingested through a fresh sync run, and sync cursors are incremental
@@ -20,7 +20,7 @@ same reduction_status column:
   gemini_igrins.py already filter to reduced-only filenames before a
   record is built; noirlab.py's query hardcodes proc_type='raw'; the 8
   survey modules are each a large pipeline-processed survey whose only
-  public product is a calibrated/coadded 1D spectrum, confirmed live
+  public product is a calibrated/coadded 1D spectrum, observed
   2026-08-04 against each module's own deep-link/reduction-version path)
   or, for naoj, derivable straight from the archive_url this project
   already stored (the same filename-infix/extension check naoj.py's
@@ -83,7 +83,7 @@ MAST_TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 ESO_TAP_URL = "http://archive.eso.org/tap_obs"
 OIRSA_TAP_URL = "http://oirsa.cfa.harvard.edu:8080/tap"
 
-# CADC's TAP service was confirmed live (2026-08-03) to intermittently stall
+# CADC's TAP service was observed (2026-08-03) to intermittently stall
 # past make_tap_service's 180s read timeout under load -- without a retry, a
 # single bad page kills the whole archive's progress (gemini's ~1300-window
 # walk in particular would have to restart from window 0). 3 attempts with a
@@ -379,7 +379,7 @@ def backfill_eso(conn: psycopg.Connection) -> None:
 
 def backfill_oirsa(conn: psycopg.Connection) -> None:
     """oirsa.py's shape: no cliff found up to a 2,000,000-row unbounded
-    pull (~12s, confirmed live in that module) -- one shot rather than
+    pull (~12s, observed in that module) -- one shot rather than
     paginating, since there's nothing to gain from chunking here."""
     tap = make_tap_service(OIRSA_TAP_URL)
     query = "SELECT TOP 2000000 obs_publisher_did, calib_level FROM ivoa.obscore WHERE dataproduct_type = 'spectrum'"
@@ -513,7 +513,7 @@ def main() -> None:
         raise SystemExit(f"Unknown archive_code(s): {sorted(unknown)}. Valid: {sorted(ARCHIVE_BACKFILLS.keys())}")
 
     # Same per-archive isolation as sync/main.py's own driver -- an external
-    # TAP service timing out (confirmed live: CADC hung mid-page during this
+    # TAP service timing out (observed: CADC hung mid-page during this
     # script's first production run, 2026-08-03) shouldn't take down every
     # archive after it. Each backfill function already commits per-page, so
     # a failed archive just leaves its own reduction_status = 'unknown' rows

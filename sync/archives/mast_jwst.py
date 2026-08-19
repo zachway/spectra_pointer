@@ -2,9 +2,9 @@
 FUSE), but split into its own module because both the pagination shape and
 the product-dedup logic are genuinely different, not just a config tweak.
 
-The 504 previously written off in mast.py's docstring turns out to be a
-real, reproducible cliff specific to obs_collection='JWST', not a "JWST
-isn't queryable" dead end -- confirmed live:
+The 504 noted in mast.py's docstring is a real, reproducible cliff
+specific to obs_collection='JWST', not a "JWST isn't queryable" dead
+end:
   - A plain unbounded `t_min > watermark ORDER BY t_min` query -- the exact
     shape that works fine for HST/IUE/FUSE at 20,000 rows/page -- 504s for
     JWST even at TOP 10, and even narrowed to a single instrument
@@ -36,7 +36,7 @@ straight to the caller.
 
 Starting watermark (JWST_LAUNCH_MJD) is set before any real commissioning
 spectra rather than 0, to avoid ~163 years of empty pre-launch windows on a
-fresh cursor -- each empty window is cheap (confirmed live, ~0.2s) but
+fresh cursor -- each empty window is cheap (observed, ~0.2s) but
 there's no reason to pay for thousands of them.
 
 A real scheduling gap (JWST doesn't observe continuously) returning one
@@ -59,17 +59,17 @@ dataproduct_type='spectrum' under access_format='application/fits' alone --
 not just processing stages of the real exposure (uncal/rate/rateints/cal/
 crf/s2d/x1d/...) but guide-star acquisition/tracking calibration files from
 the same visit, which share the science exposure's obs_id despite being
-unrelated engineering data (confirmed live: gs-acq/gs-fg/gs-track/gs-id
+unrelated engineering data (observed: gs-acq/gs-fg/gs-track/gs-id
 *_cal.fits rows mixed in under one obs_id). access_format itself is even
 noisier before filtering -- the same obs_id/dataproduct_type='spectrum' rows
 include image/jpeg and image/png preview thumbnails and text/plain logs
-alongside the real FITS (confirmed live), so access_format='application/
+alongside the real FITS (observed), so access_format='application/
 fits' is filtered in SQL up front, same as mast.py already does.
 
 Within the FITS-only rows, mast.py's single-suffix "_vo.fits" dedup doesn't
 apply -- JWST has no equivalent convention, and the desired product varies
 by mode. _x1d (extracted 1D spectrum) is standard across NIRSpec, NIRISS,
-NIRCam grism, and MIRI's slit/slitless spectroscopy (confirmed live across
+NIRCam grism, and MIRI's slit/slitless spectroscopy (observed across
 all four); MIRI MRS's IFU mode and NIRISS SOSS instead produce _s3d/_c1d
 respectively. _JWST_PRODUCT_PRIORITY ranks these ahead of the intermediate
 products (s2d/cal/crf/rate/rateints/bsub/trapsfilled/...) and, implicitly,

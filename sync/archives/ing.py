@@ -1,10 +1,10 @@
 """ING Archive (WHT/INT/JKT via CASU) -- metadata-only, no file retrieval.
 
-The old archive.ast.cam.ac.uk is dead/decommissioned (confirmed live,
+The old archive.ast.cam.ac.uk is dead/decommissioned (observed,
 connection refused from two independent networks) -- the live one is
 casu.ast.cam.ac.uk/casuadc/ingarch, a TurboGears web-form app with no
 TAP/VO/REST API. `displayResults` (POST, multipart/form-data) is the query
-endpoint; confirmed live that the `telescope` <select> field must be
+endpoint; observed that the `telescope` <select> field must be
 present in the POST body even when blank, or the server 500s (a real
 TurboGears form-validation quirk, not a documented requirement).
 
@@ -12,7 +12,7 @@ This module deliberately does NOT retrieve actual FITS files -- ING's only
 bulk-download path is a stateful, session-tied, email-gated async job
 queue (POST recno selections -> POST an email address -> a bare numeric
 Job ID is returned -> the archive emails a download link once the job
-completes, confirmed live end-to-end with a throwaway address). No
+completes, observed end-to-end with a throwaway address). No
 status-check endpoint exists to poll instead of reading email (confirmed:
 several guessed endpoints all 404). Since every archive_url in this
 project is already just a pointer to where the source archive keeps the
@@ -24,7 +24,7 @@ role the search-portal link plays for lbt.py (which also has no
 direct-file URL).
 
 Spectroscopy only: the `instrument` text field does real server-side
-substring filtering (confirmed live: `instrument=ISIS` returns only
+substring filtering (observed: `instrument=ISIS` returns only
 WHT/ISIS red/blue arm rows, nothing else) -- used directly rather than
 pulling every instrument and filtering client-side. Only WHT/ISIS is
 covered. WHT/ACAM and WHT/LIRIS are dual-mode (imaging AND spectroscopy)
@@ -36,14 +36,14 @@ result pages smaller.
 
 Real science frames have `obs_type` (a results column, not a form field)
 == "TARGET" -- ARC/BIAS/FLAT/SKY calibration frames are excluded via that
-check, confirmed live across a real month of data. Some TARGET frames are
+check, observed across a real month of data. Some TARGET frames are
 engineering pointings (e.g. "FOCRUN-1/9" focus-run sequences) rather than
 real stars -- left in rather than hand-filtered further, since those
 simply fail to resolve to a tracked star downstream, the same outcome a
 bespoke name-based filter would produce (same reasoning lick.py gives for
 not hand-filtering its own free-text labels).
 
-Coordinates are real sexagesimal ra/dec on TARGET frames (confirmed live)
+Coordinates are real sexagesimal ra/dec on TARGET frames (observed)
 but a literal "00:00:00.00 +00:00:00.0" sentinel on calibration/some
 engineering frames -- treated as no-position rather than passed through,
 same reasoning harpsn_tng.py's OBJECT!='NONE' filter gives for its own
@@ -52,9 +52,9 @@ be a live risk).
 
 Pagination: no offset/watermark field exists on this form at all -- a
 blank/wide query just silently caps at "Displaying only the first 1000"
-with no total count and no way to page past it (confirmed live). Walked
+with no total count and no way to page past it (observed). Walked
 instead as an adaptive calendar-window crawl on `nightobs` (which accepts
-a real "YYYYMMDD..YYYYMMDD" range, confirmed live), similar in spirit to
+a real "YYYYMMDD..YYYYMMDD" range, observed), similar in spirit to
 lick.py's calendar walk but self-adjusting: a window that comes back
 truncated gets bisected (retried at half the size) until it doesn't, and
 an accepted window's size grows back up afterward (capped) since coverage
@@ -79,7 +79,7 @@ BASE_URL = "http://casu.ast.cam.ac.uk/casuadc/ingarch"
 RESULTS_URL = f"{BASE_URL}/displayResults"
 HEADER_URL = BASE_URL + "/displayHeader?recno={recno}"
 
-# WHT started operations in 1987, but confirmed live that ISIS itself has
+# WHT started operations in 1987, but observed that ISIS itself has
 # no archived data at all until sometime between 1990 (confirmed empty)
 # and 1995 (confirmed real data) -- not worth pinning down further given
 # the empty-window growth below skips gaps quickly regardless; same
@@ -93,7 +93,7 @@ MAX_WINDOW_DAYS = 365
 # Keep scanning forward within one fetch() call until this many real
 # records are found or today is reached -- mirrors lick.py's "days_scanned
 # < WINDOW_DAYS or not records" loop condition. Generous because an empty
-# multi-year gap (like 1990-1995, confirmed live) needs to be skippable
+# multi-year gap (like 1990-1995, observed) needs to be skippable
 # within a single call even before window growth ramps up.
 MAX_WINDOWS_PER_CALL = 60
 

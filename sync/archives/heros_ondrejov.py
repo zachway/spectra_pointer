@@ -15,7 +15,7 @@ hermes_mercator, so the same shortcut applies: a plain TAP endpoint at
 vos2.asu.cas.cz/tap (table heros.data), not just the SSA-style web form at
 vos2.asu.cas.cz/heros/q/web/form this was found from.
 
-Confirmed live: `ssa_creator = "Heros Ond"`, `ssa_instrument = "Ondrejov
+Observed: `ssa_creator = "Heros Ond"`, `ssa_instrument = "Ondrejov
 Zeiss 2m"` -- genuinely the Ondrejov-mounted HEROS, not a mirror of
 Heidelberg's La Silla data. ssa_dateobs (MJD) spans 51770-52727
 (2000-09-25 to 2003-04-15), matching "used for a few years" -- a
@@ -28,7 +28,7 @@ same free correctness margin at near-zero extra cost.
 Same paired-row mime quirk as feros_gavo/flashheros_gavo/ondrejov: 2,020
 total rows split 1,010 image/fits (real spectra) + 1,010
 application/x-votable+xml metadata siblings -- filtered via mime. All
-1,010 real rows confirmed live to have a populated ssa_location (unlike
+1,010 real rows observed to have a populated ssa_location (unlike
 flashheros_gavo.py's positionless data), so normal identifier-then-
 position matching applies here, not name-only.
 
@@ -37,7 +37,7 @@ format as ondrejov.py's ccd700.data -- same whitespace-split parser
 applies. ssa_targname uses the same bright-star naming convention as
 flashheros_gavo.py (e.g. "gamCas", "6Cep", "alpLyr").
 
-No plain `instrument` column exists on this table (confirmed live: querying
+No plain `instrument` column exists on this table (observed: querying
 for one errors "No such field known") -- instrument is a per-service
 constant here, same situation as flashheros_gavo.py, so it's hardcoded
 below rather than read from a row.
@@ -58,7 +58,7 @@ WHERE mime = 'image/fits' AND ssa_dateobs > {last_dateobs}
 ORDER BY ssa_dateobs ASC
 """
 
-# Whole table is 1,010 real rows (confirmed live) -- comfortably one page,
+# Whole table is 1,010 real rows (observed) -- comfortably one page,
 # but kept generous rather than hardcoded to today's exact count, same
 # reasoning ondrejov.py gives for its own PAGE_SIZE.
 PAGE_SIZE = 100000

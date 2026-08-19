@@ -8,17 +8,17 @@ exposes a plain TAP endpoint (voarchive.asu.cas.cz/tap, table ccd700.data)
 rather than needing SSA cone-search-style POS/SIZE queries for a full-
 archive pull.
 
-Coude spectrograph fed by the 700mm camera, confirmed live via the
+Coude spectrograph fed by the 700mm camera, observed via the
 service's own info page: "typical spectral resolving power is 13000 in
 first order around Halpha region and twice in Hbeta" (R~13,000), one-year
 proprietary period. Mostly Be stars/emission-line objects per the info
 page's keywords ("Optical spectroscopy", "Stars").
 
 Same paired-row mime quirk as feros_gavo/flashheros_gavo: every real
-spectrum has a companion application/x-votable+xml metadata row (confirmed
-live: 65,378 total rows split 22,325 image/fits + 43,053
+spectrum has a companion application/x-votable+xml metadata row (65,378
+total rows split 22,325 image/fits + 43,053
 application/x-votable+xml, exactly the fits-row count) -- filtered via the
-mime column. All 22,325 real rows confirmed live to have a populated
+mime column. All 22,325 real rows observed to have a populated
 ssa_targname and ssa_location -- normal identifier-then-position matching
 applies, not name-only. instrument is a constant "COUDE700" on every row.
 
@@ -32,7 +32,7 @@ actively growing, so this paginates by an ssa_dateobs watermark (same
 "t_min-style" shape as eso.py/dao.py) rather than a one-shot pull, even
 though the whole table comfortably fits in a single page today.
 
-Confirmed live: the server-side `>` comparison against the watermark we
+Observed: the server-side `>` comparison against the watermark we
 send back doesn't always exclude the exact boundary row -- the same single
 accref (its own ssa_dateobs value, re-queried directly, matches nothing
 else) kept re-matching `ssa_dateobs > {last_dateobs}` on a second,
@@ -62,7 +62,7 @@ WHERE mime = 'image/fits' AND ssa_dateobs > {last_dateobs}
 ORDER BY ssa_dateobs ASC
 """
 
-# Whole table is 22,325 real rows (confirmed live) -- comfortably one page,
+# Whole table is 22,325 real rows (observed) -- comfortably one page,
 # but kept generous rather than hardcoded to today's exact count so future
 # growth doesn't silently truncate.
 PAGE_SIZE = 100000

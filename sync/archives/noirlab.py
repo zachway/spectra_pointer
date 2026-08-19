@@ -9,7 +9,7 @@ not from any docs text). POST /api/adv_search/find/, JSON body
 
 No native Gaia column — positional match. Every returned row already
 carries a direct, working `url` field (.../api/retrieve/{md5sum}/) —
-confirmed live to a real downloadable FITS file, no separate resolution
+observed to a real downloadable FITS file, no separate resolution
 step needed.
 
 Field names are non-obvious and had to be reverse-engineered from a live
@@ -22,17 +22,17 @@ used as a spectroscopy filter — instrument identity does that job instead
 Originally scoped to just `goodman` (SOAR Goodman Spectrograph); extended to
 every other dedicated spectrograph on the same API with the identical query
 shape, per this module's own earlier note that it was a trivial swap of the
-instrument value — confirmed live, same field names and response shape for
+instrument value — observed, same field names and response shape for
 all of them.
 
 No hard row cap found, but slower than most: 20,000 rows took 28.7s.
 Paginated at 10,000/page here.
 
 The `["dateobs_center", low, high]` range filter is inclusive on both ends
-(confirmed live — no exclusive/">" variant found in the API). Naively
+(observed — no exclusive/">" variant found in the API). Naively
 using the watermark as-is for `low` re-fetches the same boundary row on
 every page once the cursor catches up to the currently-available data —
-confirmed live in production: cursor stuck at the exact same
+observed in production: cursor stuck at the exact same
 `last_dateobs` for 150+ consecutive runs, re-matching the same single
 record every ~1.5s forever, never converging. Fixed by querying from one
 microsecond past the watermark (dateobs_center has microsecond
@@ -40,7 +40,7 @@ precision) instead of the watermark itself; the persisted cursor value
 is untouched, only the query's lower bound is shifted.
 
 OBJECT (the raw FITS header target name) is fetched and passed through as
-raw_target_name, but confirmed live it's frequently NOT a resolvable star
+raw_target_name, but observed it's frequently NOT a resolvable star
 name at all — e.g. "SMC #19 Spec HgAr" (a survey-internal field id, and
 "HgAr" flags this specific exposure as an arc-lamp wavelength calibration,
 not a science target) or "SMC #21 acq" (a telescope acquisition/pointing
@@ -88,7 +88,7 @@ FIND_URL = "https://astroarchive.noirlab.edu/api/adv_search/find/"
 
 PAGE_SIZE = 10000
 
-# Every dedicated spectrograph confirmed live on this API with the same
+# Every dedicated spectrograph observed on this API with the same
 # query shape as goodman (the only one originally wired up).
 INSTRUMENTS = [
     "goodman",

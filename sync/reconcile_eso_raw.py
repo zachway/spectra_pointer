@@ -21,7 +21,7 @@ the archives' own raw_target_name/raw_ra/raw_dec, which would have to
 tolerate ESO's independently-generated dp_ids (raw: `HARPS.<exposure
 timestamp>`, Phase 3: `ADP.<ingestion timestamp>`, unrelated to each other)
 and up to ~43s of drift between a raw frame's mjd_obs and its Phase 3
-product's t_min (confirmed live). obs_date is already day-granularity in
+product's t_min. obs_date is already day-granularity in
 this table (both eso.py and eso_raw.py truncate their MJD to .date() before
 insert), which absorbs that drift for free in the overwhelming majority of
 cases -- the only real edge case is an exposure within roughly a minute of

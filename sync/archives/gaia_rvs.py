@@ -3,15 +3,15 @@ pagination.
 
 Independent discovery archive, not a walk over stars this project already
 tracks: queries gaiadr3.gaia_source directly via Gaia's own TAP service for
-every source with has_rvs='true'. Confirmed live (2026-08-04) that
+every source with has_rvs='true'. Observed (2026-08-04) that
 `SELECT COUNT(*) ... WHERE has_rvs = 'true'` returns exactly 999,645 — the
 same figure published at https://www.cosmos.esa.int/web/gaia/dr3 as the DR3
 mean-RVS-spectra release total. discover_stars registers any source_id not
 already tracked via some other archive, the same as any other archive's
 direct_gaia_column records.
 
-Filtering has_rvs='true' before the ORDER BY/TOP keeps this fast (confirmed
-live: 50,000-row page in ~5s) even though gaiadr3.gaia_source itself is
+Filtering has_rvs='true' before the ORDER BY/TOP keeps this fast
+(50,000-row page in ~5s) even though gaiadr3.gaia_source itself is
 ~1.8B rows — this isn't the unbounded-ORDER-BY cliff that bit mast_jwst.py,
 because the qualifying set is ~1M rows, not the full table.
 
@@ -59,7 +59,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     tap = make_tap_service(TAP_URL)
     query = QUERY.format(page_size=PAGE_SIZE, last_source_id=last_source_id)
     # pyvo defaults maxrec to ~20000 regardless of the ADQL TOP clause —
-    # confirmed live elsewhere in this codebase (eso.py) — set explicitly.
+    # observed elsewhere in this codebase (eso.py) — set explicitly.
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 
     records = []

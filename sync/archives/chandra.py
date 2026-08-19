@@ -10,7 +10,7 @@ like an empty response and could get wrongly written off as dead.
 X-ray grating spectroscopy, not imaging: `cxc.observation`'s `grating`
 column is `NONE`/`HETG`/`LETG` -- filtered to HETG/LETG only, which cleanly
 isolates real dispersed-spectrum exposures from Chandra's much larger
-imaging-only holdings (confirmed live: 3,243 real archived/observed grating
+imaging-only holdings (observed: 3,243 real archived/observed grating
 rows out of the full table). `status` is also filtered to `archived`/
 `observed` (a real exposure has actually happened) excluding `unobserved`/
 `untriggered` (scheduled but not yet taken -- no data exists yet, same
@@ -25,7 +25,7 @@ than discarding.
 No access_url/ObsCore shape here (unlike most other TAP archives in this
 project) -- this table is CDA's own observation-log schema, not ivoa.obscore.
 archive_url instead points at the real per-observation archive browser page,
-`chaser/startViewer.do?menuItem=details&obsid=...` (confirmed live, 200, a
+`chaser/startViewer.do?menuItem=details&obsid=...` (observed, 200, a
 real "Chandra Data Archive: Observation Viewer" page) -- same "point at a
 real page in the home archive" convention as lbt.py's portal link and
 ing.py's displayHeader link, not a direct FITS download (this table has no
@@ -44,7 +44,7 @@ history) returns in well under a second, so this doesn't need aggressive
 paging the way eso.py/gemini.py do -- PAGE_SIZE is generous headroom over
 the current total, not a tuned-against-a-real-limit value.
 
-Confirmed live end-to-end: Proxima Centauri alone has 4 real HETG exposures
+Observed end-to-end: Proxima Centauri alone has 4 real HETG exposures
 (obsids 2388/12360/22185/22186) and 4 real LETG exposures (obsids
 19708/20073/20080/20084), all with real, populated ra/dec (0 masked across
 the whole HETG/LETG/archived/observed set) and real ISO-8601 start_date

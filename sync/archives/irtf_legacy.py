@@ -10,10 +10,10 @@ precedent — the *other* nav link, /search/, is a real, unauthenticated
 GET form (`results.php?Semester=&StartUTCDate=...&EndUTCDate=...&
 ProgramID=&Instrument=...`) returning a structured HTML table with real
 per-frame ra/dec, target name, instrument, program ID, and a direct file
-path — confirmed live, not a directory listing at all.
+path — observed, not a directory listing at all.
 
 END_DATE is a hard boundary at 2016-08-01 (exclusive) — irtf_spex.py's IRSA
-coverage confirmed live to begin 2016-08-02 (semester 2016B). Without this
+coverage observed to begin 2016-08-02 (semester 2016B). Without this
 cap, the same physical observations from the 2016B transition would risk
 appearing under two different archive_code values (this module and
 irtf_spex/irtf_ishell) — not a database-level duplicate (archive_code
@@ -21,7 +21,7 @@ differs, so the UNIQUE constraint allows it) but a real logical one a user
 would see twice in one star's holdings. This module simply never queries
 past the boundary, no dedup needed.
 
-Three instrument codes covered, confirmed live via a real 5000-row sample's
+Three instrument codes covered, observed via a real 5000-row sample's
 own instrument breakdown: sbd_1 (SpeX/"bigdog" v1, 2000-2014) and sbd_2
 (SpeX v2, 2014-2016A) are this era's SpeX — walked as two sequential
 phases since they're already time-disjoint by the archive's own design,
@@ -38,7 +38,7 @@ instruments without a clean discriminator. sgd_1/sgd_2 (SpeX's imager/
 guider channel, not the spectrograph) and the plain imagers (nsfcam*,
 moris*) are never queried at all.
 
-Row granularity is per-raw-FITS-file, not per-sequence (confirmed live:
+Row granularity is per-raw-FITS-file, not per-sequence (observed:
 a single object's one science exposure comes with its own arc/flat
 calibration frames as separate rows, object name "Argon lamp"/"Inc lamp"
 on those) — no plane/block id exists anywhere in this table to group on
@@ -49,15 +49,15 @@ never match a tracked star's alias list and fall through to a harmless
 skip, while a bespoke label-matching filter would inevitably miss some
 real variant and risk dropping genuine science rows instead. A handful of
 rows carry an obvious placeholder object name ("object name") and blank
-ra/dec (confirmed live, e.g. a stray *_noise_test-*.fits engineering
+ra/dec (observed, e.g. a stray *_noise_test-*.fits engineering
 frame) — left in for the same reason, harmless.
 
 ra/dec are real sexagesimal strings on real frames, blank on some
-(confirmed live) — parsed the same way as ing.py's own sexagesimal
+(observed) — parsed the same way as ing.py's own sexagesimal
 columns, blank treated as no-position rather than erroring.
 
 Pagination: the form's own page states a 5000-row cap ("Maximum number of
-search results returned is 5000"), confirmed live (a one-year, all-
+search results returned is 5000"), observed (a one-year, all-
 instrument query came back with exactly "Found 5000 records" against an
 internal "all rows:5005" comment -- the comment isn't parsed, just the
 round-number cap is treated as the truncation signal). Walked as an
@@ -85,7 +85,7 @@ RESULTS_URL = f"{BASE_URL}/search/results.php"
 FIRST_DATE = date(2000, 1, 1)
 
 # Exclusive — irtf_spex.py/irtf_ishell.py's IRSA coverage begins 2016-08-02
-# (semester 2016B), confirmed live. See module docstring.
+# (semester 2016B), observed. See module docstring.
 END_DATE = date(2016, 8, 1)
 
 # Sequential phases — see module docstring for why these three and not

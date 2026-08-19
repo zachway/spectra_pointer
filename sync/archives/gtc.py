@@ -1,20 +1,15 @@
 """GTC (Gran Telescopio CANARIAS) Public Archive -- HTML form POST, no TAP/API.
 
 Same CAB/INTA JSP application family as carmenes_caha.py
-(gtc.sdc.cab.inta-csic.es vs caha.sdc.cab.inta-csic.es), but this archive
-was previously written off as a dead end (see project memory
-project_archive_survey_batch2_results): a bare GET on `searchform.jsp`
-reproducibly 500s. That 500 turned out to be the JSP app rejecting
-requests with no session cookie and no browser-like User-Agent/Accept
-headers -- confirmed live, twice, with a fresh unauthenticated session:
-hitting `/gtc/` first to pick up a JSESSIONID and sending a real
-User-Agent made `searchform.jsp` return 200 every time. Once past that,
-the actual search (`searchres.jsp`, POST multipart/form-data) turned out
-to need *no* session/cookie at all -- a completely stateless one-shot POST
-with every filter field set returns real results (confirmed live,
-719,927+ products for a full-history spectroscopy-only query). The
-"500 even with a session cookie" conclusion in the earlier investigation
-was itself a User-Agent/Accept-header issue, not a real server bug.
+(gtc.sdc.cab.inta-csic.es vs caha.sdc.cab.inta-csic.es). A bare GET on
+`searchform.jsp` reproducibly 500s; this is not a server bug, but the
+JSP app rejecting requests with no session cookie and no browser-like
+User-Agent/Accept headers. Hitting `/gtc/` first to pick up a JSESSIONID
+and sending a real User-Agent makes `searchform.jsp` return 200 every
+time. Once past that, the actual search (`searchres.jsp`, POST
+multipart/form-data) needs *no* session/cookie at all -- a completely
+stateless one-shot POST with every filter field set returns real results
+(719,927+ products for a full-history spectroscopy-only query).
 
 No registry/API shortcut exists either: reg.g-vo.org lists a SIAP
 (imaging) service at /gtc/siap/{gtc,osiris}_siap.jsp, real and live, but
@@ -33,8 +28,8 @@ lick.py/ing.py give for their own unfiltered free-text object names.
 
 Each row's Program ID + OBlock ID + numeric ProdId (e.g.
 "GTC78-19B..0007..2809328") is the archive's own composite key for
-`FetchProd`, its direct per-exposure raw-FITS download servlet -- confirmed
-live to serve a real ungated FITS.gz (200 OK, ~11MB, no login) for public
+`FetchProd`, its direct per-exposure raw-FITS download servlet, which
+serves a real ungated FITS.gz (200 OK, ~11MB, no login) for public
 data. Public rows carry this link directly in the HTML; embargoed rows
 collapse everything past the "Pub" column into one
 "Private Data. They will become public on: <date>" cell with no link at
@@ -47,13 +42,13 @@ period.
 
 Pagination: rpp (results per page) is a plain form field, not capped to
 the dropdown's advertised 10/50/100 -- passing an arbitrary larger value
-works (confirmed live: rpp=3000 returns exactly 3000 rows in ~18s,
+works (observed: rpp=3000 returns exactly 3000 rows in ~18s,
 rpp=5000 in ~46s), but there's a real cliff beyond that (rpp=10000 didn't
-finish in 90s, confirmed live twice) -- capped well under it here. Bigger
+finish in 90s, observed twice) -- capped well under it here. Bigger
 problem: a *fixed* full-history query is default-ordered newest-first
 (order_by=0, Observing Date) with no ascending option, and the archive is
-live -- its own "N products found" count changed by hundreds between two
-back-to-back requests during investigation. A page-number/frontier cursor
+live -- its own "N products found" count has been observed to change by
+hundreds between two back-to-back requests. A page-number/frontier cursor
 like carmenes_caha.py's would silently miss everything new (new rows land
 at page 1, and a frontier cursor only ever advances to *later*, i.e.
 older, pages). Paginates instead as an adaptive calendar-window walk on
@@ -120,7 +115,7 @@ def _query(start: date, end: date, rpp: int, pts: int = 1) -> str:
     }
     # The form declares enctype=multipart/form-data (it has a file-upload
     # field, unused here) -- forcing multipart via an empty `files` entry
-    # rather than a plain urlencoded POST, confirmed both required live.
+    # rather than a plain urlencoded POST -- both are required.
     resp = _session.post(SEARCH_URL, data=data, files={"file": ("", "")}, timeout=(15, 90))
     resp.raise_for_status()
     resp.encoding = "iso-8859-1"

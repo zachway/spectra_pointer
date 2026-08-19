@@ -106,7 +106,7 @@ def _fetch_records(archive_code: str, module, limit: int) -> list:
         # full ~1.08M-row catalog. Truncating here (not just for display)
         # matters a lot: unsliced, this would feed >1M raw ids into
         # add_stars_batch's chunking loop, turning ~4 batched Gaia queries
-        # into ~2000+ (confirmed live — this is what actually made the first
+        # into ~2000+ (observed — this is what actually made the first
         # run of this script hang, not galah.fetch() itself).
         records, _ = module.fetch({})
         return records[:limit]
@@ -115,7 +115,7 @@ def _fetch_records(archive_code: str, module, limit: int) -> list:
         return records[:limit]
     # FULL_PULL: no partial-pull mode at all, take whatever comes back and
     # truncate after. CARMENES is genuinely small (362) so this is a no-op
-    # there, but RAVE's "one query" is ~518K rows — confirmed live that,
+    # there, but RAVE's "one query" is ~518K rows — observed that,
     # left unsliced, that many direct Gaia ids blow add_stars_batch's
     # 500-per-chunk loop out to 1000+ sequential Gaia TAP calls (this is
     # what actually hung the run, same class of bug as the galah fix above,

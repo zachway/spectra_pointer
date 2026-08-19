@@ -2,7 +2,7 @@
 
 Same Pleinpot CGI engine and OHP host as elodie.py, but this table doesn't
 support a blank/wildcard "give me everything" query the way ELODIE's e500
-table does (confirmed live: no object filter at all, or a bare "%"
+table does (observed: no object filter at all, or a bare "%"
 wildcard, both return "0 lines were successfully retrieved" — a per-table
 config difference, not a URL/encoding mistake). The archive's own
 documentation (advanced.html) demonstrates catalog-prefix wildcards instead
@@ -10,7 +10,7 @@ documentation (advanced.html) demonstrates catalog-prefix wildcards instead
 pull a broad group — so this iterates a fixed list of common stellar
 catalog prefixes rather than a single unfiltered query. Since SOPHIE mostly
 observes catalogued RV-survey/exoplanet-host targets, catalog coverage is
-good but not complete: HD% alone returns 67,714 rows (confirmed live) of
+good but not complete: HD% alone returns 67,714 rows (observed) of
 the ~104,105 the archive reports across all prefixes combined, and a star
 cross-matched under a name outside this prefix list (an uncommon informal
 name, or a designation system not covered) will be silently missed until

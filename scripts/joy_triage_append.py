@@ -25,7 +25,7 @@ Setup on joy (do this once):
        the server ignores it and always runs this script instead -- so even
        if the private key leaks in full, whoever has it can only ever append
        one well-formed submission line to that one file. They cannot get a
-       shell, read other files, or reach Postgres. Confirmed live against a
+       shell, read other files, or reach Postgres. Observed against a
        throwaway local sshd during development: a session that requested
        `rm -rf / ; cat /etc/passwd` as its exec string still only ever ran
        this script.

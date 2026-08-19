@@ -2,18 +2,18 @@
 
 Same CADC TAP endpoint as cfht_cadc.py/gemini.py
 (https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus), just obs_collection='DAO'
-— found while surveying for archive gaps, not a new access pattern. Confirmed
-live: 263,980 spectrum rows, real s_ra/s_dec/target_name, t_min from MJD
-46450 (1986-01-14, Cassegrain + coude spectrographs) to present.
+— not a new access pattern. 263,980 spectrum rows, real
+s_ra/s_dec/target_name, t_min from MJD 46450 (1986-01-14, Cassegrain +
+coude spectrographs) to present.
 
 Cliff shape matches CFHT, not Gemini: ORDER BY t_min stays fast well past
-Gemini's ~1000-row wall (confirmed live: 10,000 rows in 2.9s, 20,000 in
+Gemini's ~1000-row wall (observed: 10,000 rows in 2.9s, 20,000 in
 16.9s — the same kind of sharp-but-later cliff as CFHT's). Standard
 TOP+ORDER BY+watermark pagination works, paginated well under that.
 
 No native Gaia column — positional match, same shape as cfht_cadc.py/eso.py.
 Deep link is the standard CADC DataLink resolver URL built from
-obs_publisher_did (confirmed live to return a real DataLink VOTable), same
+obs_publisher_did (observed to return a real DataLink VOTable), same
 as cfht_cadc.py/gemini.py — no separate resolution step needed.
 
 s_ra/s_dec read via clean_float — can be masked on real rows (confirmed as

@@ -3,7 +3,7 @@
 Six independent, historical space-mission (or airborne-mission) stellar
 spectral collections behind IRSA's one shared SSA service
 (irsa.ipac.caltech.edu/SSA?COLLECTION=...), same one-archive-many-
-instruments shape as oirsa.py/svo_cab.py. All six confirmed live,
+instruments shape as oirsa.py/svo_cab.py. All six observed,
 2026-08-07, and share one uniform CAOM-derived SSA column schema (unlike
 svo_cab.py's five independently-configured services) -- s_ra/s_dec,
 target_name, tmid (MJD), access_url, access_format, calib_level, and
@@ -34,18 +34,18 @@ opposite points on the sky (POS=0,90 and POS=180,0) at SIZE=180, and again
 at SIZE=360, all returned the identical 498-row result -- consistent only
 with SIZE=180 already covering the whole sky, not one hemisphere. Four of
 the six collections stay comfortably fast at that whole-sky SIZE=180 despite
-their real volume (confirmed live: spitzer_sass 4.7s, spitzer_irs_std 4.4s,
+their real volume (observed: spitzer_sass 4.7s, spitzer_irs_std 4.4s,
 irtf_mearth ~10s, sofia_exes ~20-48s across repeat queries) -- pulled in a
 single page each, no pagination needed (see WHOLE_SKY_COLLECTIONS).
 
 iso_sws and iras_lrs are the two exceptions: SIZE=180 hard-times-out
 server-side for both ("QUERY_STATUS=ERROR: TransientFault: INTERNAL_SERVER_
-ERROR: Job ran but timed out", confirmed live, reproduced twice each) even
+ERROR: Job ran but timed out", observed, reproduced twice each) even
 though a 2-degree box near Orion only turns up 44/10 real hits -- these two
 collections' underlying tables appear to lack a working spatial index (query
 latency scales roughly linearly with SIZE, not with area or hit count:
 SIZE=20 ~16-18s, SIZE=30 ~27s, SIZE=45 ~48-49s, SIZE=55 already exceeds 75s,
-confirmed live for both). SIZE=45 is the largest cell size confirmed to
+observed for both). SIZE=45 is the largest cell size confirmed to
 reliably return within IRSA's apparent timeout window, so these two are
 paginated instead via a justified sky-grid crawl (small, historical,
 already-closed mission archives -- not a full-sky survey a grid crawl
@@ -59,7 +59,7 @@ one page per collection.
 Each real observation is served across 2-3 parallel access_format rows
 (a preview image/gif or image/png thumbnail alongside the real science
 product) -- filtered per collection to the one real data format (see
-WHOLE_SKY_COLLECTIONS/GRID_COLLECTIONS' "format" key), confirmed live per
+WHOLE_SKY_COLLECTIONS/GRID_COLLECTIONS' "format" key), observed per
 collection (e.g. spitzer_sass: image/gif + application/fits + text/plain,
 159 each; sofia_exes: image/fits + image/png, not evenly split since EXES
 emits several raw order/nod files per real observation under one shared
@@ -71,7 +71,7 @@ guaranteed unique per real file across every collection here.
 target_name is populated directly for iso_sws/sofia_exes/irtf_mearth
 (underscore-joined on iso_sws, e.g. "HR4534_BET-LEO" -- cleaned the same
 way irtf_spex.py cleans its own underscore-joined names) but is an empty
-string on every spitzer_sass/spitzer_irs_std/iras_lrs row (confirmed live)
+string on every spitzer_sass/spitzer_irs_std/iras_lrs row (observed)
 -- for those three, the name is recovered instead from the tail of
 curation_publisherdid (e.g. "ivo://irsa.ipac/spitzer_irs_std/HD 127693" ->
 "HD 127693"; "ivo://irsa.ipac/iras_lrs/11210+1707" -> "11210+1707", a real
@@ -79,11 +79,11 @@ IRAS Point Source Catalog designation, not a star name -- falls through to
 a harmless skip downstream like any other unresolvable identifier).
 
 tmid (MJD) is real and populated on every sofia_exes/irtf_mearth row
-(confirmed live, 0 masked in both) but fully masked on every spitzer_sass/
-spitzer_irs_std/iso_sws/iras_lrs row confirmed live -- those four are
+(observed, 0 masked in both) but fully masked on every spitzer_sass/
+spitzer_irs_std/iso_sws/iras_lrs row observed -- those four are
 static, already-fully-reprocessed atlas products with no preserved
 per-observation epoch in this table (dataid_date is populated instead, but
-that is confirmed live to be a data-*processing*/ingestion timestamp, e.g.
+that is observed to be a data-*processing*/ingestion timestamp, e.g.
 iras_lrs's dataid_date is uniformly "2025-06-04" across every row --
 decades after the 1983 IRAS mission -- not a real observation date, so
 deliberately not used as a stand-in). obs_date is left None for those four,
@@ -91,7 +91,7 @@ same "no real per-observation date" shape as several of svo_cab.py's five
 libraries.
 
 calib_level is real and present on every row across all six collections
-(confirmed live) -- fed through reduction_status_from_calib_level as usual;
+(observed) -- fed through reduction_status_from_calib_level as usual;
 sofia_exes in particular has a genuine mix (2/1/masked observed live),
 unlike the other five which are uniformly a single value.
 """
@@ -168,7 +168,7 @@ def _clean_publisher_did_name(publisher_did: str) -> str:
     """Recovers a target name from curation_publisherdid's own tail segment
     for the collections whose target_name column is blank (see module
     docstring). spitzer_sass wraps its real name in a "sass_<name>_matched"
-    convention (confirmed live, e.g. ".../spitzer_sass/sass_HD152386_matched")
+    convention (observed, e.g. ".../spitzer_sass/sass_HD152386_matched")
     -- stripped here so "HD152386" actually lines up with SIMBAD-style
     aliases, same reasoning irtf_spex.py gives for stripping its own
     appended "_AV=..." suffix. spitzer_irs_std/iras_lrs tails are already
@@ -184,11 +184,11 @@ def _clean_publisher_did_name(publisher_did: str) -> str:
 
 def _to_observation(row, instrument: str) -> RawObservation:
     # Indexed by position (col_N), not by real field name, because astropy's
-    # parse_single_table(...).array confirmed live to fall back to synthetic
+    # parse_single_table(...).array observed to fall back to synthetic
     # col_N dtype names for this service's VOTable response -- table.fields[i]
     # .name correctly reports the real names (s_ra, target_name, access_url,
     # ...) at these same positions, but arr.dtype.names does not carry them
-    # through. Positions confirmed live and stable across all 6 collections
+    # through. Positions observed and stable across all 6 collections
     # (same shared CAOM-derived schema, see module docstring).
     access_url = str(row["col_18"])
     target_name = str(row["col_27"]).strip()

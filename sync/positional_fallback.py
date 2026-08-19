@@ -3,15 +3,14 @@ for records that already carry a raw position but matched neither by
 identifier (direct_gaia_column/name_resolved) nor by matcher.py's tight,
 1"-radius positional_easy_match.
 
-Design (from a live data-driven brainstorm, 2026-08-17 -- see the per-archive
-magnitude percentile table and the candidate-density/distance/magnitude-gap
-analysis this is built on):
+Design rationale, based on per-archive magnitude percentiles and a
+candidate-density/distance/magnitude-gap analysis:
 
 1. Widen the search to SHITTY_MATCH_RADIUS_ARCSEC (60", not matcher.py's 1")
    against our own tracked `stars`, *and* run a live Gaia DR3 cone search to
    the same effective radius -- our own `stars` table is a small subset of
-   what Gaia actually sees in the field (confirmed live: a G=7.24 star
-   sitting 3.5" from a record with zero tracked candidates, simply never
+   what Gaia actually sees in the field (e.g. a G=7.24 star sitting 3.5"
+   from a record with zero tracked candidates would otherwise never be
    discovered). Both sides are proper-motion-propagated to each record's own
    observation epoch before that 60" cutoff is applied precisely.
 2. A BSC5-tracked star in range wins outright: nothing Gaia sees in the same
@@ -21,22 +20,22 @@ analysis this is built on):
    info" would rank the brightest stars in the sky as the LEAST plausible
    candidates, backwards).
 3. Otherwise, drop any candidate fainter than that archive's empirical
-   faintness ceiling (see ARCHIVE_FAINTNESS_CEILING_MAG) -- confirmed live
-   that a handful of "sole candidate in the field" hits during this
-   brainstorm were G=18-20, implausibly faint for the old pointed
-   spectrographs this fallback mostly exists for. Sole-candidacy and
+   faintness ceiling (see ARCHIVE_FAINTNESS_CEILING_MAG): a handful of
+   "sole candidate in the field" hits were observed at G=18-20, implausibly
+   faint for the old pointed spectrographs this fallback mostly exists for.
+   Sole-candidacy and
    plausibility are different claims; both are required.
 4. Among the survivors: a single one wins outright ("matches with a single
    Gaia source"); with 2+, the brightest must beat the runner-up by
    MAG_CONTRAST_THRESHOLD magnitudes (same rule scripts/seed_bsc5_bright_
    stars.py already uses to call a Gaia cross-match candidate real rather
-   than an unrelated neighbor -- confirmed live on this same sample: ~32% of
-   multi-candidate records clear it, not a coin flip).
+   than an unrelated neighbor -- ~32% of multi-candidate records in this
+   project's own data clear it, not a coin flip).
 5. PROXIMITY_OVERRIDE_RATIO guards the one failure mode brightness-contrast
    alone doesn't catch: a much closer but modestly fainter candidate losing
-   to a brighter one further away. Confirmed live during this brainstorm
-   (e.g. a G=13.96 source at 56.8" vs. a G=16.92 source at only 6.6" in the
-   same field) -- this is also the mechanism that protects against a
+   to a brighter one further away (e.g. a G=13.96 source at 56.8" vs. a
+   G=16.92 source at only 6.6" in the same field) -- this is also the
+   mechanism that protects against a
    transient (nova/CV) whose quiescent Gaia magnitude doesn't reflect what
    made it observable. Unlike the faintness ceilings and contrast threshold,
    this specific ratio has NOT been empirically calibrated against known-good
@@ -52,13 +51,13 @@ correctly resolve to at all -- for those, this mostly just fails to find any
 plausible candidate (no real point source matches), which fails safe rather
 than fails wrong.
 
-Query architecture (rewritten 2026-08-18, replacing an upload+CONTAINS design
-that shipped across PRs #110/#112/#114/#115): the original approach uploaded
-each batch of our own records to Gaia's TAP+ service and cross-matched them
-against gaiadr3.gaia_source_lite via CONTAINS(POINT, CIRCLE) -- a spatial
-join Gaia's query planner apparently can't optimize well for an uploaded
-table, confirmed live overnight 2026-08-17/18: individual jobs ranged from
-5 minutes to over 2 hours (occasionally hitting Gaia's hard 7200s server-side
+Query architecture: this replaces an earlier upload+CONTAINS design (PRs
+#110/#112/#114/#115). That approach uploaded each batch of our own records
+to Gaia's TAP+ service and cross-matched them against
+gaiadr3.gaia_source_lite via CONTAINS(POINT, CIRCLE) -- a spatial join
+Gaia's query planner cannot optimize well for an uploaded table: individual
+jobs ranged from 5 minutes to over 2 hours (occasionally hitting Gaia's
+hard 7200s server-side
 abort), and because run_shitty_positional_match only committed once per
 whole multi-bucket chunk, 16+ hours of real Gaia work produced zero durable
 rows.
@@ -70,10 +69,10 @@ encode the source's nested HEALPix level-12 pixel: healpix_L = source_id >>
 (35 + 2*(12-L)) for any level L <= 12. That means "every Gaia source in this
 patch of sky" can be fetched with a plain `source_id BETWEEN x AND y` range
 scan against gaia_source_lite's own primary-key ordering -- no upload table,
-no per-point spatial join at all. Confirmed live 2026-08-18: a single real
-cell (level 7, ~0.21 sq deg) returned 5,724 rows in 366s -- faster than most
-of the old design's CONTAINS jobs, but not a dramatic win either, and a
-matched live check against the real 13.1M-record backlog found it touches
+no per-point spatial join at all. A single real cell (level 7, ~0.21 sq
+deg) returned 5,724 rows in 366s -- faster than most of the old design's
+CONTAINS jobs, but not a dramatic win either, and a check against the real
+13.1M-record backlog found it touches
 100% of all possible cells at level 5, 97% at level 6, and 75% at level 7 --
 i.e. this project's pending records are spread across essentially the whole
 sky at any coarse-to-moderate granularity, so coarser levels don't reduce
@@ -123,9 +122,9 @@ logger = logging.getLogger(__name__)
 # full 2' this was explored out to.
 SHITTY_MATCH_RADIUS_ARCSEC = 60.0
 
-# See module docstring point 4. Confirmed live against this project's own
-# data (2026-08-17): ~32% of records with 2+ candidates within 2' clear this
-# gap -- a real, non-trivial population, not noise.
+# See module docstring point 4. Measured against this project's own data:
+# ~32% of records with 2+ candidates within 2' clear this gap -- a real,
+# non-trivial population, not noise.
 MAG_CONTRAST_THRESHOLD_MAG = 2.0
 
 # See module docstring point 5 -- NOT empirically calibrated, a starting
@@ -133,12 +132,11 @@ MAG_CONTRAST_THRESHOLD_MAG = 2.0
 PROXIMITY_OVERRIDE_RATIO = 3.0
 
 # phot_g_mean_mag percentiles (p99) of stars behind each archive's own
-# already-CONFIRMED matches (match_status='matched'), queried live from prod
-# 2026-08-17 -- see project memory project_suspicious_faint_matches_bright_
-# archives.md for the full table including p50/p90/p95 and the reasoning for
-# using p99 rather than max (max clusters at G~20-22 across every archive
-# regardless of its real characteristic depth -- almost certainly a handful
-# of pre-existing bad matches, not evidence of real reach).
+# already-CONFIRMED matches (match_status='matched'), queried from
+# production data. p99 is used rather than max because max clusters at G~20-22
+# across every archive regardless of its real characteristic depth --
+# almost certainly a handful of pre-existing bad matches, not evidence of
+# real reach.
 #
 # Archives not listed here haven't been individually calibrated yet --
 # DEFAULT_FAINTNESS_CEILING_MAG is a deliberately mid-of-the-observed-range
@@ -168,7 +166,7 @@ DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 # the source_id encoding this relies on.
 #
 # Level 7 (nside=128) gives ~0.21 sq deg/cell (~27.5' across). Safety margin
-# confirmed live 2026-08-18 against this project's real backlog (13.1M
+# checked against this project's real backlog (13.1M
 # pending records spanning obs_date 1978-02-25 to 2026-08-17): worst-case
 # proper-motion drift is 38 years * MAX_PM_ARCSEC_PER_YEAR = ~6.5', plus
 # SHITTY_MATCH_RADIUS_ARCSEC=60" = ~7.5' worst-case total reach -- comfortably
@@ -176,12 +174,12 @@ DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 # record in cell C can only ever live in C or its immediate ring of
 # neighbours (see _healpix_cell_and_ring), never further out.
 #
-# Level, not size, was the real open question: the same live check found the
+# Level, not size, was the real open question: the same check found the
 # backlog touches 100% of all possible cells at level 5 and 97% at level 6 --
 # i.e. coarser levels don't meaningfully reduce the number of Gaia round
 # trips needed once you're already near full-sky coverage, they only make
 # each individual round trip heavier. Level 7 (146,827 occupied cells,
-# confirmed ~366s each for one real cell) was chosen over that or level 8
+# ~366s each for one real cell) was chosen over that or level 8
 # (ESA's own documented level for source_id-range queries, safety margin
 # ~1.83x -- tighter but still positive) specifically for morgan's practical
 # constraints: smaller per-query result sets, and per-cell commits (see
@@ -217,29 +215,28 @@ GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 # How often to poll and log an in-flight async job's phase. Gaia.launch_job_
 # async(background=False) (the default) blocks internally inside astroquery
 # until the job finishes, with no visibility into whether it's PENDING,
-# QUEUED, or EXECUTING the whole time -- confirmed live 2026-08-17: a real
-# prod run sat with ~0% CPU and zero log output for 30+ minutes with no way
+# QUEUED, or EXECUTING the whole time -- in production, a run has sat with
+# ~0% CPU and zero log output for 30+ minutes with no way
 # to tell whether it was stuck or just slow. background=True plus polling
 # here trades a few extra round trips for that visibility.
 GAIA_JOB_POLL_SECONDS = 10
 
 # How many HEALPix cells' Gaia fetches to keep in flight at once (see
-# run_shitty_positional_match) -- confirmed live 2026-08-18 that Gaia's
-# TAP+ service does not give a clean multiplicative speedup from client-side
-# concurrency. At 5-way: 2 of 5 launches failed transiently (recovered by
-# the retry logic above) and real per-job slowdown once running (a cell that
-# took 366s isolated took 987s under 5-way load; individual jobs ranged
-# 806-1886s+, one didn't finish in ~40 minutes) -- consistent with
-# server-side fair-share throttling for concurrent jobs from the same
-# session, not something fixable client-side. At 2-way, re-tested the same
-# way: both launches succeeded cleanly (no transient failures), and the one
-# cell also tested at 5-way was faster (861s vs. 1265s at 5-way, still
-# slower than the 366s fully-isolated baseline) -- a real but partial
-# improvement, not a clean 2x. One of the two test cells didn't finish in
-# ~35 minutes at 2-way either, matching its own behaviour at 5-way, so that
-# appears to be a slow/dense cell rather than a concurrency artifact. Chosen
-# as the safer point on this tradeoff given the 5-way failures; not
-# exhaustively tuned against 3+.
+# run_shitty_positional_match). Gaia's TAP+ service does not give a clean
+# multiplicative speedup from client-side concurrency. At 5-way: 2 of 5
+# launches failed transiently (recovered by the retry logic above), and
+# per-job latency rose once running (a cell that took 366s isolated took
+# 987s under 5-way load; individual jobs ranged 806-1886s+, one didn't
+# finish in ~40 minutes) -- consistent with server-side fair-share
+# throttling for concurrent jobs from the same session, not something
+# fixable client-side. At 2-way: both launches succeeded cleanly (no
+# transient failures), and the one cell also tested at 5-way was faster
+# (861s vs. 1265s at 5-way, still slower than the 366s fully-isolated
+# baseline) -- a real but partial improvement, not a clean 2x. One of the
+# two test cells didn't finish in ~35 minutes at 2-way either, matching its
+# own behaviour at 5-way, so that appears to be a slow/dense cell rather
+# than a concurrency artifact. Chosen as the safer point on this tradeoff
+# given the 5-way failures; not exhaustively tuned against 3+.
 GAIA_FETCH_CONCURRENCY = 2
 
 
@@ -247,7 +244,7 @@ def _launch_gaia_job(query: str):
     """Gaia.launch_job_async, retried on transient TAP failures -- same
     reasoning as ingest.add_star._launch_gaia_job (a different module's
     sync-based retry helper, not reused directly here since this one needs
-    the async/polling variant): confirmed live that the synchronous endpoint
+    the async/polling variant): the synchronous endpoint
     (Gaia.launch_job) injects a client-side TOP 2000 and isn't suitable for
     an unbounded-size result like a HEALPix cell's full source pool.
 

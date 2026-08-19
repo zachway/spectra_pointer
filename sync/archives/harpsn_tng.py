@@ -2,20 +2,20 @@
 
 Same IA2 (Italian VO center) infrastructure as asiago.py, found in the same
 archive-gap survey. `tng.TNG_TAP` is an umbrella table across every TNG
-instrument (7.59M rows total, confirmed live) — filtered here to
+instrument (7.59M rows total, observed) — filtered here to
 INSTRUMENT='HARPN' AND policy='FREE' (the archive's own field distinguishing
 public from still-proprietary data, used directly instead of guessing an
 embargo period the way lick.py has to). OBJECT != 'NONE' filters out
-calibration frames at the query level (confirmed live: calibration rows
+calibration frames at the query level (observed: calibration rows
 report RA_RAD=DEC_RAD=0.0 literally, not masked/null — letting those through
 would risk a false positional match near RA=0/Dec=0, the same kind of
 garbage-sentinel problem koa.py's mjd bound and lbt.py's dataprod filter
 solve for their own archives).
 
 A full COUNT(*)/DISTINCT over the unfiltered 7.59M-row table times out
-synchronously (confirmed live: "Time out! ... try again ... asynchronous
+synchronously (observed: "Time out! ... try again ... asynchronous
 mode") — but a TOP-bounded, id-watermarked, already-filtered page query
-comes back in ~1.5s for 20,000 rows (confirmed live), so this paginates the
+comes back in ~1.5s for 20,000 rows (observed), so this paginates the
 same id-watermark way as asiago.py rather than needing TAP_ASYNC.
 
 RA_RAD/DEC_RAD are radians, same convention as asiago.py (same IA2
@@ -28,7 +28,7 @@ this field (a bare trailing "0" instead of a proper ".0" on some rows), not
 yet independently confirmed here but cheap to guard against regardless.
 
 EVERY DRS pipeline data product is cataloged as its own row sharing one
-exposure timestamp but a distinct id (confirmed live: a single exposure
+exposure timestamp but a distinct id (observed: a single exposure
 turned up 18 rows — the raw frame, old-pipeline e2ds/s1d/ccf/bis for fibers
 A+B, and a full new-pipeline reprocessing producing S1D/S2D/CCF/
 DRIFT_MATRIX/etc for A+B). Left unfiltered this inflated observations/star
@@ -43,7 +43,7 @@ filename (e.g. "HARPN.2015-08-19T00-01-42.732.fits.gz", not
 LIKE escaping for a literal underscore wasn't worth the risk of silently
 matching wrong. The raw file was chosen as the one-row-per-exposure anchor
 over a reduced product like s1d/S1D because it is cataloged with total
-coverage back to 2012-07-17 (confirmed live) — the new-pipeline
+coverage back to 2012-07-17 (observed) — the new-pipeline
 reprocessing has ~3,090 exposures missing a S1D_A counterpart (an early
 ~2012-07-17..2013-01-02 gap before reprocessing existed, plus very recent
 exposures not yet reprocessed), and old vs new-style s1d/S1D can both exist
@@ -62,7 +62,7 @@ Europa, Ganymede, Vesta, observed as OBS_MODE='SCIENCE' since they're real
 pointed exposures, just not stars) turned out to already be handled: the
 matcher's position-sanity check rejects a moving body's coordinates against
 the fixed-star catalog, so these were already match_status='skipped' in
-prod (confirmed live) before this fix, not corrupting matched data.
+prod (observed) before this fix, not corrupting matched data.
 """
 
 import math

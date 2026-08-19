@@ -342,7 +342,7 @@ CMD_SAMPLE_SIZE = 30000
 # scripts.export_to_parquet's SKY_SAMPLE_QUERY into sky_sample.parquet (same
 # "duplicated constant, just for the caption" pattern as CMD_SAMPLE_SIZE).
 # Used to be a live `USING SAMPLE n` against the full `stars` table on every
-# /sky request -- confirmed live as ~27s per request (DuckDB's remote-parquet
+# /sky request -- observed as ~27s per request (DuckDB's remote-parquet
 # reader has to scan nearly the whole ~500MB+ file to sample from a 9.8M-row
 # table with no filter pushdown available), the dominant cost in "webapp is
 # sluggish switching tabs".
@@ -364,7 +364,7 @@ RADIAL_SEARCH_MAX_RESULTS = 200
 # The unmatched-records mode below (_radial_search_unmatched) queries a much
 # bigger, unindexed table (17.9M rows vs. `stars`' 1.4M) with far more
 # rows per unit sky area -- many individual observation records can share
-# one real position. Confirmed live 2026-08-12: a routine 5' search near a
+# one real position. Observed 2026-08-12: a routine 5' search near a
 # dense field returned 8,306 real candidates, silently truncated to
 # RADIAL_SEARCH_MAX_RESULTS's 200. Per feedback, that mode drops the
 # row-count cap entirely instead of just raising it (still an arbitrary
@@ -459,7 +459,7 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
 
 # DuckDB has no native per-query timeout/statement_timeout equivalent --
 # cur.interrupt() from a second thread is the documented cancellation
-# mechanism (confirmed live: raises duckdb.InterruptException in the
+# mechanism (observed: raises duckdb.InterruptException in the
 # executing thread within milliseconds of being called). Runs `sql` on a
 # background thread and interrupts+raises TimeoutError if it doesn't finish
 # within timeout_seconds, so a caller can show a clean error instead of the
@@ -999,7 +999,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_acti
 # its Bayer designation as "* alf Boo". It's also inconsistently spaced --
 # "HR  5340", two spaces, not "HR 5340" -- unlike the Gaia-path seeding in
 # scripts/seed_bright_star_catalog.py, which does add an exact "HR <n>"
-# alias but only for stars resolved to a gaia_source_id. Confirmed live:
+# alias but only for stars resolved to a gaia_source_id. Observed:
 # without this normalization, searching "Arcturus" (a real production BSC5
 # star) fell through to external SIMBAD/Gaia resolution and 404'd, because
 # neither of its cached aliases match that string exactly.
@@ -1025,7 +1025,7 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
     """
     if query.isdigit():
         # Two separate single-column queries, not one `OR`-joined query --
-        # confirmed live that combining them defeats DuckDB's Parquet
+        # observed that combining them defeats DuckDB's Parquet
         # predicate pushdown entirely (bsc_hr_number has no usable row-group
         # stats, being NULL for all but a handful of bsc5 rows, so the
         # planner can't rule either branch out per row group and falls back
@@ -1065,7 +1065,7 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
     # Goes through star_name_index (a precomputed normalized-name ->
     # identifier table, see scripts/export_to_parquet.py's
     # STAR_NAME_INDEX_QUERY) rather than filtering `stars` directly on
-    # normalize(input_name)/name_aliases -- confirmed live that wrapping the
+    # normalize(input_name)/name_aliases -- observed that wrapping the
     # filtered columns in a function defeats Parquet's row-group pruning
     # entirely, so *every* name search (i.e. nearly every real query) pulled
     # nearly the entire multi-hundred-MB stars.parquet over HTTP. The index
@@ -1125,9 +1125,8 @@ def search():
         try:
             source_id = resolve_gaia_source_id(query)
         except DALServiceError:
-            # Confirmed live during this project: SIMBAD's TAP service goes
-            # down periodically. Say so plainly rather than a generic error
-            # or (worse) a misleading "not found".
+            # SIMBAD's TAP service goes down periodically. Say so plainly
+            # rather than a generic error or (worse) a misleading "not found".
             return _blank(query=query, error="SIMBAD is currently unavailable — try again in a bit.")
         except ValueError as e:
             return _blank(query=query, error=str(e))
@@ -1665,7 +1664,7 @@ def _period_traces_by_star(rows: list[dict], value_fields: list[str]) -> tuple[l
     # sourced stars (bright naked-eye stars with no credible Gaia
     # counterpart -- see db/migrations/0001_star_id_surrogate_key.sql)
     # have a NULL gaia_source_id, which broke both of these -- sorted()
-    # can't order None against int (confirmed live, 500ing every request
+    # can't order None against int (observed, 500ing every request
     # once one such star cracked a top-N list), and even fixed up, every
     # NULL-gaia_source_id star would collide on the same dict key and
     # stomp each other's data. star_id is the one identifier every
@@ -1716,7 +1715,7 @@ def leaderboard():
     # cumulative values already nulled out for periods a star isn't top-5
     # in. See that module for why: an earlier version of this route did the
     # top-5 selection here in Python, which meant sorted() over the full
-    # (multi-million-star) population once per period — confirmed live as
+    # (multi-million-star) population once per period — observed as
     # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
     cur.execute("SELECT star_id, gaia_source_id, bsc_hr_number, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
     rows = _rows_as_dicts(cur)
@@ -1747,7 +1746,7 @@ def leaderboard():
     # spectroscopy_holdings/stars tables on every request. See that module
     # for the full reasoning (same OOM/full-scan-per-request risk as the
     # top-5-per-period selection above; nearest/fastest-movers/spectral-types
-    # specifically confirmed live at multiple seconds each against `stars`
+    # specifically observed at multiple seconds each against `stars`
     # over HTTP, since ORDER BY/GROUP BY over an unfiltered remote Parquet
     # table can't skip any row groups).
     cur.execute("SELECT * FROM stats_summary")
@@ -2236,7 +2235,7 @@ def _advanced_search_context() -> dict:
 # derivable from the database; archive_url elsewhere in this file is a
 # per-observation deep link, not a homepage). Points at the archive's own
 # host wherever that host also serves a human-browsable landing page
-# (confirmed live for every entry below, each with a plain GET); a few
+# (observed for every entry below, each with a plain GET); a few
 # multi-instrument archives (Gemini, MAST, the two IRTF/IRSA entries, the
 # two NAOJ/JVO entries, the two CADC-only entries, the two GAVO/DaCHS
 # entries) share one URL since they're really one archive split into
@@ -2543,7 +2542,7 @@ INSTRUMENTS_TEMPLATE = """
     // (LAMOST: millions: ELODIE: tens of thousands) -- sizing circles so
     // area is exactly proportional to count (radius ~ sqrt(n)) makes the
     // smallest set collapse to a sub-pixel sliver next to the largest one,
-    // confirmed live once this ran against real production data instead of
+    // observed once this ran against real production data instead of
     // the small synthetic test set used during development. log10(n+1)
     // compresses that range so every set stays visible; it's a legibility
     // choice, not a correctness one -- the geometry no longer represents
@@ -2579,7 +2578,7 @@ INSTRUMENTS_TEMPLATE = """
     // Every region's count used to be drawn as text inside the SVG, positioned
     // by an approximate geometric heuristic (near each region's rough
     // centroid). That works for modestly-sized, well-separated circles, but
-    // confirmed live twice against real production archive sizes: once
+    // observed twice against real production archive sizes: once
     // circles are large and heavily mutually overlapping (common once real
     // archives share most of their stars, not just a synthetic test slice),
     // their centers end up close together, so *any* "offset in some
@@ -3309,7 +3308,7 @@ def batch_search():
         # specifically for this). Wrapping the column inside a function call
         # like list_contains() hides it from that pruning entirely -- the
         # same failure mode already diagnosed and fixed once for
-        # STAR_NAME_INDEX_QUERY's normalize()-wrapped filter; confirmed live
+        # STAR_NAME_INDEX_QUERY's normalize()-wrapped filter; observed
         # here too (a 50-id lookup ran ~19x slower via list_contains than the
         # IN-list equivalent against the real stars.parquet).
         id_placeholders = ", ".join("?" for _ in all_source_ids)
@@ -3463,7 +3462,7 @@ def _joy_ssh_client() -> paramiko.SSHClient:
     The corresponding authorized_keys entry on joy MUST use a forced
     `command=` restriction (see scripts/joy_triage_append.py's setup
     docstring) so this key can only ever run that one append script, never
-    an arbitrary shell command -- confirmed live during development that a
+    an arbitrary shell command -- observed during development that a
     session requesting an arbitrary command string still only ever runs the
     forced command.
 
@@ -3505,7 +3504,7 @@ def _joy_ssh_client() -> paramiko.SSHClient:
 
 
 # A fresh call to _joy_ssh_client() pays a full TCP + SSH key-exchange +
-# auth round trip to joy over the public internet -- confirmed live this was
+# auth round trip to joy over the public internet -- observed this was
 # the dominant chunk of /triage/submit's latency, often 1-3s on its own.
 # Cached and reused across requests within this process instead: paramiko
 # lets multiple exec_command() calls open independent channels over one
@@ -4120,7 +4119,7 @@ def triage():
     # scripts/export_to_parquet.py's TRIAGE_QUEUE_QUERY) rather than grouping
     # spectroscopy_holdings live -- a true GROUP BY (archive_code,
     # raw_target_name) over the full skipped set (12M+ rows, 900K+ distinct
-    # names) OOMs the 1 GiB Cloud Run container, confirmed live against
+    # names) OOMs the 1 GiB Cloud Run container, observed against
     # production. Precomputing where memory isn't capped also means this can
     # be a cheap, small read instead of a multi-second remote scan on every
     # page load -- this project tries to keep Cloud Run request time (and
