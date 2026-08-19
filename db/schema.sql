@@ -35,7 +35,7 @@ CREATE TABLE stars (
     phot_rp_mean_mag    REAL,
     has_gaia_rvs        BOOLEAN NOT NULL DEFAULT FALSE,
     -- Flag only, same free column on the gaia_source row — actual XP spectra
-    -- are not ingested/stored (deferred, see project notes on storage).
+    -- are not ingested/stored (deferred).
     has_xp_continuous   BOOLEAN NOT NULL DEFAULT FALSE,
     -- What the caller actually searched for, when ingestion went through name
     -- resolution (SIMBAD) rather than a known source_id. NULL if added directly.
@@ -250,7 +250,7 @@ INSERT INTO archives (archive_code, display_name, access_mechanism, has_native_g
 -- table doesn't need to assume anything about spectroscopy_holdings' or
 -- stars' primary key shape (a separate, concurrent migration is adding
 -- alternate-catalog identifiers to `stars` for Gaia-absent bright stars like
--- Arcturus -- see project notes -- and may change how stars are keyed).
+-- Arcturus, and may change how stars are keyed).
 --
 -- Applying a submission (updating spectroscopy_holdings / calling
 -- ingest.add_star's add_star()/add_star_by_name()) only happens once a

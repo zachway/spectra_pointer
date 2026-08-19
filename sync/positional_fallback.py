@@ -134,11 +134,10 @@ PROXIMITY_OVERRIDE_RATIO = 3.0
 
 # phot_g_mean_mag percentiles (p99) of stars behind each archive's own
 # already-CONFIRMED matches (match_status='matched'), queried live from prod
-# 2026-08-17 -- see project memory project_suspicious_faint_matches_bright_
-# archives.md for the full table including p50/p90/p95 and the reasoning for
-# using p99 rather than max (max clusters at G~20-22 across every archive
-# regardless of its real characteristic depth -- almost certainly a handful
-# of pre-existing bad matches, not evidence of real reach).
+# 2026-08-17. p99 is used rather than max because max clusters at G~20-22
+# across every archive regardless of its real characteristic depth --
+# almost certainly a handful of pre-existing bad matches, not evidence of
+# real reach.
 #
 # Archives not listed here haven't been individually calibrated yet --
 # DEFAULT_FAINTNESS_CEILING_MAG is a deliberately mid-of-the-observed-range

@@ -3,8 +3,8 @@
 Not the SMOKA archive (the prior investigation's dead end still holds for
 SMOKA specifically: registration-gated web wizard, no bulk API). This is a
 completely separate TAP+SSA service run by JVO (jvo.nao.ac.jp) for Subaru's
-High Dispersion Spectrograph, found via the reg.g-vo.org registry sweep — see
-project memory for how. Checked the registry for other Subaru instruments
+High Dispersion Spectrograph, found via the reg.g-vo.org registry sweep.
+Checked the registry for other Subaru instruments
 (FOCAS, IRCS, Suprime-Cam, MOIRCS): only HDS has a registered spectroscopy
 TAP/SSA capability, the rest are imaging-only (SIA).
 

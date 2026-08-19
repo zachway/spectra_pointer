@@ -2,8 +2,7 @@
 
 Same CAB/INTA JSP application family as carmenes_caha.py
 (gtc.sdc.cab.inta-csic.es vs caha.sdc.cab.inta-csic.es), but this archive
-was previously written off as a dead end (see project memory
-project_archive_survey_batch2_results): a bare GET on `searchform.jsp`
+was previously written off as a dead end: a bare GET on `searchform.jsp`
 reproducibly 500s. That 500 turned out to be the JSP app rejecting
 requests with no session cookie and no browser-like User-Agent/Accept
 headers -- confirmed live, twice, with a fresh unauthenticated session:

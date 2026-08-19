@@ -1,7 +1,7 @@
 # The Spectra Pointer
 
 A cross-match database and search tool that unifies stellar spectroscopy
-holdings across more than 30 independent astronomical archives (ESO, SDSS,
+holdings across 57 independent astronomical archives (ESO, SDSS,
 Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single [Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3) `source_id`
 lookup.
 
@@ -18,7 +18,7 @@ through archival data, and writing proposals for time on large
 telescopes with limited budgets.
 
 The Spectra Pointer solves this by running an independent sync process per
-archive (41 are currently implemented) that discovers spectroscopic
+archive (57 are currently implemented) that discovers spectroscopic
 observations and cross-matches each one to a canonical Gaia DR3 `source_id` 
 — first by a named identifier when the archive publishes one (via
 the [SIMBAD database](https://simbad.cds.unistra.fr/simbad/), falling back
@@ -73,10 +73,12 @@ export DATABASE_URL=postgresql:///spectra
 
 ## Usage
 
-Register a star to track (by Gaia DR3 `source_id`):
+Register a star to track, by Gaia DR3 `source_id` or by a name resolvable
+via SIMBAD:
 
 ```bash
-python -m ingest.add_star --source-id 2200433413577635456
+python -m ingest.add_star 2200433413577635456
+python -m ingest.add_star "Proxima Cen"
 ```
 
 Run every implemented archive sync to convergence (or a subset):
@@ -100,10 +102,21 @@ See the module docstrings in `sync/main.py`, `ingest/add_star.py`, and
 
 ## Testing
 
+Most tests exercise real cross-match logic against Postgres, so they need
+a test database with the schema loaded (same q3c prerequisite as
+"Installation" above):
+
 ```bash
+createdb spectra_test
+psql spectra_test -f db/schema.sql
+
 pip install pytest
-pytest tests/
+DATABASE_URL=postgresql:///spectra_test pytest tests/
 ```
+
+`DATABASE_URL` defaults to `postgresql:///spectra_test` if unset. See
+`.github/workflows/tests.yml` for the exact CI setup, including building
+q3c from source on a clean Ubuntu runner.
 
 ## Deployment
 
