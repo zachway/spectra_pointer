@@ -7,11 +7,11 @@ tags:
   - spectroscopy
   - Gaia
 authors:
-  - name: <TODO: full name>
-    orcid: <TODO: ORCID>
+  - name: Zachary Way
+    orcid: 0000-0003-0179-9662
     affiliation: 1
 affiliations:
-  - name: <TODO: affiliation>
+  - name: Department of Physics and Astronomy, Georgia State University, Atlanta, GA 30303, USA
     index: 1
 date: <TODO: submission date>
 bibliography: paper.bib
