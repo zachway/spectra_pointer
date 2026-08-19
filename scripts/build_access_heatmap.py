@@ -73,7 +73,7 @@ LOG_READ_LIMIT = 100_000
 
 
 def _parse_gcloud_timestamp(ts: str) -> datetime:
-    """Cloud Logging's own RFC3339 timestamps -- confirmed live to sometimes
+    """Cloud Logging's own RFC3339 timestamps -- observed to sometimes
     carry fractional seconds (e.g. "2026-08-11T15:39:43.106410Z") and
     sometimes not, undocumented either way, which crashed the fixed
     %Y-%m-%dT%H:%M:%SZ strptime this used before. Truncating to whole-second

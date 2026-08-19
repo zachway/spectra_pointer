@@ -11,7 +11,7 @@ fix is about *counting* (one row per exposure, not up to 18), not about
 at a raw, non-science-ready FITS frame, unlike every other 'reduced'-tagged
 archive in this project (bess, cfht_cadc, eso, gemini, mast, naoj, ...).
 
-Why this can't just be folded into harpsn_tng.py's fetch(): confirmed live
+Why this can't just be folded into harpsn_tng.py's fetch(): observed
 (2026-08-04) that a reduced product's `id` is NOT reliably close to its raw
 sibling's `id`. Old-pipeline products (lowercase e2ds/s1d/ccf/bis) do land
 near the raw frame's id (generated near-real-time alongside ingestion), but
@@ -176,7 +176,7 @@ def upgrade_rows(read_conn: psycopg.Connection, write_conn: psycopg.Connection, 
     """Reads via a named (server-side) cursor on read_conn and writes/commits
     on a separate write_conn -- a named cursor is transaction-scoped by
     default in Postgres, so committing on the same connection that holds it
-    implicitly closes it (confirmed live: InvalidCursorName on the second
+    implicitly closes it (observed: InvalidCursorName on the second
     fetchmany after the first batch's commit). Two connections sidesteps that
     entirely rather than relying on a WITH HOLD cursor."""
     batch_size = 5000

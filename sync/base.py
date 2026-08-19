@@ -23,15 +23,15 @@ class _TimeoutSession(requests.Session):
 
 def make_tap_service(url: str, timeout: tuple[float, float] = (15, 180)) -> pyvo.dal.TAPService:
     """pyvo.dal.TAPService with a bounded (connect, read) timeout instead of
-    none at all — confirmed live, twice: a sync run sat blocked for 9+
-    minutes reading a stalled SIMBAD response (fixed separately, see
-    ingest.add_star's simbad_conf.timeout), then again reading a stalled
-    CFHT/CADC TAP response via this exact unbounded pyvo.dal.TAPService
-    pattern, used identically across cfht_cadc/eso/gemini/koa/mast/rave/
-    galah. 180s read timeout leaves real margin over the slowest
-    legitimately-observed query so far (gemini's documented 72.7s/1000
-    rows) while still turning a stall into a caught, recoverable exception
-    (DALFormatError, confirmed live) instead of an indefinite hang.
+    none at all — an unbounded read has left a sync run blocked for 9+
+    minutes on a stalled SIMBAD response (fixed separately, see
+    ingest.add_star's simbad_conf.timeout) and on a stalled CFHT/CADC TAP
+    response via this exact unbounded pyvo.dal.TAPService pattern, used
+    identically across cfht_cadc/eso/gemini/koa/mast/rave/galah. 180s read
+    timeout leaves real margin over the slowest legitimately-observed query
+    so far (gemini's documented 72.7s/1000 rows) while still turning a
+    stall into a caught, recoverable exception (DALFormatError) instead of
+    an indefinite hang.
     """
     return pyvo.dal.TAPService(url, session=_TimeoutSession(timeout=timeout))
 
@@ -41,7 +41,7 @@ def clean_float(value) -> float | None:
     `is not None` check doesn't catch those (they're numpy.ma.masked, not
     Python None), so a naive `float(value)` silently produces NaN instead of
     a proper missing value. NaN ra/dec in particular crashes the matcher's
-    KD-tree build outright (confirmed live via mast.py) rather than just
+    KD-tree build outright (observed via mast.py) rather than just
     being wrong — always use this when reading a possibly-masked column.
     """
     if value is None or np.ma.is_masked(value):
@@ -82,9 +82,9 @@ class RawObservation:
 
 def reduction_status_from_calib_level(calib_level) -> str | None:
     """Maps an IVOA ObsCore calib_level value (0-3, possibly masked/NULL) to
-    this project's coarse raw/reduced bucket — confirmed live (2026-08-03)
-    that calib_level is a real, populated column returning genuinely
-    different values across the ObsCore-based archives in this project (CADC:
+    this project's coarse raw/reduced bucket. calib_level is a real,
+    populated column returning genuinely different values across the
+    ObsCore-based archives in this project (CADC:
     CFHT=2, DAO=1, Gemini MAROON-X=1; MAST: FUSE=2, JWST=3, HST=2-3; ESO
     PESSTO=2; OIRSA=1 across all four instruments) — not a placeholder that's
     always the same value.

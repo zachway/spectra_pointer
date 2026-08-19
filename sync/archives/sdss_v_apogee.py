@@ -28,7 +28,7 @@ ORDER BY apogee_id ASC
 
 PAGE_SIZE = 50000
 
-# Confirmed live against DR20: dr17 is still the reduction pipeline version,
+# Observed against DR20: dr17 is still the reduction pipeline version,
 # independent of the DR19/DR20 data-release path it's served under.
 SPECTRUM_URL = "https://data.sdss.org/sas/dr20/spectro/apogee/redux/dr17/stars/{telescope}/{field}/{file}"
 

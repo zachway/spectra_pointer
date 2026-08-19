@@ -17,7 +17,7 @@ pulls the whole extension into memory before slicing — not useful here).
 First cut of this issued one HTTP Range request per page (2 requests x
 ~ROWS_PER_PAGE rows), which meant every one of the ~100+ pages needed for
 the full ~2M-row catalog cost a network round trip to data.desi.lbl.gov —
-confirmed live as consistently 1.5-4.5 minutes per page, on track for many
+observed as consistently 1.5-4.5 minutes per page, on track for many
 hours total. Downloading each extension once instead (still just the two
 needed extensions, not the full 12GB file) to a local cache on morgan and
 reading row windows from local disk turns that into a single ~5.7GB

@@ -63,8 +63,8 @@ logger = logging.getLogger(__name__)
 # Much larger than scripts.reprocess_skipped's CHUNK_SIZE=2000 (fine at
 # that script's usual scale: one archive, one outage window) -- at full
 # catalog-sweep scale (the skipped/needs_review population alone is
-# ~12.85M rows, confirmed live 2026-07-25), sync.matcher.match_records
-# reloads and rebuilds its full star-alias dict (1.4M rows, confirmed live)
+# ~12.85M rows, observed 2026-07-25), sync.matcher.match_records
+# reloads and rebuilds its full star-alias dict (1.4M rows, observed)
 # from scratch on every single call, once per chunk. At CHUNK_SIZE=2000
 # that's ~6,425 redundant 1.4M-row reads across one sweep -- almost
 # entirely wasted work. A much bigger chunk cuts that by the same factor;
@@ -126,7 +126,7 @@ def _find_nearby_old_stars(conn: psycopg.Connection, since: datetime) -> list[in
     exactly the reason this whole script exists: a high-PM star's stored
     position (BSC5-sourced stars use ref_epoch=1991.25, Gaia-sourced ones
     2016.0) can differ from where it actually was by many arcseconds --
-    confirmed live via HR 15 (pmra/pmdec ~137/-163 mas/yr, ~7.5" of drift
+    observed via HR 15 (pmra/pmdec ~137/-163 mas/yr, ~7.5" of drift
     between its ref_epoch and a 2026 observation date). A radius wide
     enough to cover worst-case multi-decade PM drift would make "nearby"
     meaningless (hundreds of arcsec). Instead, every newly-added star's

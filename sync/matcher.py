@@ -14,19 +14,19 @@ is still deferred):
   its positional match despite correct proper motion — its identifier would
   have caught it). Identifier match sidesteps that entirely. Still sanity-
   checked against the record's own reported position when one is present
-  (see NAME_MATCH_SANITY_RADIUS_ARCSEC) — confirmed live: "Mira" is SIMBAD's
-  own proper name for omicron Ceti *and* an informal class label for any
-  Mira-type long-period variable, so an archive using "Mira" generically for
-  some other physical star was getting silently merged onto omicron Ceti's
-  gaia_source_id. A record whose name matches but whose own position is
-  nowhere near that star falls through to positional matching instead of
+  (see NAME_MATCH_SANITY_RADIUS_ARCSEC): "Mira" is SIMBAD's own proper name
+  for omicron Ceti *and* an informal class label for any Mira-type
+  long-period variable, so an archive using "Mira" generically for some
+  other physical star would otherwise be silently merged onto omicron
+  Ceti's gaia_source_id. A record whose name matches but whose own position
+  is nowhere near that star falls through to positional matching instead of
   being trusted blindly. If that fallback also finds no positional
   candidate, the record lands in needs_review rather than skipped — a
   rejected name match is a real, often-correct candidate (e.g. the archive's
   own logged position for that one exposure is simply wrong, not evidence of
-  a different star — confirmed live: an HR9070/LQ And record 49 degrees from
-  where that star is, SIMBAD-confirmed to be the correct alias regardless),
-  so it's worth a human's attention rather than being silently dropped.
+  a different star: an HR9070/LQ And record 49 degrees from where that star
+  is is still SIMBAD-confirmed to be the correct alias regardless), so it's
+  worth a human's attention rather than being silently dropped.
 - positional_easy_match: only for records that didn't identifier-match. A
   q3c-indexed radial query (see _load_candidate_stars) narrows the tracked
   star list down to a small spatially-relevant candidate set per observation
@@ -80,7 +80,7 @@ GAIA_DR3_REF_EPOCH = 2016.0
 NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 
 # (archive_code, instrument) -> positional match radius override, arcsec.
-# Confirmed live via the name_resolved match pool (matched independent of
+# Measured via the name_resolved match pool (matched independent of
 # position, so not subject to EASY_MATCH_RADIUS_ARCSEC's own cutoff): these
 # instruments carry a real, persistent pointing bias well beyond 1" that
 # silently drops otherwise-good positional matches to skipped/needs_review.
@@ -99,7 +99,7 @@ NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 # spectroscopy_holdings' existing skipped/needs_review chiron rows -- see
 # scripts/simulate_match_radius.py -- and picking the one that maximizes
 # clean (single-candidate) recoveries before ambiguity (needs_review) takes
-# over. Confirmed live: clean recoveries rise from 8,875 at 20" to a peak of
+# over. Clean recoveries rise from 8,875 at 20" to a peak of
 # 13,021 at 60", then *fall* to 11,190 at 90" as more of them pick up a
 # second nearby candidate faster than new ones appear -- 60" is the actual
 # optimum, not just "wide enough."
@@ -114,7 +114,7 @@ NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 # exactly, so 100" captures the real offset population without yet
 # overreaching into denser fields.
 #
-# Investigated and explicitly NOT added: gemini/NIFS has an even tighter,
+# Evaluated and excluded: gemini/NIFS has an even tighter,
 # more persistent offset (median separation 180", 90th percentile only
 # 187" -- essentially a fixed vector, stable 2005-2024) most likely because
 # NIFS's tiny IFU sits off the acquisition camera's optical axis on the
@@ -141,7 +141,7 @@ def _normalize_name(name: str) -> str:
     # add_bsc_star (ingest/add_star.py) stores those tokens verbatim into
     # name_aliases. Without stripping the prefix, an archive reporting the
     # bare name never matches the cached alias and silently falls through to
-    # position matching (confirmed live: IRTF Legacy's "Vega" record). See
+    # position matching (e.g. IRTF Legacy's "Vega" record). See
     # webapp/app.py's _normalize_star_name for the same fix on the manual
     # search path.
     name = _NAME_PREFIX_RE.sub("", name.strip())
@@ -161,8 +161,8 @@ def _load_candidate_stars(
     loading the entire tracked-star catalog into Python and rebuilding a
     KD-tree per observation epoch (see MAX_PM_ARCSEC_PER_YEAR for why
     radius_deg is a safe upper bound to use before propagation), which
-    stopped scaling once the catalog passed ~1M rows: confirmed live, a
-    single ESO page took over an hour, and even after an in-Python KD-tree
+    stopped scaling once the catalog passed ~1M rows: a single ESO page
+    took over an hour, and even after an in-Python KD-tree
     pre-filter cut that to minutes, date-heavy archives like MAST still paid
     that cost once per distinct observation date in every page. q3c pushes
     the spatial filter into Postgres's own index instead of Python.
@@ -349,7 +349,7 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
 
     # dec must be a real latitude — clean_float only catches masked/None
     # values, not a *present-but-bogus* sentinel for "no real position."
-    # Confirmed live: MAST reports -99.0 for calibration exposures lacking
+    # Observed: MAST reports -99.0 for calibration exposures lacking
     # real sky coordinates (undocumented, distinct from the masked-column
     # case clean_float handles), which crashed SkyCoord construction for
     # the whole epoch group outright rather than just that one record.

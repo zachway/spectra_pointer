@@ -7,30 +7,30 @@ documented on the SQL page's own table list (only med_catalogue/med_stellar/
 med_mec/med_plan/med_inputcatalog are listed there), but it's the table
 backing the "Medium Resolution Catalogue Query" web form
 (/dr11/v2.0/medcas/search — field names in that form's HTML are literally
-`med_combined.<column>`) and confirmed live queryable through the same
+`med_combined.<column>`) and observed queryable through the same
 unauthenticated SQL API as everything else here.
 
-MRS has no CLASS column at all (confirmed live against med_catalogue's own
+MRS has no CLASS column at all (observed against med_catalogue's own
 column list) — unlike LRS, which spans star/galaxy/QSO, MRS only ever
 targets stars, so there's nothing to filter on beyond gaia_source_id itself.
 
 obsid is not unique in med_combined: MRS takes multiple exposures per
 target, each further split by band (B/R) and epoch, each with its own
-`mobsid` (e.g. "58890200383556119R") — confirmed live, one real obsid had 8+
+`mobsid` (e.g. "58890200383556119R") — observed, one real obsid had 8+
 distinct mobsid rows. But `file`/`spec` (the combined-spectrum product
 covering both bands, all epochs) are identical across every mobsid row for
-a given obsid — confirmed live (single obsid, 5 different mobsid rows, one
+a given obsid — observed (single obsid, 5 different mobsid rows, one
 `file` value). SELECT DISTINCT on the obsid-level columns collapses this
 cleanly server-side rather than pulling and deduping ~9x the necessary rows
-client-side (47M raw rows vs 5.14M distinct obsid, confirmed live via
+client-side (47M raw rows vs 5.14M distinct obsid, observed via
 COUNT) — throughput with DISTINCT is still ~1000 rows/sec (10,000 rows in
-~9.5s, confirmed live), better than LRS's ~500/sec despite the extra work,
+~9.5s, observed), better than LRS's ~500/sec despite the extra work,
 so no separate page-size tuning was needed.
 
 Deep link: found by brute-force probing plausible paths (medspectrum/fits/,
 spectrum/medfits/, mrs/spectrum/fits/, ...) since MRS has no equivalent of
 lrs_spectrum.js's readable download-button href to read the pattern from
-directly. `medspectrum/fits/{obsid}` confirmed live as the one real hit
+directly. `medspectrum/fits/{obsid}` observed as the one real hit
 (Content-Type: application/gzip, valid gzip, unpacks to a real
 `med-58025-HIP507401_sp02-003.fits`) — every other guess 404s dressed up as
 a 200 (its own JSON error body, Content-Type: application/json).

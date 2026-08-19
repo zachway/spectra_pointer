@@ -51,8 +51,8 @@ logger = logging.getLogger(__name__)
 # Every archive whose cursor advances on an observation-time-shaped field
 # (or, for sdss_v_apogee, a non-chronological string ID) -- audited by
 # reading every sync/archives/*.py fetch() against this exact failure mode.
-# Excludes: archives with a true ingestion-order ID confirmed live to be
-# assigned at insert time (asiago, harpsn_tng, hermes_mercator,
+# Excludes: archives with a true ingestion-order ID, assigned at insert
+# time (asiago, harpsn_tng, hermes_mercator,
 # subaru_moircs, carmenes_caha); fixed/frozen data releases that don't
 # backfill within a release (gaia_rvs, galah, lamost, lamost_mrs, rave,
 # elodie, feros_gavo, flashheros_gavo, iacob, svo_cab, carmenes); and

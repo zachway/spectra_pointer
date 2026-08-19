@@ -1,13 +1,13 @@
 """Lick / Mt. Hamilton Data Repository -- pure directory browsing, no query API.
 
 https://mthamilton.ucolick.org/data/ has no TAP/REST/form-search endpoint at
-all (confirmed live) -- it's a plain per-night directory tree:
+all (observed) -- it's a plain per-night directory tree:
     /data/{YYYY-MM}/{DD}/{instrument}/{owner-or-"public"}/
 Proprietary nights are named after the PI (password-protected, 401); once
 the proprietary period expires the same folder is renamed "public" (see
-/data/help/, which documents the folder-rename behavior but -- confirmed
-live via a full-text search of that page -- gives no numeric proprietary
-period). A GET on a `public/` URL cleanly collapses three different "no
+/data/help/, which documents the folder-rename behavior but gives no
+numeric proprietary period). A GET on a `public/` URL cleanly collapses
+three different "no
 data here" cases into one 404: the day directory doesn't exist (the FAQ
 states days without RAID-archived data are simply absent, gaps are normal),
 the instrument didn't observe that night, or the night is still proprietary
@@ -15,11 +15,11 @@ the instrument didn't observe that night, or the night is still proprietary
 yet, try again later" and 200 means "here's a real, science-or-calibration,
 listing" in one request.
 
-Instrument scope: shane + APF only (confirmed live via a day index page:
+Instrument scope: shane + APF only (observed via a day index page:
 other listed subfolders that day were allsky/apfcam/hamcam1/hamcam2/
 skycam2 -- webcams/acquisition cameras, not spectrographs -- and nickel,
 which is Lick's imaging telescope, not spectroscopy). Case-sensitive:
-confirmed live that "apf" (lowercase) 404s where "APF" 200s.
+observed that "apf" (lowercase) 404s where "APF" 200s.
 
 Row format confirmed stable 2007-2023 (sampled directly, not assumed):
     <a href="./{filename}">{filename}</a> ... <tt>{comment}  {iso8601}</tt>
@@ -53,7 +53,7 @@ fixed-window pagination, adapted here for a calendar walk instead of an
 MJD watermark.
 
 MIN_AGE_DAYS (730, ~2yr) exists because a night's proprietary status is NOT
-a fixed offset from its observation date -- confirmed live that some nights
+a fixed offset from its observation date -- observed that some nights
 were already public within 9-15 months while at least one PI-named folder
 from over a decade ago was STILL password-protected (a genuine archive
 inconsistency, not this module's bug). Stopping the forward cursor 2 years
@@ -81,9 +81,9 @@ from bs4 import BeautifulSoup
 from sync.base import RawObservation
 
 BASE_URL = "https://mthamilton.ucolick.org/data"
-INSTRUMENTS = ["shane", "APF"]  # case-sensitive -- confirmed live
+INSTRUMENTS = ["shane", "APF"]  # case-sensitive -- observed
 
-# Repository confirmed live to start between 2006-06 (404) and 2006-09 (200);
+# Repository observed to start between 2006-06 (404) and 2006-09 (200);
 # comfortably before that, same "don't bother hunting the exact bound" logic
 # carmenes_caha.py's FIRST_DATE uses.
 FIRST_DATE = date(2006, 7, 1)

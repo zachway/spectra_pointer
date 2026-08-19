@@ -9,9 +9,9 @@ bundle. Covers aao.ECH (the Asiago Echelle spectrograph) only — aao.AAO
 imaging and spectroscopy without a clean isolating column, both deliberately
 excluded, same reasoning as koa.py's excluded imaging-only tables.
 
-41,419 rows confirmed live, 1994-12-16 to present. Real target names in
+41,419 rows observed, 1994-12-16 to present. Real target names in
 OBJECT (e.g. "17 Lep", a real star) — some rows use "Manual Coords"/
-descriptive placeholders instead (confirmed live: only 15,505 of 41,419 rows
+descriptive placeholders instead (observed: only 15,505 of 41,419 rows
 have RA_RAD/DEC_RAD populated at all), so this relies on the matcher's
 name_resolved path more than most TAP archives, with positional_easy_match
 as a genuine fallback rather than the primary path DAO/CFHT/etc. get.
@@ -20,12 +20,12 @@ RA_RAD/DEC_RAD are literally radians (confirmed: values in the +/-pi/2pi*2
 range, not degrees) — every other archive in this codebase reports degrees
 directly, so these need an explicit conversion, unlike everywhere else.
 
-id is a plain sequential integer with no cliff at 41k rows (confirmed live:
+id is a plain sequential integer with no cliff at 41k rows (observed:
 a full unpaginated pull took 1.4s) — paginated by id watermark anyway since
 this is a live, growing archive, not a one-shot historical dump.
 
 DATE_OBS carries a real, systematic malformation on a non-trivial number of
-rows (confirmed live, e.g. "2008-03-20T21:43:010" — a bare trailing "0"
+rows (observed, e.g. "2008-03-20T21:43:010" — a bare trailing "0"
 where every other row has a proper ".0" fractional-second decimal point,
 looks like a formatting bug on the archive's own side, not a one-off typo)
 — astropy's isot parser raises ValueError on these rather than silently

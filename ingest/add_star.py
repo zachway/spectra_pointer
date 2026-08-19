@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # astroquery's SIMBAD default (1080s / 18min) is meant for legitimately slow
 # async queries, but it also governs the read that can just stall mid-
-# response — confirmed live: a sync run sat blocked for 9+ minutes and
+# response — observed: a sync run sat blocked for 9+ minutes and
 # counting inside Simbad.query_objects with no data coming through, no
 # exception raised to trigger the SIMBAD-outage handling already in
 # discover_stars below. A much shorter timeout turns a stall into a caught,
@@ -41,7 +41,7 @@ simbad_conf.timeout = 30
 # the pyvo case, which does support one). This is used on every single star
 # registration across every archive, so a stall here is the highest-value
 # one to guard against. socket.setdefaulttimeout() is the standard fallback
-# for exactly this situation — confirmed live it reaches Gaia's connection
+# for exactly this situation — observed it reaches Gaia's connection
 # and raises promptly. Doesn't affect Postgres (psycopg/libpq manages its
 # own sockets in C, not through Python's socket module) or any requests-
 # based call in this codebase (they already pass explicit timeouts, which
@@ -85,7 +85,7 @@ GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 def _launch_gaia_job(query: str):
     """Gaia.launch_job, retried on transient TAP failures.
 
-    Confirmed live: after ~10 back-to-back batch queries in a few minutes
+    Observed: after ~10 back-to-back batch queries in a few minutes
     (bulk star discovery during a sync run), the Gaia TAP+ endpoint started
     handing back an HTML error page instead of the expected gzipped VOTable
     response. astroquery doesn't treat that as a clean HTTP error — it
@@ -224,7 +224,7 @@ def add_star_by_name(conn: psycopg.Connection, name: str) -> dict:
     return add_star(conn, gaia_source_id, input_name=name)
 
 
-# Gaia saturates on the brightest naked-eye stars -- confirmed live via a
+# Gaia saturates on the brightest naked-eye stars -- observed via a
 # cross-match of the Yale Bright Star Catalogue (BSC5) against
 # gaiadr3.gaia_source (30" radius): 70 of the 170 BSC5 stars brighter than
 # V=3 have no credible Gaia counterpart (18 with zero Gaia sources within
@@ -244,7 +244,7 @@ BSC5_SIMBAD_FIELDS = ("ids", "ra", "dec", "pmra", "pmdec", "plx_value")
 
 # For a bright star with no Gaia entry, SIMBAD's own cross-matched
 # astrometry is almost always sourced from the Hipparcos catalog (van
-# Leeuwen's 2007 re-reduction) -- confirmed live for Arcturus
+# Leeuwen's 2007 re-reduction) -- observed for Arcturus
 # (coo_bibcode 2007A&A...474..653V). SIMBAD doesn't expose a clean
 # per-field epoch for pmra/pmdec/plx_value the way it does coo_bibcode for
 # position, so this is hardcoded rather than queried per star.
@@ -527,8 +527,8 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
         try:
             name_to_gaia = resolve_stellar_gaia_ids_batch(names)
         except Exception:
-            # SIMBAD outages happen (confirmed live during this project) —
-            # degrade to direct-Gaia-only + positional matching against
+            # SIMBAD outages happen — degrade to direct-Gaia-only +
+            # positional matching against
             # whatever's already tracked, rather than losing the whole
             # sync page to one dependency being briefly down.
             logger.warning("%s: SIMBAD resolution failed during star discovery, continuing without it", archive_code, exc_info=True)

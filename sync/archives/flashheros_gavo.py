@@ -1,10 +1,10 @@
 """Flash/Heros Public Spectra (GAVO Heidelberg) — TAP, no positions, name-only match.
 
 Same GAVO Heidelberg DaCHS/SSA hosting as feros_gavo.py, found via the same
-reg.g-vo.org registry sweep — a different, unrelated instrument (Flash and
+reg.g-vo.org registry — a different, unrelated instrument (Flash and
 Heros are two echelle spectrographs run together on La Silla in the late
-1990s bright-star survey era, not affiliated with ESO's FEROS). Confirmed
-live: 14,573 real spectra (application/fits rows), real bright-star target
+1990s bright-star survey era, not affiliated with ESO's FEROS). 14,573
+real spectra (application/fits rows), real bright-star target
 names (e.g. "68 Cyg"). Final, static dataset — one full pull is enough
 forever, same shape as rave.py/feros_gavo.py.
 
@@ -14,15 +14,15 @@ feros_gavo.py, so every record here can only ever go through the matcher's
 name_resolved path.
 
 Same paired-row shape as feros_gavo.py too: each real spectrum has a
-sibling application/x-votable+xml metadata-only row (confirmed live: exactly
+sibling application/x-votable+xml metadata-only row (observed: exactly
 2x count) — filtered via mime rather than deduping client-side.
 
 Unlike feros.data, flashheros.data has no ssa_instrument *column* — it's a
 per-service constant (always "Flash/Heros"), exposed only as a VOTable INFO
-comment rather than a per-row field (confirmed live: selecting it raises
+comment rather than a per-row field (observed: selecting it raises
 "No such field known"), so it's hardcoded here instead of read from a row.
 
-ssa_dateObs is masked on 36 of 14,573 rows (confirmed live) — a bare
+ssa_dateObs is masked on 36 of 14,573 rows (observed) — a bare
 Time(float(masked_value), ...) crashes with "Input values for mjd class
 must be finite doubles" rather than silently producing NaT, so those rows
 go in with obs_date=None instead.

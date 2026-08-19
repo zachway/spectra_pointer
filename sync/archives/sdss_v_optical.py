@@ -37,7 +37,7 @@ grouping by the field number's first 3 of 6 zero-padded digits) -- computed
 in fetch() below.
 
 SPEC_FILE gives the exact per-observation filename directly (no need to
-reconstruct it) — confirmed live against the real SAS directory listing.
+reconstruct it) — observed against the real SAS directory listing.
 
 reduction_status is hardcoded 'reduced' -- spAll-lite is the pipeline-
 reduced, flux/wavelength-calibrated per-visit spectrum (the whole point of

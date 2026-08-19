@@ -13,25 +13,25 @@ archive in this project — several real quirks follow from that:
 
 - `SELECT *` is unusable: it declares `access_estsize` as VOTable datatype
   "int" but actually emits decimal strings like "849.9200000000000000" for
-  some rows, which astropy's VOTable parser rejects outright (confirmed
-  live, DALFormatError). Fix is simply to not select that column — every
+  some rows, which astropy's VOTable parser rejects outright
+  (DALFormatError). Fix is simply to not select that column — every
   column actually needed here (position, time, name, URL) parses fine.
 - No `instrument_name` column at all — this table is HDS-only by
   construction, so instrument is hardcoded below rather than read.
-- `obs_publisher_did` is not a per-row identifier here (confirmed live: the
+- `obs_publisher_did` is not a per-row identifier here (observed: the
   same literal 'ivo://jvo/subaru/hds/spec' on every row) — the real per-
   observation key is `raw_id` (e.g. "HDSA00027401").
 - `COUNT(DISTINCT raw_id)` silently ignores DISTINCT and returns the same
-  value as COUNT(*) (confirmed live) — this engine doesn't seem to support
+  value as COUNT(*) (observed) — this engine doesn't seem to support
   it at all, so don't rely on DISTINCT anywhere in this module.
 - Server-side row cap of 200,000 regardless of TOP/maxrec requested
-  (confirmed live via the RECORD_MAX info element) — irrelevant at this
+  (observed via the RECORD_MAX info element) — irrelevant at this
   module's PAGE_SIZE, just don't assume a single unpaginated pull can ever
   see the whole table (253,389 rows total).
 
 Row multiplicity: most raw_ids appear multiple times, not as duplicates but
-as different pipeline products of the same single exposure — confirmed
-live, one raw_id had 6 rows sharing an identical target/time/position: three
+as different pipeline products of the same single exposure — one raw_id
+was observed with 6 rows sharing an identical target/time/position: three
 `application/fits` variants (raw/wavelength-corrected/1D-extracted,
 distinguished only by filename infix) plus matching `text/plain` dumps of
 each. `_product_rank` below picks the single best row per raw_id per page:
@@ -48,7 +48,7 @@ correctness one.
 date_obs is already a plain ISO date string — parsed directly rather than
 converting t_mid (MJD) through astropy, which would just reproduce the same
 day with extra steps. obs_title packs the target name and wavelength range
-together as "NAME [lo:hi]" (confirmed live, format-consistent across a
+together as "NAME [lo:hi]" (observed, format-consistent across a
 200,000-row sample, e.g. "Arcturus [657.49:778.01]"; a handful of BIAS
 calibration frames slip through under the same shape too, resolved to "BIAS"
 as raw_target_name — same as SIMBAD-unresolvable names elsewhere in this

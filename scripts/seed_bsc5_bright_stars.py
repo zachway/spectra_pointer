@@ -9,8 +9,8 @@ Gaia sources within 30" at all, another 52 where the closest candidate is
 >3 mag fainter than expected (almost certainly an unrelated neighbor, not
 the star itself — Gaia often has spurious faint detections near bright
 stars from diffraction spikes). Past V=3 the effect drops off fast (1.3%
-of BSC5 stars in 3<=V<5 show the same pattern), so this list -- run once,
-live, 2026-07-25 -- isn't expected to need much revisiting.
+of BSC5 stars in 3<=V<5 show the same pattern), so this list -- a one-time
+run against production -- isn't expected to need much revisiting.
 
 Arcturus is HR 5340, in this list.
 
@@ -30,7 +30,7 @@ from ingest.add_star import add_bsc_star
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# HR (Harvard Revised / Bright Star) numbers confirmed live to have no
+# HR (Harvard Revised / Bright Star) numbers observed to have no
 # credible gaiadr3.gaia_source counterpart within 30" — see module
 # docstring for the cross-match that produced this list.
 BSC5_HR_NUMBERS_MISSING_FROM_GAIA = [

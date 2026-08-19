@@ -9,23 +9,23 @@ to scrape the HTML form itself.
 
 Unlike feros_gavo/flashheros_gavo (both frozen historical datasets with
 no position at all), hermes.data has a populated ssa_location on every
-single row (confirmed live: 0 of 119,650 rows null) and a real
+single row (observed: 0 of 119,650 rows null) and a real
 ssa_targname on all but 23 -- normal identifier-then-position matching
-applies here, not name-only. mime is always 'application/fits' (confirmed
-live, no paired application/x-votable+xml rows the way feros/flashheros
-have) so no mime filter is needed.
+applies here, not name-only. mime is always 'application/fits' (no paired
+application/x-votable+xml rows the way feros/flashheros have) so no mime
+filter is needed.
 
-ssa_instrument reports the literal per-row string "HERMES ()" (confirmed
-live, on every row) -- a real upstream formatting artifact, not a parsing
-bug; hardcoded to "HERMES" here instead of read verbatim.
+ssa_instrument reports the literal per-row string "HERMES ()" on every
+row -- a real upstream formatting artifact, not a parsing bug; hardcoded
+to "HERMES" here instead of read verbatim.
 
-The embargo column is always an empty string on every row (confirmed
-live) -- not usable as an embargo signal, unlike harpsn_tng.py's `policy`
+The embargo column is always an empty string on every row -- not usable
+as an embargo signal, unlike harpsn_tng.py's `policy`
 field; no embargo filtering is applied at all (this project doesn't
 download bytes anyway, same reasoning most other archives here give for
 including proprietary-period rows).
 
-Only 119,650 rows total (confirmed live) -- small enough that no cliff
+Only 119,650 rows total (observed) -- small enough that no cliff
 was found paginating by unique_seqno at PAGE_SIZE, but paginated anyway
 via an id watermark (same shape as harpsn_tng.py/asiago.py) rather than a
 one-shot pull, since the archive is still actively growing (a live TAP

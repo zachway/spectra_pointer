@@ -3,33 +3,33 @@
 CADC hosts Gemini data too (obs_collection 'GEMINI', plus a tiny 'GEMINICADC'
 subset — both included). No native Gaia column — positional match.
 
-Real, sharp cliff found live, worse than CFHT's: `ORDER BY t_min` makes even
+A sharp cliff, worse than CFHT's: `ORDER BY t_min` makes even
 a 1,000-row query take 72.7s, regardless of page size (10,000 rows timed out
 past 90s). Without ORDER BY, the same filters return in 1-4s. So this can't
 paginate via TOP+ORDER BY+watermark like eso.py/cfht_cadc.py — instead it
 chunks by a fixed 7-day date window (no sort needed at all), the same
-approach Gemini's own native REST API required (per earlier research: weekly
-chunking, ~260 sci-spectra/week). Watermark is the window start, advancing
+approach Gemini's own native REST API required (weekly chunking,
+~260 sci-spectra/week). Watermark is the window start, advancing
 7 days per call regardless of row count.
 
 t_min=0.0 is a real sentinel for missing dates (not just theoretical) —
 filtered out. Real Gemini spectrum data starts at MJD 51946.48 (2001-01-24,
-live-confirmed as MIN(t_min) WHERE t_min > 0) — used as the default cursor
+MIN(t_min) WHERE t_min > 0) — used as the default cursor
 start to avoid iterating empty weeks back to MJD 0.
 
 sync.main's generic driver stops calling fetch() the first time it gets 0
 records back, on the assumption that an empty page means the archive is
 exhausted -- true for every other archive here (they all filter on
 field > watermark, open-ended to "now"), but false for a fixed window:
-an empty week says nothing about whether week 500 has data. Confirmed
-live this bites almost immediately -- the very first real week (starting
+an empty week says nothing about whether week 500 has data. This bites
+almost immediately -- the very first real week (starting
 51946.0) has 9 records, the second (51953.0) has 0, so the generic driver
 stopped after 2 pages, having covered 2 weeks of a ~25-year archive.
 Fixed by looping internally past empty windows here, so a single fetch()
 call only returns empty when window_start has genuinely caught up to
 the present -- keeping the generic driver's "stop on empty" logic valid.
 
-Deep link: same DataLink resolver as CFHT, confirmed live on a real Gemini
+Deep link: same DataLink resolver as CFHT, observed on a real Gemini
 record (GNIRS spectrum, direct FITS file resolved and downloadable).
 
 s_ra/s_dec read via clean_float — can be masked on real rows (confirmed as a

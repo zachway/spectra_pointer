@@ -11,12 +11,12 @@ this project already accepts elsewhere; it isn't deduped against them).
 No plain TAP endpoint exists on this host, unlike the GAVO DaCHS family
 (feros_gavo.py/hermes_mercator.py): `ocan.iac.es:8080/tap`, `/iacob/tap`,
 and the DaCHS `__system__/tap/run/tap` convention all 404 with a plain
-Tomcat default page (confirmed live), not a DaCHS instance at all -- this
+Tomcat default page (observed), not a DaCHS instance at all -- this
 is a bespoke JSP-based SSA service, so a TAP query shape was never on the
 table here.
 
 Real, working SSA endpoint: `ocan.iac.es:8080/iacob/jsp/ssap.jsp`. No sky
-crawl needed to cover the whole archive -- confirmed live that `POS=0,0`
+crawl needed to cover the whole archive -- observed that `POS=0,0`
 with a large enough `SIZE` (cone-search radius in degrees) converges to a
 fixed total regardless of center or further radius increase (74 rows at
 SIZE=60, 1085 at 120, 1240 at 150, 1255 at 180 and every larger SIZE tried
@@ -41,7 +41,7 @@ that the archive itself is finished growing).
 
 The SSA response is a real, standards-shaped VOTable, but with one
 genuinely malformed field: `TIME` is declared `datatype="TIMESTAMP"`
-(confirmed live), which isn't a valid VOTable datatype at all (the IVOA
+(observed), which isn't a valid VOTable datatype at all (the IVOA
 spec only defines char/int/float/double/boolean/etc) -- astropy's VOTable
 parser (and so pyvo.dal.SSAService, which relies on it) rejects the whole
 response outright with `E06: Unknown datatype 'TIMESTAMP'`. Parsed via a
@@ -49,27 +49,27 @@ plain regex TR/TD walk instead, same workaround shape as not_fies.py's/
 ing.py's own malformed-markup parsing, rather than trying to coerce
 astropy into accepting it.
 
-Column order within each `<TR>` (confirmed live, stable across repeated
+Column order within each `<TR>` (observed, stable across repeated
 identical queries) is exactly the service's declared FIELD order:
 AssocID, AcRef, Format, Title, Location, TIME, mys_filename, TARGET,
 SP_CLASS, EXPTIME, SNR, DATA_RELEASE, INSTR, RESOL, DOWNLOAD, AXES, UNITS,
 DIMEQ, SCALEQ. `AssocID` is not used as the per-row key here -- it reads
 like a plain 1..N row counter over that query's result set rather than a
 stable per-spectrum identifier, so `mys_filename` (the real FITS filename,
-e.g. "HD10205_20131216_212859_M_V85000.fits", confirmed live unique
+e.g. "HD10205_20131216_212859_M_V85000.fits", observed unique
 across all 1255 rows) is used for `archive_obs_id` instead. `AcRef` is a
 real, working download URL once the CDATA wrapper and the extra pair of
-literal double-quotes the service wraps around it are stripped (confirmed
-live via a real GET: 200, `application/octet-stream`, a genuine FITS
+literal double-quotes the service wraps around it are stripped (verified
+via a GET: 200, `application/octet-stream`, a genuine FITS
 file) -- note it 401s on a bare HEAD request, so don't use HEAD to
 sanity-check it.
 
-`Location` is a plain "ra,dec" degree pair (confirmed live against the
+`Location` is a plain "ra,dec" degree pair (observed against the
 VOTable's own `<COOSYS equinox="2000">` and `ucd="pos.eq"` on the field --
 equatorial J2000, same convention as everywhere else in this project).
 `TARGET` carries real catalog names (e.g. "HD10205", "HD36629" --
-confirmed live, real known OB stars). All 1255 rows have a populated
-Location/TIME/TARGET/AcRef (confirmed live, 0 blank across every one of
+observed, real known OB stars). All 1255 rows have a populated
+Location/TIME/TARGET/AcRef (observed, 0 blank across every one of
 those four fields) -- no missing-field handling needed for the happy
 path, though parsing still degrades to None rather than raising if a
 field is ever empty.
@@ -78,8 +78,7 @@ Only two instruments appear in the live data: MERCATOR (362 rows, R
 85,000 on every one) and NOT (893 rows, split across R 46,000/67,000/
 25,000 depending on FIES's fiber/mode) -- despite the database's broader
 scope (INT and others, per IACOB's own published description), this SSA
-service's public rows are Mercator/HERMES and NOT/FIES only, confirmed
-live.
+service's public rows are Mercator/HERMES and NOT/FIES only.
 """
 
 from __future__ import annotations
@@ -114,7 +113,7 @@ def _parse_row(row_xml: str) -> list[str]:
 
 def _clean_acref(raw: str) -> str | None:
     """Strips the CDATA wrapper and the literal double-quotes the service
-    puts around the URL itself (confirmed live: `<![CDATA["https://...
+    puts around the URL itself (observed: `<![CDATA["https://...
     fits"]]>`, quotes and all) -- see module docstring."""
     match = _CDATA_RE.match(raw)
     value = match.group(1) if match else raw

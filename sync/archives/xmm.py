@@ -10,34 +10,34 @@ X-ray grating spectroscopy, not imaging or EPIC/OM photometry: `xsa.v_exposure`
 covers every XMM instrument (RGS1/RGS2 gratings, the three EPIC cameras, OM)
 in one table, filtered here to `instrument LIKE 'RGS%'`. Even within RGS,
 `mode_friendly_name` also carries non-dispersed readout modes on the exact
-same instrument (confirmed live distinct values: 'Diagnostic 3x3',
+same instrument (observed distinct values: 'Diagnostic 3x3',
 'Diagnostic 1x1', 'HTR Single CCD', 'HTR Multiple CCD', 'UNDEFINED' alongside
 the real spectroscopy modes 'Spectroscopy', 'Spectroscopy HER',
 'Spectroscopy HER + SER', 'Spectroscopy HER + SES', 'Spectroscopy Small
 Window') -- filtered to `mode_friendly_name LIKE 'Spectroscopy%'` to isolate
 real dispersed-spectrum exposures, plus `is_scientific = 'true'` to exclude
-engineering/calibration exposures. 33,819 real rows confirmed live under this
+engineering/calibration exposures. 33,819 real rows observed under this
 filter (exposure-level, i.e. counting RGS1 and RGS2 separately).
 
 Joined to `xsa.v_public_observations` on `observation_id` (both tables carry
-it as `char`, confirmed live -- no type-mismatch surprise) to pick up
+it as `char`, observed -- no type-mismatch surprise) to pick up
 `target`/`ra`/`dec`; `v_exposure` itself has no target name or position of
-its own. 0 masked/null ra or dec across the whole filtered join (confirmed
-live), but 42 of the 33,819 rows have a blank (empty-string, not NULL)
+its own. 0 masked/null ra or dec across the whole filtered join, but 42
+of the 33,819 rows have a blank (empty-string, not NULL)
 `target` -- handled as a missing name rather than crashing on it.
 
 RGS1 and RGS2 are kept as two separate holdings, not merged into one per
 observation -- they're real, physically distinct gratings that both expose
 simultaneously (same reasoning as chandra.py keeping HETG/LETG separate).
 This turned out to matter for the archive_obs_id key specifically: RGS1 and
-RGS2 can share the same `exposure_id` within one observation (confirmed
-live, e.g. obsid 0830800201's and 0852580101's exposure_id 'U002' each occur
-once under RGS1 and once under RGS2) -- `exposure_id` alone is not a unique
+RGS2 can share the same `exposure_id` within one observation (e.g. obsid
+0830800201's and 0852580101's exposure_id 'U002' each occur once under
+RGS1 and once under RGS2) -- `exposure_id` alone is not a unique
 per-instrument key, so the key here is observation_id + instrument +
 exposure_id together.
 
 start_utc ties matter for pagination too: RGS1 and RGS2 exposures very often
-share the exact same start_utc timestamp down to the second (confirmed live,
+share the exact same start_utc timestamp down to the second (observed,
 e.g. Proxima Centauri obsid 0049350201's RGS1/RGS2 pair both start at
 2001-08-12T03:14:23.0; 5,116 of the 33,819 rows' start_utc values are shared
 by >1 row) -- a windowed page boundary landing exactly on one of those ties
@@ -49,14 +49,14 @@ so no windowing is needed at the current scale -- ties only become a live
 risk again once the real total exceeds PAGE_SIZE.
 
 proprietary_end_date on v_public_observations is a real, populated embargo
-field -- confirmed live it carries real future dates (e.g. GD 153's
+field -- observed it carries real future dates (e.g. GD 153's
 observation 0830801101 shows 2026-07-09). Not filtered on: same convention
 as salt_hrs.py, an embargoed row's existence still answers this project's
 core question (has this star been observed at all), and archive_url will
 simply show XSA's own proprietary-data messaging until each observation's
 release date passes.
 
-archive_url points at `nxsa-web/#obsid=<observation_id>` -- confirmed live
+archive_url points at `nxsa-web/#obsid=<observation_id>` -- observed
 this isn't a guess: the archive's own web frontend (a GWT single-page app,
 served from nxsa-web/) ships a compiled JS bundle whose History-token parser
 contains the literal branch `f.startsWith('obsid=')` (confirmed by fetching
@@ -70,7 +70,7 @@ reduction_status intentionally left unset -- no calib_level-equivalent
 column exists on either v_exposure or v_public_observations, same reasoning
 as chandra.py.
 
-Confirmed live end-to-end: Proxima Centauri has all 9 of its real XMM
+Observed end-to-end: Proxima Centauri has all 9 of its real XMM
 observations represented here with RGS1+RGS2 pairs (18 rows total) --
 0049350101, 0049350201, 0551120201, 0551120301, 0551120401, 0801880201,
 0801880301, 0801880401, 0801880501 -- spanning 2001-08-12 through
@@ -87,7 +87,7 @@ from sync.base import RawObservation, clean_float, make_tap_service
 def _parse_start_utc(start_utc_str: str) -> datetime:
     # Python 3.9's datetime.fromisoformat only accepts 0, 3, or 6 fractional
     # digits, but XSA returns arbitrary precision (e.g. "...T14:08:26.0") --
-    # confirmed live to crash the import on exactly that shape. Pad/truncate
+    # observed to crash the import on exactly that shape. Pad/truncate
     # to 6 digits so any precision round-trips.
     if "." in start_utc_str:
         base, frac = start_utc_str.split(".", 1)

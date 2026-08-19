@@ -2,19 +2,19 @@
 
 No TAP/API, and no per-object query needed either: the "advanced query"
 CGI (fE.cgi) returns the *entire* archive as one plain-text table when no
-object filter (`o=`) is given (confirmed live: 35,535 rows in one request,
+object filter (`o=`) is given (observed: 35,535 rows in one request,
 matching the archive's own published total) — a genuine one-shot bulk dump,
 same shape as rave.py, not a per-target scrape like lick.py/carmenes_caha.py.
 Final, decommissioned instrument (last observation 2006, fully public since
 2011) — one full pull is enough forever.
 
 Half the archive is calibration frames, not science exposures: `imatyp`
-starting with "OBTH" (Th-Ar arc lamp, confirmed live: 19,289 of 35,535 rows)
+starting with "OBTH" (Th-Ar arc lamp, observed: 19,289 of 35,535 rows)
 vs "OBJ*" (real object spectra, 16,246 rows) — filtered at parse time via a
 prefix check, no separate metadata field needed.
 
 Coordinates come back as a single packed J2000 string ("J152749.7+290620",
-confirmed live on every row) rather than separate ra/dec columns — parsed
+observed on every row) rather than separate ra/dec columns — parsed
 into `HH:MM:SS.s`/`+DD:MM:SS` and handed to SkyCoord the same way lbt.py
 does for its own sexagesimal ra/dec, just needing the colons inserted first
 since the source has none.
@@ -24,11 +24,11 @@ name and position are available, unlike feros_gavo.py/flashheros_gavo.py,
 so this goes through the matcher's normal identifier-then-position order.
 
 The download endpoint (`fE.cgi?...&o=elodie:{dataset}/{imanum}`) needs
-`http://`, not `https://` — the archive doesn't serve TLS at all (confirmed
-live: the site is plain HTTP only).
+`http://`, not `https://` — the archive doesn't serve TLS at all (the site
+is plain HTTP only).
 
 The response is a fixed-width plain-text table, not whitespace-delimited —
-confirmed live that a naive `line.split()` misparses/shifts columns on rows
+observed that a naive `line.split()` misparses/shifts columns on rows
 where `objname` or the packed J2000 coordinate is blank (both happen: e.g.
 one real row has an empty objname and a literal control character, not
 whitespace, in place of a missing coordinate) — parsed via fixed character

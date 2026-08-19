@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 
 # Chunked, not one ~9,000-row upload -- a single unchunked cross-match of
 # the full catalog timed out/500'd during the original BSC5-gap analysis
-# (confirmed live). This size cleared reliably at that time.
+# (observed). This size cleared reliably at that time.
 XMATCH_CHUNK_SIZE = 1500
 
 # BSC5's RAJ2000/DEJ2000 are at epoch J2000.0, but gaiadr3.gaia_source's own
@@ -63,12 +63,12 @@ XMATCH_CHUNK_SIZE = 1500
 # was missed this way: its un-propagated offset was ~65", 4x the old 15"
 # radius, so seed() routed it down the BSC5 fallback path and created a
 # second `stars` row for a star that already had a perfectly good Gaia-based
-# row from another archive's name resolution -- confirmed live against prod,
+# row from another archive's name resolution -- observed against prod,
 # and the same signature (a Gaia row within a couple hundred arcsec of a
 # BSC5 fallback row) was found for 112 of the catalog's 123 BSC5-path stars.
 # Fix: propagate each Gaia candidate's position back to J2000.0 via the
 # archive's own EPOCH_PROP_POS function before measuring separation --
-# confirmed live it returns a POINT usable directly inside DISTANCE(), and
+# observed it returns a POINT usable directly inside DISTANCE(), and
 # that the propagated position for Keid lands within 0.01" of BSC5's, i.e.
 # BSC5's own position is trustworthy and the join was the only broken part.
 XMATCH_JOIN_RADIUS_ARCSEC = 300.0
@@ -80,7 +80,7 @@ XMATCH_RADIUS_ARCSEC = 15.0
 
 # A Gaia candidate fainter than the BSC star's own Vmag by more than this is
 # almost certainly an unrelated neighbor (diffraction-spike artifact, faint
-# background/foreground source), not the star itself -- confirmed live
+# background/foreground source), not the star itself -- observed
 # during the original 70-star gap analysis.
 SUSPICIOUS_MAG_GAP = 3.0
 

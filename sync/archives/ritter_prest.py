@@ -15,13 +15,13 @@ processing), never raw 2D frames -- 'reduced' is the right side of this
 project's raw/reduced bucket. Two instruments share the same 1.06-m
 telescope/fiber feed and are distinguished live via each FITS header's own
 NAXIS2 rather than the HTML page text's inconsistent "(LDS ...)"
-annotations (confirmed live: a multi-order echelle file has NAXIS2=9, a
+annotations (observed: a multi-order echelle file has NAXIS2=9, a
 single-order LDS file has no NAXIS2 key at all): NAXIS2 present ->
 "Ritter Echelle" (telescope.html describes ~9-21 useful orders across two
 CCD camera generations, R~13,000-26,000 around H-alpha), NAXIS2 absent ->
 "Ritter LDS" (Low-Dispersion Spectrograph, single order).
 
-Frozen, historical dataset (confirmed live): despite the homepage's own
+Frozen, historical dataset (observed): despite the homepage's own
 "New spectra are continually being added" banner, every per-file
 Last-Modified header sampled falls in the 2011-2016 reprocessing-pass
 window, and the underlying observations themselves span 1994-2007 -- one
@@ -29,8 +29,8 @@ full pull is enough forever, same reasoning elodie.py gives for its own
 decommissioned-instrument one-shot pull.
 
 No TAP/SSA/API of any kind, and no directory listing either (FITS-spectra/
-itself 403s, confirmed live -- Apache with indexing off). The only way in
-is two static top-level index pages, both confirmed live and unioned here
+itself 403s, observed -- Apache with indexing off). The only way in
+is two static top-level index pages, both observed and unioned here
 since neither alone is complete:
   - HDsearch.html: an HD-number-sorted index, ~70 unique per-star/per-group
     page links (some HD numbers point at the same shared group page, e.g.
@@ -46,27 +46,27 @@ footers) with real, confirmed-live rot: 4 of the 92 unioned links 404
 and a "rhoCas/rhoCas.html" case mismatch where only "RhoCas/rhocas.html"
 actually resolves) -- skipped rather than treated as fatal.
 
-Solar-system objects (confirmed live under PREST-archive.html's own
+Solar-system objects (observed under PREST-archive.html's own
 "Solar System Objects" heading: Jupiter, Callisto, Ganymede, Io, Mars,
 Moon, Venus, plus Comet C/2000 WM1, Comet Hale-Bopp, and Comet Hyakutake)
 are excluded by directory name, per this project's stars-only scope --
-along with tellstds/tellstds.html, confirmed live to be *artificial*
+along with tellstds/tellstds.html, observed to be *artificial*
 (synthesized) telluric-line-removal templates, not real observations of
 anything.
 
-Per-star-group HTML pages carry no ra/dec/date at all (confirmed live,
+Per-star-group HTML pages carry no ra/dec/date at all (observed,
 every page inspected -- just FITS filenames, in the form
-YYYYMMDD.NNN.fits or, confirmed live on roughly half of the ~2,200 files,
+YYYYMMDD.NNN.fits or, observed on roughly half of the ~2,200 files,
 an older 6-digit YYMMDD.NNN.fits) -- ra/dec/date/target all have to come
 from each FITS header instead, one GET per file. Fetched via an HTTP Range
 request (bytes=0-11519, 4 FITS 2880-byte blocks) rather than a full
-download -- confirmed live the real header always ends well within the
+download -- observed the real header always ends well within the
 first 2 blocks (5,760 bytes) on every file sampled, so 4 blocks leaves
 comfortable margin while still cutting each request to about a quarter of
 the ~48-52KB full file size, a meaningfully lighter footprint on a small
 personal page being crawled for ~2,200 files in one pass.
 
-FITS header fields (confirmed live across files spanning 1994-2007):
+FITS header fields (observed across files spanning 1994-2007):
 OBJECT (e.g. "alpha Leo", "35 Ari", "BD +63 1964" -- a real catalog name,
 not always matching the page's own grouping label: NormOB.html's own
 "HD 16908" section header turned out to hold a file whose OBJECT is
@@ -76,7 +76,7 @@ page text for this reason). RA/DEC are sexagesimal strings
 and positive Dec sometimes omits any sign at all, e.g. "27:40:55.00" --
 SkyCoord parses both natively). DATE-OBS is inconsistent across the
 archive's history: modern ISO "YYYY-MM-DD" on later files but a legacy
-"DD/MM/YY" two-digit-year form on others (confirmed live, e.g.
+"DD/MM/YY" two-digit-year form on others (observed, e.g.
 "22/12/94") -- both parsed explicitly rather than assuming one format.
 UT/EPOCH are not used: UT is a plain time-of-night with no bearing on
 RawObservation.obs_date (a date, not a datetime), and EPOCH is the
@@ -85,33 +85,33 @@ a proper-motion signal here -- ra/dec are used as reported, the same
 face-value convention every other scraper module in this project follows
 for its own catalog coordinates.
 
-At least one real file (FITS-spectra/22Vul/20000810.018.fits, confirmed
-live) has a DATE-OBS card present but with a blank, unquoted value --
+At least one real file (FITS-spectra/22Vul/20000810.018.fits)
+has a DATE-OBS card present but with a blank, unquoted value --
 invalid FITS, and astropy.io.fits.Card raises (VerifyError) rather than
 returning something merely falsy when that specific card's value is
 touched. _safe_get treats any such malformed card as an ordinary missing
 field instead of failing the whole record, and obs_date falls back to the
 date embedded in the file's own name (the archive's own stated
-YYYYMMDD.NNN.fits / YYMMDD.NNN.fits convention, confirmed live reliable
+YYYYMMDD.NNN.fits / YYMMDD.NNN.fits convention, observed reliable
 on all but 6 of the ~2,200 stellar files) when DATE-OBS is missing or
 unparsable either way.
 
-Duplicate anchors happen on a handful of real pages (confirmed live, e.g.
+Duplicate anchors happen on a handful of real pages (observed, e.g.
 alpha Leo's own page links "20050412.018.fits" twice, once per download-
 button target) -- deduped by resolved absolute URL across the whole
 crawl, not just within a page.
 
-Confirmed live full crawl: 88 of the 92 unioned star/group page links
+A full crawl finds: 88 of the 92 unioned star/group page links
 resolve (the other 4 404, see above), 77 of those aren't solar-system/
 template pages, and those 77 carry 2,218 candidate stellar FITS links
 across ~175 individually named stars (several group pages -- NormOB,
 NormKM, NormFG, NormA, betaCepheiStars, ShellStars -- each hold multiple
 different named stars) -- matching this project's own prior research
-estimate of "low thousands across ~175 stars". A real fetch({}) run confirmed 2,201 of those 2,218 actually ingest
-(17 individually 404 despite being linked from a live page, same
-static-site rot as the 4 dead page links above) in ~325s, and confirmed
-a second fetch() call with the returned cursor is an instant no-op
-(0 records).
+estimate of "low thousands across ~175 stars". A fetch({}) run finds
+2,201 of those 2,218 actually ingest (17 individually 404 despite being
+linked from a live page, same static-site rot as the 4 dead page links
+above) in ~325s, and a second fetch() call with the returned cursor is
+an instant no-op (0 records).
 
 One-shot pull, same `synced_at` no-op convention as elodie.py/iacob.py --
 appropriate for a dataset with no evidence of ongoing growth (see above).
@@ -138,7 +138,7 @@ from sync.base import RawObservation
 BASE_URL = "https://astro1.panet.utoledo.edu/~wwritter/archive/"
 INDEX_PAGES = ["PREST-archive.html", "HDsearch.html"]
 
-# Confirmed live under PREST-archive.html's own "Solar System Objects"
+# Observed under PREST-archive.html's own "Solar System Objects"
 # heading, plus the synthetic telluric-template page -- excluded by
 # per-star-group directory name (see module docstring).
 EXCLUDED_DIRS = {
@@ -192,7 +192,7 @@ def _find_fits_urls(page_relpath: str) -> list[str]:
 
 
 def _parse_date_obs(raw: str) -> date | None:
-    """Handles both DATE-OBS conventions confirmed live on this archive --
+    """Handles both DATE-OBS conventions observed on this archive --
     modern ISO "YYYY-MM-DD" and a legacy two-digit-year "DD/MM/YY"."""
     raw = raw.strip()
     if not raw:
@@ -227,8 +227,8 @@ def _parse_coords(ra_str: str, dec_str: str) -> tuple[float, float] | tuple[None
     return coord.ra.deg, coord.dec.deg
 
 
-# "YYYYMMDD.NNN.fits" (confirmed live, the majority) or the older
-# "YYMMDD.NNN.fits" (confirmed live on ~half the archive) -- used as a
+# "YYYYMMDD.NNN.fits" (observed, the majority) or the older
+# "YYMMDD.NNN.fits" (observed on ~half the archive) -- used as a
 # fallback obs_date source, see _safe_get's docstring below.
 _FILENAME_DATE_RE = re.compile(r"(\d{6}|\d{8})\.\d+\.fits$", re.I)
 
@@ -250,7 +250,7 @@ def _parse_date_from_filename(fits_url: str) -> date | None:
 
 def _safe_get(header: fits.Header, key: str):
     """header.get() still raises (not just returns None) on a card whose
-    *value* -- not just its presence -- is malformed, confirmed live: one
+    *value* -- not just its presence -- is malformed, observed: one
     real file (FITS-spectra/22Vul/20000810.018.fits) has a DATE-OBS card
     present with a blank, unquoted, non-numeric value, which
     astropy.io.fits.Card refuses to parse at all (VerifyError) rather than

@@ -4,7 +4,7 @@ Petit et al. 2014 PASP database of reduced, normalized Stokes-parameter
 spectropolarimetric products -- a different, additive data product from
 cfht_cadc.py's raw ESPaDOnS ObsCore rows, not a duplicate.
 
-The registered SSA service (ivo://ov-gso/ssap/polarbase, confirmed live at
+The registered SSA service (ivo://ov-gso/ssap/polarbase, observed at
 both www.polarbase.ovgso.fr/download/ssa_polarbase and the older
 polarbase.irap.omp.eu/download/ssa_polarbase -- same backend IP, same
 VOTable error response, genuinely the same service behind two domains, not
@@ -12,22 +12,22 @@ two independent archives) turned out to be a dead end for a bulk pull: its
 own getMetadata response confirms POS is mandatory and SIZE is capped at
 5 deg diameter, cone-search only, no full-sky/unfiltered mode. Both
 domains' own `/tap` route 200s but is just the SPA's catch-all shell
-(confirmed live, same red herring salt_hrs.py found at ssda.saao.ac.za/tap),
+(observed, same red herring salt_hrs.py found at ssda.saao.ac.za/tap),
 not a real TAP endpoint.
 
 The real access path is an undocumented JSON REST API, found by pulling the
 SPA's own JS bundle and grepping for "/api/" -- fully documented (once
 found) at /api/docs/openapi.yaml, a real Swagger/OpenAPI spec. POST
 /api/spectra with an empty body, or a `date` filter, returns real rows
-(no POS needed at all) -- but confirmed live to hard-cap at 10,000 records
+(no POS needed at all) -- but observed to hard-cap at 10,000 records
 per response regardless of how few or many actually match, with no
 ORDER BY control at all (no sort field in the documented schema). Naively
 watermarking on the max date seen per page is unsafe here: a single
 unfiltered call already returns dates spanning nearly the archive's entire
-2005-2026 range (confirmed live, not chronologically ordered), so jumping
+2005-2026 range (observed, not chronologically ordered), so jumping
 the cursor straight to that page's max would silently abandon every
 matching row the 10,000-cap left behind at lower dates that just didn't
-happen to be selected. Confirmed live per calendar year: 2007 through 2024
+happen to be selected. Observed per calendar year: 2007 through 2024
 each independently return exactly 10,000 (the cap) when queried alone,
 so even yearly windows aren't safe either.
 
@@ -38,28 +38,28 @@ hits the 10,000 cap, halve the window and retry the same start (the result
 can't be trusted as complete); once a window comes back under cap, accept
 it, advance past it, and grow the window back up for the next span (capped
 at MAX_WINDOW_DAYS) so quiet stretches don't cost one request per day.
-Confirmed live: a single month (2018-08) returned 3,979 -- well under cap
+Observed: a single month (2018-08) returned 3,979 -- well under cap
 -- so month-scale windows are the right default size for this archive's
 real density.
 
-Confirmed live to cover five real instruments, not just ESPaDOnS/Narval as
+Observed to cover five real instruments, not just ESPaDOnS/Narval as
 expected going in: espadons (CFHT), narval + neo_narval (TBL, Pic du Midi,
 NOT covered by any other archive here), spirou (CFHT, near-IR), and
 harpspol (ESO 3.6m/HARPS in polarimetric mode). A full walk from
 ARCHIVE_START to present (2000-01-01 through 2026-08, 64 windows)
-converged to 346,273 distinct real spectra, confirmed live -- far more
+converged to 346,273 distinct real spectra, observed -- far more
 than the low-tens-of-thousands a quick, non-exhaustive manual sample
 suggested going in, which is exactly the undercount this module's
 calendar-window walk (rather than a naive date watermark) exists to avoid.
 
 The API's own join has a real duplicate-row artifact: some (id_observation,
 stokes) pairs come back as two byte-for-byte identical records within the
-very same response (confirmed live; every field identical between the
+very same response (observed; every field identical between the
 pair, not just id/stokes) -- deduped client-side by id_observation alone,
-confirmed live that's unique once the exact-duplicate rows are removed.
+observed that's unique once the exact-duplicate rows are removed.
 
 Real ra/dec (decimal degrees, `alpha`/`delta`) and target name
-(`name_simbad`) confirmed live on every sampled row -- normal
+(`name_simbad`) observed on every sampled row -- normal
 identifier-then-position matching applies, not name-only. name_simbad
 carries genuine SIMBAD-style padding (e.g. "*  20 CVn", multiple internal
 spaces) -- whitespace-collapsed before matching.
@@ -70,7 +70,7 @@ raw detector frames (there is no raw-frame download path on this API at
 all).
 
 archive_url points at /api/plot_spectra/{id_observation}, a real,
-directly-fetchable per-observation JSON endpoint (confirmed live) serving
+directly-fetchable per-observation JSON endpoint (observed) serving
 the actual spectrum data -- there is no per-observation HTML landing page
 in the SPA's own routes to link to instead.
 """
@@ -94,11 +94,11 @@ INSTRUMENT_DISPLAY = {
     "harpspol": "HARPSpol",
 }
 
-# Confirmed live -- see module docstring. Safely before the earliest real
+# Observed -- see module docstring. Safely before the earliest real
 # row seen (2005-05-21).
 ARCHIVE_START = date(2000, 1, 1)
 
-# Confirmed live hard cap on /api/spectra's response size, regardless of
+# Observed hard cap on /api/spectra's response size, regardless of
 # how many rows actually match the filter.
 RESPONSE_CAP = 10000
 

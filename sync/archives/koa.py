@@ -6,19 +6,19 @@ KOA's own PyKOA docs.
 
 Originally scoped to koa_hires alone; extended to koa_deimos, koa_esi,
 koa_lris, koa_nires, and then again to koa_nirspec, koa_kpf, koa_mosfire,
-koa_osiris (this pass — prompted by a live report that 18 Sco/HR 6060
-showed only its ~21 matched HIRES holdings when KOA's own web search
-reports 1,136 science files for that position across four instruments;
+koa_osiris (this pass added after 18 Sco/HR 6060 was found to have only
+~21 matched HIRES holdings tracked, when KOA's own web search reports
+1,136 science files for that position across four instruments;
 NIRSPEC alone — used there as a near-IR telluric standard under object
-names like "BS6060"/"HD 146233" — accounts for 683 of those). Confirmed
-live (TAP_SCHEMA column listing) that koa_deimos/koa_esi carry both `mjd`
+names like "BS6060"/"HD 146233" — accounts for 683 of those). Per
+TAP_SCHEMA's column listing, koa_deimos/koa_esi carry both `mjd`
 and `mjd_obs` (same shape as koa_hires), as does koa_nirspec (`mjd` only,
 no `mjd_obs`), while koa_lris/koa_nires/koa_kpf/koa_mosfire/koa_osiris
 carry only `mjd_obs` — no `mjd` column at all, per this module's own
 earlier note. INSTRUMENTS below records the right column per table instead
 of assuming a uniform schema.
 
-Not added, checked live and rejected:
+Evaluated and not added:
 - koa_kcwi: technically a spectrograph (IFU), but real object names skew
   overwhelmingly extragalactic/quasar-sightline (e.g. "Q0142_BX195",
   "SDSS2151+0921") — only ~1.8% of object-frame rows match a star-catalog
@@ -35,18 +35,18 @@ Not added, checked live and rejected:
   different shape entirely (not a per-instrument raw-observation table);
   out of scope for this pass.
 
-The previously-flagged "ORDER BY + TOP returns unsorted results" bug could
-NOT be reproduced live in this session — tested 200 rows, strictly
+A previously-flagged "ORDER BY + TOP returns unsorted results" bug could
+not be reproduced — 200 rows tested, strictly
 non-decreasing mjd throughout. Standard TOP+ORDER BY+watermark pagination
 used here; if the old bug resurfaces in practice, fall back to WHERE-range
 chunking like eso.py instead.
 
-koaimtyp='object' does not reliably exclude calibration frames (confirmed
-live: several returned rows had object='flat') — same tradeoff as CFHT/CADC
+koaimtyp='object' does not reliably exclude calibration frames (several
+returned rows had object='flat') — same tradeoff as CFHT/CADC
 and Gemini, left unfiltered rather than chasing a cleaner filter; harmless
 rows just get skipped by the matcher.
 
-Deep link confirmed live: filehand (e.g.
+Deep link observed: filehand (e.g.
 "/koadata14/HIRES/20170924/lev0/HI.20170924.17613.fits") through
 cgi-bin/getKOA/nph-getKOA?filehand=... resolves to real FITS bytes (despite
 a misleading text/html content-type header). Same resolver works for every
@@ -79,7 +79,7 @@ WHERE koaimtyp='object' AND {mjd_col} > {last_mjd} AND {mjd_col} < {mjd_sanity_b
 ORDER BY {mjd_col} ASC
 """
 
-# Confirmed live: koa_esi carries real garbage in both its mjd and mjd_obs
+# Observed: koa_esi carries real garbage in both its mjd and mjd_obs
 # columns for a majority of rows (23,283 of 35,102) -- values around
 # 2.9-3.2 million (implying a year past datetime's year-9999 ceiling,
 # confirmed via a live crash on Time(...).to_datetime()), not just a rare
@@ -98,7 +98,7 @@ DOWNLOAD_URL = "https://koa.ipac.caltech.edu/cgi-bin/getKOA/nph-getKOA?filehand=
 
 # instrument name -> (TAP table, mjd column). koa_deimos/koa_esi/koa_nirspec
 # carry an mjd column (koa_nirspec has no mjd_obs at all); koa_lris/koa_nires/
-# koa_kpf/koa_mosfire/koa_osiris only carry mjd_obs (confirmed live).
+# koa_kpf/koa_mosfire/koa_osiris only carry mjd_obs (observed).
 INSTRUMENTS = {
     "HIRES": ("koa_hires", "mjd"),
     "DEIMOS": ("koa_deimos", "mjd"),

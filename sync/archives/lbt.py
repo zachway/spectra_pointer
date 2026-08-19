@@ -7,7 +7,7 @@ one table per instrument (irtc, lbc, lbt, lbti, luci, mods, pepsi, pis).
 Originally scoped to pepsi alone (spectroscopy-only, no imaging mode at
 all); extended to mods and luci, which mix imaging and spectroscopy in
 the same table — each has its own `dataprod` column with a clean
-'spectrum'/'image'/'' split (confirmed live via DISTINCT), unlike pepsi
+'spectrum'/'image'/'' split (observed via DISTINCT), unlike pepsi
 which has no such column at all (imagetyp='object' does that job there
 instead). Not a uniform schema across instruments at all: mods/luci don't
 have pepsi's `lbtra`/`lbtde` columns either — see INSTRUMENTS below.
@@ -17,7 +17,7 @@ sexagesimal strings (not decimal degrees, unlike every other TAP-based
 archive here), parsed via astropy.
 
 pepsi's own `ra`/`dec` columns looked like the obvious position field but
-are NOT usable as target position — confirmed live against production data:
+are NOT usable as target position — observed against production data:
 a consistent ~17-20 arcmin offset from every sampled target's true Gaia
 position, tight enough to be systematic (unlike a genuine mismatch or
 per-record archive glitch, which scatter far more randomly). `lbtra`/`lbtde`
@@ -25,7 +25,7 @@ per-record archive glitch, which scatter far more randomly). `lbtra`/`lbtde`
 on the same sample and is used instead — same telescope-pointing role as
 luci's telra/teldec below, just under a different name on this table.
 
-mods has per-target objra/objdec, but only ~56% populated (confirmed live:
+mods has per-target objra/objdec, but only ~56% populated (observed:
 1132/2000 spectrum rows) — the literal string 'none' is a real sentinel
 for missing, not just masked/empty, so it's checked for explicitly. luci
 has no per-target position column at all, only telra/teldec (telescope
@@ -37,14 +37,14 @@ matcher's own documented Stein 2051 A case.
 archive_url points at the general search portal, not a specific file: the
 only real download mechanism is an async job system (submit the entire
 search-form state as a job, poll /jobs, extract a result URL from the
-completed job) — confirmed live, no direct-file URL and no query-param
+completed job) — observed, no direct-file URL and no query-param
 deep-link exist. That's designed for bulk "download my whole search"
 workflows, not per-file lookups, and implementing it just to construct
 one URL column would be wildly disproportionate to how every other
 archive here works.
 
 `object` sometimes already reports "Gaia DR3 <source_id>" directly for
-pepsi (confirmed live) — parsed straight into gaia_source_id when it
+pepsi (observed) — parsed straight into gaia_source_id when it
 matches that pattern, skipping SIMBAD entirely for those (guaranteed-
 accurate, no round trip needed). Applied uniformly to mods/luci too
 (cheap, harmless if it never matches there). Everything else (IRAS/TIC/
@@ -53,7 +53,7 @@ SIMBAD-then-position fallback. ra/dec are always populated when parseable
 regardless — kept as the raw-position audit trail same as every other
 archive, not just for records that fall through to positional matching.
 
-No paging cliff found for mods/luci (confirmed live: 20,000 rows in
+No paging cliff found for mods/luci (observed: 20,000 rows in
 ~1.7-1.8s for both) — kept at the same PAGE_SIZE as pepsi for consistency
 rather than tuned up, since pepsi's own cliff was never characterized
 either (no cliff found there, just never pushed further than 5,000).
@@ -99,12 +99,12 @@ GAIA_OBJECT_RE = re.compile(r"^Gaia\s+DR3\s+(\d+)$", re.IGNORECASE)
 
 # instrument name -> (table, filter column, filter value, ra column, dec column).
 # pepsi is spectroscopy-only, isolated via imagetyp; mods/luci mix imaging
-# and spectroscopy, isolated via dataprod instead (confirmed live, neither
+# and spectroscopy, isolated via dataprod instead (observed, neither
 # column exists on the other table). luci has no per-target position
 # column at all -- telra/teldec (telescope pointing) used as a stand-in.
 #
 # pepsi's own `ra`/`dec` columns are NOT usable as target position --
-# confirmed live (production data, 5/5 sampled) they sit a consistent
+# observed (production data, 5/5 sampled) they sit a consistent
 # ~17-20 arcmin from the named target's real Gaia position, tight enough to
 # be systematic rather than random error, not the wide/scattered offsets a
 # genuine mismatch or per-record archive glitch shows elsewhere in this
@@ -123,7 +123,7 @@ INSTRUMENTS = {
 _LEGACY_INSTRUMENT = "PEPSI"
 
 # mods reports this literal string for an unset objra/objdec, not just a
-# masked/empty value (confirmed live).
+# masked/empty value (observed).
 _NULL_SENTINELS = {"none", ""}
 
 

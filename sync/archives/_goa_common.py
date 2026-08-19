@@ -8,14 +8,14 @@ instrument name, the earliest date, and the reduced-product filename filter
 differ per instrument -- see gemini_ghost.py and gemini_igrins.py for those
 and the live evidence behind each one's filter choice.
 
-jsonsummary silently caps its response at 2000 rows -- confirmed live: a
+jsonsummary silently caps its response at 2000 rows -- observed: a
 180-day IGRINS window returned exactly 2000 rows, all from the first few
 days, never reaching the reduced files known to exist later in that same
 window (see gemini_igrins.py). A too-wide window doesn't error, it just
 quietly drops data past row 2000 -- worse than an empty page, since it
 looks like a normal partial result.
 
-A single fixed WINDOW_DAYS isn't safe against this -- confirmed live twice:
+A single fixed WINDOW_DAYS isn't safe against this -- observed twice:
 even after shrinking IGRINS from 180 to 7 days, a real dense stretch
 (20180422-20180429, right after a ~190-exposure two-day burst) still hit
 the cap. Observing density varies a lot day to day and instrument to
@@ -26,7 +26,7 @@ resets back to the caller's preferred window_days -- if density was just a
 temporary burst, this avoids staying artificially narrow (and slow) for
 the rest of the scan.
 
-Confirmed live a third time: a single IGRINS day (2021-08-04, right around
+Observed a third time: a single IGRINS day (2021-08-04, right around
 when IGRINS moved from Gemini-South to Gemini-North) still hit the cap even
 at the 1-day floor -- there's no coarser window to blame this time, the day
 itself has too much. Raising here would block the entire rest of the scan
@@ -37,7 +37,7 @@ spec_a0v.fits files happen to be within that day's first ~2000 rows still
 get processed, only rows past the cap for that specific day are missed.
 
 Also: GOA serves these files bzip2-compressed (filenames end in .fits.bz2,
-not .fits) -- confirmed live. Callers' is_reduced() should check for a
+not .fits) -- observed. Callers' is_reduced() should check for a
 substring, not an exact suffix match, or it'll never match anything.
 """
 
@@ -57,7 +57,7 @@ DOWNLOAD_URL = BASE_URL + "/file/{filename}"
 
 COOKIE_ENV_VAR = "GOA_SESSION_COOKIE"
 
-# Confirmed live (2026-07-22): a real jsonsummary response hit exactly this
+# Observed (2026-07-22): a real jsonsummary response hit exactly this
 # count with more data known to exist beyond it. Not documented anywhere,
 # just observed.
 RESPONSE_ROW_CAP = 2000

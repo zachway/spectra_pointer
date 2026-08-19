@@ -3,24 +3,23 @@
 A genuinely different access pattern from every other archive in this
 codebase: SSDA (ssda.saao.ac.za) exposes a GraphQL API at /api, not a TAP/VO
 service — the site's own `/tap` and `/vo/tap` routes are red herrings (just
-React-Router catch-all paths in the SPA, not a real endpoint; confirmed
-live, both return the SPA shell). Found the real API and its query shape by
-pulling the SPA's own JS bundle (`static/js/main.*.chunk.js`) and grepping
-for how it builds `where` clauses — the GraphQL schema's `where` argument is
-a plain String, but the string itself must be a specific JSON shape the
-bundle constructs via internal helpers, e.g. `{"EQUALS": {"column":
-"instrument.name", "value": "HRS"}}` — passing anything else (a bare SQL-ish
-expression, a naively-nested `{instrument: {name: ...}}`) fails with either
-a JSON parse error or "where condition could not be parsed", confirmed both
-live while reverse-engineering the real shape.
+React-Router catch-all paths in the SPA, not a real endpoint; both return
+the SPA shell). The real API and its query shape come from the SPA's own
+JS bundle (`static/js/main.*.chunk.js`), specifically how it builds `where`
+clauses — the GraphQL schema's `where` argument is a plain String, but the
+string itself must be a specific JSON shape the bundle constructs via
+internal helpers, e.g. `{"EQUALS": {"column": "instrument.name", "value":
+"HRS"}}` — passing anything else (a bare SQL-ish expression, a
+naively-nested `{instrument: {name: ...}}`) fails with either a JSON parse
+error or "where condition could not be parsed".
 
 `columns` must be exact dotted table.column paths (also pulled from the
 bundle, e.g. "artifact.artifact_id" not "artifact_id" — the latter fails
-with "table ... does not exist in the database model", confirmed live).
+with "table ... does not exist in the database model", observed).
 Results come back as a flat `metadata: [{name, value}]` list per row
 (`dataFiles.dataFiles[].metadata`), not a normal object with typed fields.
 
-47,495 HRS rows confirmed live via `pageInfo.itemsTotal`. `position.ra`/
+47,495 HRS rows observed via `pageInfo.itemsTotal`. `position.ra`/
 `position.dec` are null on every row (confirmed) — name-only match, same
 situation as feros_gavo.py/flashheros_gavo.py, not a limitation of this
 implementation. `observation.data_release` timestamps show this archive
@@ -31,7 +30,7 @@ the record is a legitimate holding either way, its `archive_url` will just
 403 until release, same as any other archive's embargoed content.
 
 Two-phase cursor, not a single date watermark from the start — the API has
-no explicit ORDER BY control, and confirmed live to default to *descending*
+no explicit ORDER BY control, and observed to default to *descending*
 observation_time (newest first, not oldest first like every TAP archive's
 ORDER BY t_min ASC elsewhere in this codebase). A naive "advance a
 GREATER_EQUAL watermark to the max seen per page" scheme — the pattern
@@ -59,7 +58,7 @@ forever, the same effect eso.py/dao.py get from a real `>` in SQL.
 
 In both phases, the GREATER_EQUAL/date-bound `value` must be an ISO-8601
 timestamp string, not the raw epoch-millisecond integer the same field
-returns in results — confirmed live: passing the ms value as a bare
+returns in results — observed: passing the ms value as a bare
 number/numeric string fails ("date/time field value out of range" or
 "invalid input syntax for type timestamp", depending on the value), while
 an ISO string like "1970-01-01T00:00:00.000Z" works.

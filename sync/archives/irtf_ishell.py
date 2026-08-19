@@ -8,7 +8,7 @@ the full four-way-split-archive writeup (applies identically here: this
 covers only the 2016B-present IRSA-hosted portion, not the pre-2016B
 Legacy Archive).
 
-iSHELL-specific facts confirmed live, all matching SpeX's shape exactly:
+iSHELL-specific facts observed, all matching SpeX's shape exactly:
 28,126 rows, every one calibrationlevel=1 (raw, no reduced tier), the
 join to exactly one info/text/html summary.html artifact per plane holds
 1:1 (28,126 both sides), and target_name uses the same underscore-joined

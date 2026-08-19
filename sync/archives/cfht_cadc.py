@@ -14,7 +14,7 @@ Deep link is the standard DataLink resolver URL (constructible directly from
 obs_publisher_did, no per-record extra request needed) rather than the
 resolved direct-file canfar.net URL — resolving that for every record during
 sync isn't practical at this scale (831,455 CFHT spectrum rows), but the
-DataLink URL itself is confirmed live to resolve to a real downloadable FITS
+DataLink URL itself is observed to resolve to a real downloadable FITS
 file one click further in.
 
 No calibration-frame filter: caom2.Observation.target_type='object' would

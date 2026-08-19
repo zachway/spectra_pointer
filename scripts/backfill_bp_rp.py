@@ -45,7 +45,7 @@ def backfill(conn: psycopg.Connection) -> int:
         # this filter they'd match the WHERE clause every run, and once one
         # lands in a chunk, str(None) becomes the literal text "None" in the
         # id_list below, a syntax error in the ADQL sent to Gaia's own TAP
-        # service that fails the whole chunk (confirmed live: 70 BSC5 rows
+        # service that fails the whole chunk (observed: 70 BSC5 rows
         # exist in production as of 2026-07-25, so this isn't hypothetical).
         cur.execute(
             "SELECT gaia_source_id FROM stars "

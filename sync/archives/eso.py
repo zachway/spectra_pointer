@@ -38,7 +38,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     tap = make_tap_service(TAP_URL)
     query = QUERY.format(last_t_min=last_t_min, page_size=PAGE_SIZE)
     # pyvo defaults maxrec to ~20000 regardless of the ADQL TOP clause —
-    # confirmed live (DALOverflowWarning) — so it must be set explicitly.
+    # observed (DALOverflowWarning) — so it must be set explicitly.
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 
     records = []

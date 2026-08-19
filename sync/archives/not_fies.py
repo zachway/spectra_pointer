@@ -3,7 +3,7 @@ POST to a bespoke FITS-header archive, no TAP/API.
 
 Real, public, no-login search form at
 www.not.iac.es/observing/forms/fitsarchive/ (index.php), POSTing to
-query.php on the same host -- confirmed live by fetching the real
+query.php on the same host -- observed by fetching the real
 `<form name="form1">` and reading its exact hidden/field names rather than
 guessing (tbl=FIprihdu,FIexthdu; fk=FIprihdu.`idFIprihdu` =
 FIexthdu.`FIprihdu_idFIprihdu`; prihdu=FIprihdu; instrument=FIES). The same
@@ -15,45 +15,45 @@ Two independent, confirmed-live gates, easy to conflate but distinct:
 
 1. query.php itself flatly returns a bare 15-byte "Invalid Request" body
    (200 OK) for any request lacking a real User-Agent and a Referer pointing
-   somewhere under this form's own path -- confirmed live: an otherwise-
+   somewhere under this form's own path -- observed: an otherwise-
    correct POST with default request headers still gets rejected; adding a
    browser User-Agent and Referer: .../index.php?instrument=FIES fixes it.
    Same bot-blocking shape as gtc.py's own searchform.jsp/searchres.jsp
    discovery.
 2. show.php (the per-file FITS-header detail page each result row links to
-   via show.php?f=<filename>) has a separate, much weaker gate: confirmed
-   live that ANY Referer merely *containing* the substring "query.php"
+   via show.php?f=<filename>) has a separate, much weaker gate: ANY
+   Referer merely *containing* the substring "query.php"
    passes -- even a garbage off-domain one like https://evil.com/query.php
    -- while a same-site index.php Referer (or no Referer at all) is
    rejected with "Access Denied". Since a real end user (or this project's
    own webapp) clicking a stored link would never happen to send a
    query.php-shaped Referer, show.php is not a reliable cold link --
    archive_url below points at index.php?instrument=FIES&name=<target>
-   instead (confirmed live to reflect a name= GET param straight into the
+   instead (observed to reflect a name= GET param straight into the
    form's own objectname field), a real, always-working page in the home
    archive, same "point at a real page, not a link that will mislead"
    convention as lbt.py's own no-direct-file-URL fallback.
 
 criteria=wholesky (one of three radio search modes alongside byobject/
 bycoordinates) requires at least one FITS-header filter -- used here with
-IMAGETYP = 'OBJECT' (confirmed live real values: 'OBJECT' for genuine
+IMAGETYP = 'OBJECT' (observed real values: 'OBJECT' for genuine
 science exposures vs 'WAVE,LAMP' / 'COUNTTEST,LAMP' / etc. for calibration
 frames) AND a DATE-OBS range (see pagination below). A small number of
 flat-field frames taken via "FIEStool" calibration software still slip
 through under IMAGETYP='OBJECT', with object names like "FIEStool flat F4"
-and a blank TCSTGT (confirmed live) -- left unfiltered rather than hand-
+and a blank TCSTGT (observed) -- left unfiltered rather than hand-
 excluded further, same "simply fails to resolve downstream" reasoning
 gtc.py gives for its own unfiltered free-text object names.
 
 No offset/limit field exists on the form at all, and there's a real,
 silent, undocumented hard cap of exactly 1000 rows with no truncation
-notice (confirmed live: an unbounded 1990-to-today query returns exactly
+notice (observed: an unbounded 1990-to-today query returns exactly
 1000 rows, chronologically ascending from the real archive start; a
 narrower one-week window came back well under the cap). Paginated the same
 way as ing.py/gtc.py: an adaptive calendar-window walk that bisects the
 window on a full (1000-row) page and grows it back up after an unsaturated
 one. searchComp[] only offers strict '=' / '>' / '<' / LIKE / NOT LIKE (no
->=/<=, confirmed live from the form's own <select> options) -- each window
+>=/<=, observed from the form's own <select> options) -- each window
 is therefore queried as an open interval one day either side of its real
 [start, end] boundary (DATE-OBS > day-before AND DATE-OBS < day-after) to
 get exact inclusive day coverage without a >= that doesn't exist.
@@ -61,20 +61,20 @@ get exact inclusive day coverage without a >= that doesn't exist.
 The 12-month proprietary period the form's own page text documents ("headers
 of files obtained the most recent 12 months are not visible... Calibration
 files are the exception") is real and applies here too, even to
-IMAGETYP='OBJECT' rows -- confirmed live: a recent (within ~60 days of
+IMAGETYP='OBJECT' rows -- observed: a recent (within ~60 days of
 today) OBJECT-filtered window returns only calibration-shaped "FIEStool
 flat" rows, no real embargoed science headers.
 
 Row HTML is malformed in a specific, reproducible way: each row's leading
 `<a href='show.php?f=...'>` is never closed until that row's very last
-`</td>` (confirmed live) -- this breaks a straightforward BeautifulSoup
+`</td>` (observed) -- this breaks a straightforward BeautifulSoup
 td-per-tr parse (the unclosed anchor swallows every subsequent sibling row
 under Python's plain html.parser, with no lxml/html5lib in this project's
 requirements.txt to fall back on). Parsed via a direct regex over the raw
 response instead, same "raw regex over the response, not a DOM parser"
 workaround as ing.py's own malformed-table handling.
 
-Real per-row fields (confirmed live): FILENAME (root, no extension -- e.g.
+Real per-row fields (observed): FILENAME (root, no extension -- e.g.
 "FIGe310097", used directly as archive_obs_id), DATE-OBS, OBJECT (already
 clean under the IMAGETYP='OBJECT' filter -- no leftover "ThAr <name>"
 contamination seen, unlike the unfiltered table), TCSTGT (the underlying
@@ -91,7 +91,7 @@ through as raw_target_name like any other identifier, not treated as a
 structured native Gaia column since it's free text, not a guaranteed-
 populated dedicated field.
 
-Archive coverage starts 2006-11-10 (confirmed live: the earliest row of an
+Archive coverage starts 2006-11-10 (observed: the earliest row of an
 unbounded ascending pull) -- FIRST_DATE below is a round conservative bound
 before that, same "not worth pinning down further, the empty-window growth
 skips any gap quickly regardless" reasoning as gtc.py/ing.py's own
@@ -127,7 +127,7 @@ _HEADERS = {
 
 _session = requests.Session()
 
-# Real, silent, undocumented cap confirmed live -- see module docstring.
+# Real, silent, undocumented cap observed -- see module docstring.
 PAGE_CAP = 1000
 
 FIRST_DATE = date(2000, 1, 1)
@@ -164,7 +164,7 @@ _COL_PROPID = 10
 
 
 def _query(window_start: date, window_end: date) -> str:
-    # searchComp[] has no >=/<= (confirmed live, see docstring) -- queried
+    # searchComp[] has no >=/<= (observed, see docstring) -- queried
     # as an open interval one day either side of the real boundary so each
     # window covers its [window_start, window_end] days exactly once.
     after = (window_start - timedelta(days=1)).isoformat()
