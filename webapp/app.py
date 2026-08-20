@@ -955,10 +955,11 @@ PAGE_TEMPLATE = """
             var traces = [];
             var families = {};
             // Every archive's flux/uncertainty already arrives pre-scaled
-            // by a fixed per-archive factor (webapp.spectrum_viewer.
-            // SCALE_FACTOR, derived from one real example per archive) --
-            // one shared linear "Scaled Flux" axis for everything, no
-            // per-unit axis juggling. Not a claim of physical
+            // by a live, per-spectrum factor (webapp.spectrum_viewer.
+            // _apply_display_scale: 1/median(|flux|), computed fresh per
+            // fetch, not a precomputed per-archive constant) -- one shared
+            // linear "Scaled Flux" axis for everything, no per-unit axis
+            // juggling. Not a claim of physical
             // comparability (flux_unit_family below still tracks that
             // separately for the note) -- just a display convenience so a
             // multi-instrument overlay is legible without a forest of
