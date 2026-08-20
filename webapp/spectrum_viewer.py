@@ -18,6 +18,40 @@ archive's sync cursor is reset and it's resynced -- this parser will work
 for those rows immediately once that resync lands, no further code change
 needed.
 
+mast_jwst/eso/lamost_mrs/elodie added after checking real production
+samples (not just one earlier one-off fetch each) -- two archives that
+looked "nearly free" from format alone turned out NOT to be, and are
+deliberately still unimplemented:
+  - mast (the general HST/IUE/... archive_code, not mast_jwst): a real
+    sampled row was an _asn.fits association/manifest file, not a
+    spectrum -- access_url isn't reliably a science product for every row
+    here, unlike mast_jwst's EXTRACT1D. Needs a sync-side product-type
+    fix in sync/archives/mast.py before this is safe to wire up.
+  - lco_floyds/lco_nres: two different real sampled rows both resolved to
+    an RLEVEL=90 fallback product (PRIMARY-only, no bintable) rather than
+    the clean "wavelength"/"flux"/"uncertainty" bintable a single earlier
+    check found on a "-1d" product -- RLEVEL=90 appears to be the common
+    case for real synced rows, not the exception, and its actual shape
+    (2D rectified frame vs. something else) isn't nailed down. Skipped
+    rather than guessed at.
+
+irsa_missions is a 6-sub-collection grab-bag behind one archive_code, not
+one uniform format -- confirmed live this session that only Spitzer/IRS
+(both SASS and Std Stars) has the clean bintable shape; IRTF/MEarth
+turned out to be a bare WCS image (no bintable at all), and
+ISO/SOFIA/IRAS use other shapes not checked here. Gated on
+instrument LIKE 'Spitzer/IRS%' rather than the whole archive_code.
+
+eso.py stores archive_url as a human landing page (archive.eso.org/
+dataset/{dp_id}), never a file link -- archive_obs_id is the same dp_id,
+so the real file is built directly (ESO_FILE_URL below) rather than
+fetching archive_url, same shape as the sdss_legacy_optical fix. A real
+ESO/FEROS sample this session also had a fully-NaN ERR column (populated
+WAVE/FLUX, no usable uncertainty at all for that file) -- _segment() below
+treats an all-non-finite uncertainty array as absent rather than letting
+it wipe out every real data point, a latent bug this caught that could
+have affected any archive, not just this one.
+
 Each archive gets its own parser below, dispatched by archive_code via
 SUPPORTED_ARCHIVES. All four turned out to already store a real, directly
 fetchable URL in archive_url (no DataLink/resolution hop needed) -- kept
@@ -46,11 +80,58 @@ import requests
 from astropy.io import fits
 from astropy.io.votable import parse_single_table
 
-SUPPORTED_ARCHIVES = {"lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical"}
+SUPPORTED_ARCHIVES = {
+    "lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical",
+    "mast_jwst", "eso", "lamost_mrs", "elodie", "irsa_missions",
+}
 
-MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # generous for these 4 -- real samples were 60KB-1MB
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
 REQUEST_TIMEOUT_SECONDS = 20
 MAX_PLOT_POINTS = 3000  # per segment -- plenty for a legible line plot, well under browser strain
+
+# Real observed sample sizes (confirmed live), used only to decide whether to
+# show a "this is a large file" warning before fetching -- NOT a substitute
+# for MAX_DOWNLOAD_BYTES, which still applies regardless. None of these are
+# actually heavy today; the point is that a future archive with a real
+# multi-MB/multi-order product (cfht_cadc's 56MB Stokes cube, polarbase's
+# 15.7MB JSON) has somewhere to register that fact rather than the route
+# silently attempting a big fetch on every click -- including from a crawler
+# or link-preview bot following a plain <a href>, not just a real user.
+# desi is deliberately absent -- its fsspec/HTTP-range path never pulls more
+# than a few KB regardless of the backing coadd file's real size (confirmed
+# live this session, 600KB-200MB+ files, one row fetched in under a second).
+SIZE_HINT_BYTES = {
+    "lamost": 60_000,
+    "lamost_mrs": 320_000,
+    "gaia_rvs": 65_000,
+    "sdss_v_apogee": 1_000_000,
+    "sdss_v_optical": 220_000,
+    "sdss_legacy_optical": 220_000,
+    "mast_jwst": 680_000,
+    "eso": 3_100_000,
+    "elodie": 480_000,
+    "irsa_missions": 15_000,
+}
+
+HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
+
+
+def is_heavy(archive_code: str) -> bool:
+    """True if this archive's typical file is large enough to warrant asking
+    before fetching, rather than just fetching on click. An archive with no
+    registered hint is treated as light -- add a SIZE_HINT_BYTES entry (or
+    True in a dedicated always-heavy set, if size genuinely varies per row
+    rather than being roughly fixed) when wiring up a new archive whose
+    files aren't reliably small."""
+    hint = SIZE_HINT_BYTES.get(archive_code)
+    return hint is not None and hint > HEAVY_THRESHOLD_BYTES
+
+
+def size_hint_label(archive_code: str) -> str | None:
+    hint = SIZE_HINT_BYTES.get(archive_code)
+    if hint is None:
+        return None
+    return f"~{hint / (1024 * 1024):.1f} MB" if hint >= 1024 * 1024 else f"~{hint // 1024} KB"
 
 
 class SpectrumUnavailable(Exception):
@@ -102,6 +183,15 @@ def _finite_mask(*arrays: np.ndarray) -> np.ndarray:
 
 
 def _segment(label: str, wave: np.ndarray, flux: np.ndarray, unc: np.ndarray | None) -> dict:
+    # An uncertainty column can genuinely exist but be entirely NaN for a
+    # given file (confirmed live: a real ESO/FEROS spectrum with a
+    # populated WAVE/FLUX but a fully-empty ERR) -- requiring it finite
+    # alongside wave/flux would silently drop every point. Treat an
+    # all-non-finite uncertainty array as absent rather than let it wipe
+    # out real data.
+    if unc is not None and not np.any(np.isfinite(unc)):
+        unc = None
+
     if unc is not None:
         mask = _finite_mask(wave, flux, unc)
     else:
@@ -234,6 +324,124 @@ def _parse_sdss_legacy_optical(holding: dict) -> dict:
     return _parse_sdss_spec("SDSS Legacy", holding)
 
 
+def _parse_mast_jwst(holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        data = hdul["EXTRACT1D"].data
+        wave = np.asarray(data["WAVELENGTH"], dtype=float)
+        flux = np.asarray(data["FLUX"], dtype=float)
+        uncertainty = np.asarray(data["FLUX_ERROR"], dtype=float)
+    # Confirmed live: WAVELENGTH is in microns and FLUX/FLUX_ERROR in Jy for
+    # a real x1d product, not Å/arbitrary like this module's other archives.
+    return {
+        "wavelength_unit": "μm",
+        "flux_unit": "Jy",
+        "segments": [_segment("JWST", wave, flux, uncertainty)],
+    }
+
+
+ESO_FILE_URL = "https://dataportal.eso.org/dataportal_new/file/{dp_id}"
+
+
+def _parse_eso(holding: dict) -> dict:
+    # sync/archives/eso.py stores archive_url as a human landing page
+    # (archive.eso.org/dataset/{dp_id}), not a file link -- archive_obs_id
+    # is the same dp_id, confirmed live this session to resolve directly to
+    # the real FITS file with zero extra API calls.
+    raw = _fetch_bytes(ESO_FILE_URL.format(dp_id=holding["archive_obs_id"]))
+    with fits.open(io.BytesIO(raw)) as hdul:
+        cols = hdul["SPECTRUM"].data
+        col_names = hdul["SPECTRUM"].columns.names
+        # Some instruments carry both a raw and a reduced-flux column
+        # (FLUX_REDUCED/ERR_REDUCED) per the archive survey; a real sample
+        # this session only had plain FLUX/ERR -- prefer the _REDUCED
+        # variant when present, fall back otherwise rather than assume
+        # either name is always there.
+        flux_col = "FLUX_REDUCED" if "FLUX_REDUCED" in col_names else "FLUX"
+        err_col = "ERR_REDUCED" if "ERR_REDUCED" in col_names else "ERR"
+        wave = np.asarray(cols["WAVE"], dtype=float)
+        flux = np.asarray(cols[flux_col], dtype=float)
+        uncertainty = np.asarray(cols[err_col], dtype=float)
+    # wave/flux are frequently multi-row (one row per order/exposure) rather
+    # than one row per pixel -- flatten defensively, same shape risk as
+    # lamost's single-row-of-arrays COADD.
+    wave = wave.reshape(-1)
+    flux = flux.reshape(-1)
+    uncertainty = uncertainty.reshape(-1)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": f"ESO pipeline units ({flux_col})",
+        "segments": [_segment("ESO", wave, flux, uncertainty)],
+    }
+
+
+def _parse_lamost_mrs(holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    try:
+        raw = gzip.decompress(raw)
+    except OSError:
+        pass
+    with fits.open(io.BytesIO(raw)) as hdul:
+        segments = []
+        for label, ext in (("MRS blue", "COADD_B"), ("MRS red", "COADD_R")):
+            if ext not in hdul:
+                continue
+            data = hdul[ext].data
+            wave = np.asarray(data["WAVELENGTH"][0], dtype=float)
+            flux = np.asarray(data["FLUX"][0], dtype=float)
+            ivar = np.asarray(data["IVAR"][0], dtype=float)
+            segments.append(_segment(label, wave, flux, _ivar_to_uncertainty(ivar)))
+    if not segments:
+        raise SpectrumUnavailable("Neither blue nor red MRS coadd extension was present in this file.")
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": segments,
+    }
+
+
+def _parse_elodie(holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        header = hdul["INTENSITY"].header
+        crval1, cdelt1, naxis1 = header["CRVAL1"], header["CDELT1"], header["NAXIS1"]
+        wave = crval1 + np.arange(naxis1) * cdelt1  # linear, not log -- confirmed live (CTYPE1=AWAV)
+        flux = np.asarray(hdul["INTENSITY"].data, dtype=float)
+        uncertainty = np.asarray(hdul["NOISE"].data, dtype=float) if "NOISE" in hdul else None
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": [_segment("ELODIE", wave, flux, uncertainty)],
+    }
+
+
+def _parse_irsa_missions(holding: dict) -> dict:
+    # irsa_missions bundles 6 unrelated sub-collections behind one
+    # archive_code (confirmed live this session) -- only Spitzer/IRS
+    # (SASS + Std Stars) has the clean bintable shape handled here.
+    # IRTF/MEarth is a bare WCS image with no bintable at all; ISO/SOFIA/
+    # IRAS weren't checked and may differ again.
+    instrument = holding.get("instrument") or ""
+    if not instrument.startswith("Spitzer/IRS"):
+        raise SpectrumUnavailable(
+            f"Spectrum display for irsa_missions is only implemented for Spitzer/IRS "
+            f"products so far, not {instrument or 'this instrument'}."
+        )
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        data = hdul[1].data  # unnamed extension, confirmed live -- index, not extname
+        wave = np.asarray(data["WAVELENGTH"], dtype=float)
+        flux = np.asarray(data["FLUX"], dtype=float)
+        uncertainty = np.asarray(data["ERROR"], dtype=float)
+    # Confirmed live: already order-matched into one monotonic sequence
+    # (unlike DESI's genuinely disjoint per-camera ranges) -- one segment.
+    return {
+        "wavelength_unit": "μm",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": [_segment("Spitzer/IRS", wave, flux, uncertainty)],
+    }
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
@@ -241,6 +449,11 @@ _PARSERS = {
     "desi": _parse_desi,
     "sdss_v_optical": _parse_sdss_v_optical,
     "sdss_legacy_optical": _parse_sdss_legacy_optical,
+    "mast_jwst": _parse_mast_jwst,
+    "eso": _parse_eso,
+    "lamost_mrs": _parse_lamost_mrs,
+    "elodie": _parse_elodie,
+    "irsa_missions": _parse_irsa_missions,
 }
 
 

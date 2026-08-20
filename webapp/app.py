@@ -60,7 +60,13 @@ from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
-from webapp.spectrum_viewer import SUPPORTED_ARCHIVES, SpectrumUnavailable, fetch_spectrum
+from webapp.spectrum_viewer import (
+    SUPPORTED_ARCHIVES,
+    SpectrumUnavailable,
+    fetch_spectrum,
+    is_heavy,
+    size_hint_label,
+)
 
 app = Flask(__name__)
 
@@ -885,7 +891,7 @@ PAGE_TEMPLATE = """
             <td>{{ h.match_method }}</td>
             <td>{{ h.reduction_status }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
-            <td>{% if h.spectrum_viewable %}<a href="/spectrum/{{ h.id }}">view</a>{% else %}—{% endif %}</td>
+            <td>{% if h.spectrum_viewable %}<a href="/spectrum/{{ h.id }}">view{% if h.spectrum_size_hint %} ({{ h.spectrum_size_hint }}){% endif %}</a>{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </table>
@@ -1179,12 +1185,15 @@ def search():
     )
     raw_holdings = _rows_as_dicts(cur)
     holdings_total = len(raw_holdings)
-    # Only 4 archives have a confirmed direct reduced-spectrum file with a
-    # known wavelength/flux/uncertainty shape (see webapp.spectrum_viewer's
-    # module docstring) -- gate the "view spectrum" link on that rather than
-    # showing a link that 404s for the other ~50 archive_codes.
+    # Only archives in SUPPORTED_ARCHIVES have a confirmed direct
+    # reduced-spectrum file with a known wavelength/flux/uncertainty shape
+    # (see webapp.spectrum_viewer's module docstring) -- gate the "view
+    # spectrum" link on that rather than showing a link that 404s for
+    # every other archive_code. Heavy archives (see is_heavy) get a size
+    # hint on the link itself, not just after clicking through.
     for h in raw_holdings:
         h["spectrum_viewable"] = h["archive_code"] in SUPPORTED_ARCHIVES
+        h["spectrum_size_hint"] = size_hint_label(h["archive_code"]) if is_heavy(h["archive_code"]) else None
     if adv_filters:
         raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
 
@@ -1241,6 +1250,10 @@ SPECTRUM_TEMPLATE = """
     &middot; <a href="{{ holding.archive_url }}" target="_blank" rel="noopener">archive file</a></p>
   {% if error %}
     <p>Could not display this spectrum: {{ error }}</p>
+  {% elif needs_confirm %}
+    <p>This archive's spectrum files run large{% if size_hint %} (typically {{ size_hint }}){% endif %} --
+      loading it will fetch the full file from the archive.</p>
+    <p><a href="?confirm=1">Load spectrum anyway</a></p>
   {% elif result %}
     <div id="spectrum-plot"></div>
     <p class="note">Wavelength in {{ result.wavelength_unit }}, flux in {{ result.flux_unit }}. Shaded band is the
@@ -1307,8 +1320,18 @@ def spectrum(holding_id: int):
 
     error = None
     result = None
+    needs_confirm = False
+    size_hint = None
     if holding["archive_code"] not in SUPPORTED_ARCHIVES:
         error = f"Spectrum display isn't implemented for {holding['display_name']} yet."
+    elif is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
+        # Ask before fetching rather than after -- a plain <a href> is
+        # exactly the shape a crawler/link-preview bot follows automatically,
+        # and even a real user shouldn't trigger a many-MB archive fetch by
+        # accident. MAX_DOWNLOAD_BYTES in spectrum_viewer.py is still the
+        # real enforcement; this is just informed consent before it's tried.
+        needs_confirm = True
+        size_hint = size_hint_label(holding["archive_code"])
     else:
         try:
             result = fetch_spectrum(holding)
@@ -1317,7 +1340,7 @@ def spectrum(holding_id: int):
 
     return render_template_string(
         SPECTRUM_TEMPLATE, holding=holding, known_as=known_as, star_search_id=star_search_id,
-        result=result, error=error, active_tab=None,
+        result=result, error=error, needs_confirm=needs_confirm, size_hint=size_hint, active_tab=None,
     )
 
 
