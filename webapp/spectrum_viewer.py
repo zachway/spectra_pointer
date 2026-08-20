@@ -1,9 +1,22 @@
-"""Per-star spectrum fetch + parse, scoped to the 4 archives confirmed live
+"""Per-star spectrum fetch + parse, scoped to the archives confirmed live
 (this session) to have a real, directly-fetchable reduced-spectrum file with
 a known wavelength/flux/uncertainty shape -- see the Spectral Access Ledger
 audit. Everything else in spectroscopy_holdings either has no direct file
 access, is raw data, or has an unconfirmed/nonstandard format -- deliberately
 not wired up here rather than guessing at a shape.
+
+sdss_v_optical and sdss_legacy_optical both use SDSS's standard per-pixel-row
+spec-file shape (COADD bintable, one row per wavelength pixel -- not a
+single-row-of-arrays like lamost's COADD): loglam/flux/ivar columns, same as
+every SDSS optical spectro product. sdss_v_optical's archive_url was already
+confirmed live by its own sync module; sdss_legacy_optical's was fixed and
+live-fetched this session (COADD columns confirmed: flux/loglam/ivar/
+and_mask/or_mask/wdisp/sky/model) -- both share one parser below. Note:
+sdss_legacy_optical's existing ~4.5M holdings rows still carry their old
+pre-fix archive_url (a SkyServer portal page, not a file) until that
+archive's sync cursor is reset and it's resynced -- this parser will work
+for those rows immediately once that resync lands, no further code change
+needed.
 
 Each archive gets its own parser below, dispatched by archive_code via
 SUPPORTED_ARCHIVES. All four turned out to already store a real, directly
@@ -33,7 +46,7 @@ import requests
 from astropy.io import fits
 from astropy.io.votable import parse_single_table
 
-SUPPORTED_ARCHIVES = {"lamost", "gaia_rvs", "sdss_v_apogee", "desi"}
+SUPPORTED_ARCHIVES = {"lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical"}
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # generous for these 4 -- real samples were 60KB-1MB
 REQUEST_TIMEOUT_SECONDS = 20
@@ -194,11 +207,40 @@ def _parse_desi(holding: dict) -> dict:
     }
 
 
+def _parse_sdss_spec(label: str, holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        coadd = hdul["COADD"].data
+        # Standard SDSS spec shape: COADD is one row *per pixel* (unlike
+        # lamost's single-row-of-arrays COADD) -- read the columns directly,
+        # no [0] indexing.
+        loglam = np.asarray(coadd["loglam"], dtype=float)
+        flux = np.asarray(coadd["flux"], dtype=float)
+        ivar = np.asarray(coadd["ivar"], dtype=float)
+    wave = 10.0**loglam
+    uncertainty = _ivar_to_uncertainty(ivar)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "10⁻¹⁷ erg/s/cm²/Å (SDSS flux units)",
+        "segments": [_segment(label, wave, flux, uncertainty)],
+    }
+
+
+def _parse_sdss_v_optical(holding: dict) -> dict:
+    return _parse_sdss_spec("SDSS-V", holding)
+
+
+def _parse_sdss_legacy_optical(holding: dict) -> dict:
+    return _parse_sdss_spec("SDSS Legacy", holding)
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
     "sdss_v_apogee": _parse_sdss_v_apogee,
     "desi": _parse_desi,
+    "sdss_v_optical": _parse_sdss_v_optical,
+    "sdss_legacy_optical": _parse_sdss_legacy_optical,
 }
 
 
