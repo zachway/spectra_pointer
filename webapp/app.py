@@ -324,7 +324,23 @@ def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
     return {"bars": bars, "n_rows": max(rows) + 1}
 
 
-def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
+def _archive_color_map(archive_names: list[str]) -> dict[str, str]:
+    """Assigns each archive one WAVELENGTH_CHART_PALETTE color, in
+    first-seen order over `archive_names`, cycling once there are more
+    archives than palette slots. Shared by the Instruments page's treemap
+    and wavelength-coverage chart so the same archive reads as the same
+    color in both -- there are more archives (~30) than palette slots (8),
+    so distinct archives can land on the same color; that's an accepted
+    tradeoff for the two charts speaking a consistent visual language over
+    every archive having a guaranteed-unique hue."""
+    order: list[str] = []
+    for name in archive_names:
+        if name not in order:
+            order.append(name)
+    return {name: WAVELENGTH_CHART_PALETTE[i % len(WAVELENGTH_CHART_PALETTE)] for i, name in enumerate(order)}
+
+
+def _all_instrument_wavelength_bars(rows: list[dict], archive_color_map: dict[str, str]) -> dict | None:
     """Instruments page's version of the chart above: one bar per known
     published range across *every* tracked instrument, not one star's
     holdings. `rows` is the (display_name, instrument, n) list already
@@ -334,7 +350,10 @@ def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
     and 'ESO Archive (Raw)') collapses into one bar rather than drawing
     twice -- keyed on (instrument name, range), with every contributing
     archive named in the label. Rows with no known range are silently
-    skipped, same as _wavelength_coverage_bars above."""
+    skipped, same as _wavelength_coverage_bars above. `archive_color_map`
+    (see _archive_color_map) is the same one instruments_page() uses to
+    color the treemap, so a bar's color always matches its archive's box
+    there."""
     grouped: dict[tuple[str, tuple[float, float]], dict] = {}
     for r in rows:
         coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((r["display_name"], r["instrument"]))
@@ -367,13 +386,9 @@ def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
         return None
 
     rows_assign = _pack_wavelength_rows([(b["wave_min"], b["wave_max"]) for b in bars])
-    archive_order: list[str] = []
-    for b in bars:
-        if b["archive"] not in archive_order:
-            archive_order.append(b["archive"])
     for b, row in zip(bars, rows_assign):
         b["row"] = row
-        b["color"] = WAVELENGTH_CHART_PALETTE[archive_order.index(b["archive"]) % len(WAVELENGTH_CHART_PALETTE)]
+        b["color"] = archive_color_map[b["archive"]]
 
     return {"bars": bars, "n_rows": max(rows_assign) + 1}
 
@@ -2408,6 +2423,7 @@ INSTRUMENTS_TEMPLATE = """
             parents: {{ treemap_parents | tojson }},
             values: {{ treemap_values | tojson }},
             customdata: {{ treemap_counts | tojson }},
+            marker: { colors: {{ treemap_colors | tojson }} },
             texttemplate: '%{label}<br>%{customdata:,}',
             hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
           }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
@@ -2887,7 +2903,11 @@ def instruments_page():
         leaf_weights_by_archive[r["display_name"]].append(math.log10(r["n"] + 1))
     weight_sum_by_archive = {a: sum(ws) for a, ws in leaf_weights_by_archive.items()}
 
-    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
+    # Shared with the wavelength-coverage chart below (_all_instrument_
+    # wavelength_bars) so the same archive is the same color in both.
+    archive_color_map = _archive_color_map([r["display_name"] for r in rows])
+
+    treemap_labels, treemap_parents, treemap_values, treemap_counts, treemap_colors = [], [], [], [], []
     seen_archives = set()
     for r in rows:
         archive = r["display_name"]
@@ -2897,6 +2917,7 @@ def instruments_page():
             treemap_parents.append("")
             treemap_values.append(archive_value)
             treemap_counts.append(archive_totals[archive])
+            treemap_colors.append(archive_color_map[archive])
             seen_archives.add(archive)
         weight_sum = weight_sum_by_archive[archive]
         leaf_weight = math.log10(r["n"] + 1)
@@ -2905,6 +2926,7 @@ def instruments_page():
         treemap_parents.append(archive)
         treemap_values.append(leaf_value)
         treemap_counts.append(r["n"])
+        treemap_colors.append(archive_color_map[archive])
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -2995,12 +3017,12 @@ def instruments_page():
         for r in _rows_as_dicts(cur)
     ]
 
-    wavelength_chart = _all_instrument_wavelength_bars(rows)
+    wavelength_chart = _all_instrument_wavelength_bars(rows, archive_color_map)
 
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
-        treemap_counts=treemap_counts,
+        treemap_counts=treemap_counts, treemap_colors=treemap_colors,
         instruments=instruments,
         wavelength_chart=wavelength_chart,
         instrument_sky_fig=instrument_sky_fig,
