@@ -52,6 +52,29 @@ treats an all-non-finite uncertainty array as absent rather than letting
 it wipe out every real data point, a latent bug this caught that could
 have affected any archive, not just this one.
 
+rave/feros_gavo/flashheros_gavo/ondrejov/heros_ondrejov/sophie/
+hermes_mercator added after re-checking real production samples for each
+(not the earlier one-off audit alone). feros_gavo/flashheros_gavo/
+ondrejov/heros_ondrejov share one shape -- single-HDU image, linear WCS
+wavelength, genuinely no uncertainty extension at all -- one shared
+parser (_parse_gavo_wcs_image). rave has a real SPECTRUM/ERROR HDU pair,
+both carrying their own WCS. sophie's S1D_B extension looked like it
+might be an error array but is a second, slightly different-length
+channel instead (confirmed live) -- S1D_A alone is used, no uncertainty.
+hermes_mercator is the odd one out even among its own DaCHS siblings:
+archive_url 301-redirects to a DataLink-served VOTable, not plain FITS
+(spectral/flux fields, no error field) -- handled with its own
+redirect-following fetch since _fetch_bytes' size check happens before
+requests would follow that redirect.
+
+svo_cab was checked but NOT added -- a real sample from its XSL
+sub-collection (one of 5 SVOCat instances behind this one archive_code)
+returned "No data found for ID=320" from its own ssap.php, a genuine
+access failure rather than a format question. The earlier audit's
+"confirmed live" MILES fetch may not generalize to XSL/STELIB/CaT/GBS;
+needs real investigation into what's actually wrong (stale ID, wrong
+per-collection endpoint, ...) before this is safe to wire up.
+
 Each archive gets its own parser below, dispatched by archive_code via
 SUPPORTED_ARCHIVES. All four turned out to already store a real, directly
 fetchable URL in archive_url (no DataLink/resolution hop needed) -- kept
@@ -83,6 +106,7 @@ from astropy.io.votable import parse_single_table
 SUPPORTED_ARCHIVES = {
     "lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical",
     "mast_jwst", "eso", "lamost_mrs", "elodie", "irsa_missions",
+    "rave", "feros_gavo", "flashheros_gavo", "ondrejov", "heros_ondrejov", "sophie", "hermes_mercator",
 }
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
@@ -111,6 +135,13 @@ SIZE_HINT_BYTES = {
     "eso": 3_100_000,
     "elodie": 480_000,
     "irsa_missions": 15_000,
+    "rave": 20_000,
+    "feros_gavo": 770_000,
+    "flashheros_gavo": 98_000,
+    "ondrejov": 20_000,
+    "heros_ondrejov": 112_000,
+    "sophie": 2_500_000,
+    "hermes_mercator": 3_600_000,
 }
 
 HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
@@ -442,6 +473,90 @@ def _parse_irsa_missions(holding: dict) -> dict:
     }
 
 
+def _wcs_wave(header) -> np.ndarray:
+    return header["CRVAL1"] + np.arange(header["NAXIS1"]) * header["CDELT1"]
+
+
+def _parse_rave(holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        wave = _wcs_wave(hdul["SPECTRUM"].header)
+        flux = np.asarray(hdul["SPECTRUM"].data, dtype=float)
+        uncertainty = np.asarray(hdul["ERROR"].data, dtype=float) if "ERROR" in hdul else None
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": [_segment("RAVE", wave, flux, uncertainty)],
+    }
+
+
+def _parse_gavo_wcs_image(label: str, flux_unit: str):
+    """feros_gavo/flashheros_gavo/ondrejov/heros_ondrejov share one shape:
+    a single PRIMARY-HDU image, linear WCS wavelength, no uncertainty
+    extension at all (confirmed live -- not a parsing gap, these archives
+    just don't carry one)."""
+
+    def parser(holding: dict) -> dict:
+        raw = _fetch_bytes(holding["archive_url"])
+        with fits.open(io.BytesIO(raw)) as hdul:
+            wave = _wcs_wave(hdul[0].header)
+            flux = np.asarray(hdul[0].data, dtype=float)
+        return {
+            "wavelength_unit": "Å",
+            "flux_unit": flux_unit,
+            "segments": [_segment(label, wave, flux, None)],
+        }
+
+    return parser
+
+
+def _parse_sophie(holding: dict) -> dict:
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        # S1D_B is a second, slightly different-length channel (confirmed
+        # live -- not an error array, likely a second fiber) -- S1D_A alone
+        # is the real object spectrum.
+        wave = _wcs_wave(hdul["S1D_A"].header)
+        flux = np.asarray(hdul["S1D_A"].data, dtype=float)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": [_segment("SOPHIE", wave, flux, None)],
+    }
+
+
+def _parse_hermes_mercator(holding: dict) -> dict:
+    # archive_url 301-redirects to a DataLink-served VOTable (confirmed
+    # live), not plain FITS -- requests follows redirects by default, but
+    # _fetch_bytes' Content-Length check happens on the *first* response,
+    # so a redirect chain could dodge the size cap; stream+redirect
+    # directly here instead of going through _fetch_bytes.
+    try:
+        with requests.get(holding["archive_url"], stream=True, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+            resp.raise_for_status()
+            content_length = resp.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_DOWNLOAD_BYTES:
+                raise SpectrumUnavailable(f"Spectrum file is too large to display ({int(content_length):,} bytes).")
+            chunks, total = [], 0
+            for chunk in resp.iter_content(chunk_size=1 << 16):
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise SpectrumUnavailable("Spectrum file exceeded the size limit while downloading.")
+                chunks.append(chunk)
+    except requests.RequestException as exc:
+        raise SpectrumUnavailable(f"Could not reach the archive: {exc}") from exc
+    raw = b"".join(chunks)
+
+    table = parse_single_table(io.BytesIO(raw)).to_table()
+    wave = np.ma.filled(np.asarray(table["spectral"]), np.nan).astype(float)
+    flux = np.ma.filled(np.asarray(table["flux"]), np.nan).astype(float)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": [_segment("HERMES", wave, flux, None)],
+    }
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
@@ -454,6 +569,13 @@ _PARSERS = {
     "lamost_mrs": _parse_lamost_mrs,
     "elodie": _parse_elodie,
     "irsa_missions": _parse_irsa_missions,
+    "rave": _parse_rave,
+    "feros_gavo": _parse_gavo_wcs_image("FEROS", "arbitrary (pipeline flux units)"),
+    "flashheros_gavo": _parse_gavo_wcs_image("Flash/Heros", "arbitrary (pipeline flux units)"),
+    "ondrejov": _parse_gavo_wcs_image("Ondrejov", "ADU (uncalibrated counts)"),
+    "heros_ondrejov": _parse_gavo_wcs_image("HEROS (Ondrejov)", "arbitrary (pipeline flux units)"),
+    "sophie": _parse_sophie,
+    "hermes_mercator": _parse_hermes_mercator,
 }
 
 
