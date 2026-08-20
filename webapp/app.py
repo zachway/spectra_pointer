@@ -651,6 +651,12 @@ PAGE_TEMPLATE = """
   <title>The Spectra Pointer</title>
   <style>""" + SHARED_STYLE + """
     #wavelength-plot { width: 100%; margin-top: 0.5rem; }
+    .spectrum-row { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; margin-top: 0.5rem; }
+    .spectrum-panel, .wavelength-panel { flex: 1 1 420px; min-width: 0; }
+    .spectrum-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.4rem; }
+    .spectrum-controls select { font-family: monospace; padding: 0.2rem; flex: 1 1 260px; }
+    #spectrum-viewer-plot { width: 100%; }
+    #spectrum-viewer-note:empty { display: none; }
   </style>
   {% if wavelength_chart %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
 </head>
@@ -838,11 +844,43 @@ PAGE_TEMPLATE = """
     </dl>
 
     {% if wavelength_chart %}
-      <h3>Wavelength coverage</h3>
-      <p class="note">Each bar is one archive/instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power.</p>
-      <div id="wavelength-plot"></div>
+      <h3>Spectra</h3>
+      <div class="spectrum-row">
+        <div class="spectrum-panel">
+          <div class="spectrum-controls">
+            <select id="spectrum-select">
+              <option value="">Select an instrument…</option>
+              {% for g in holdings %}
+                {% set viewable_obs = g.observations | selectattr("spectrum_viewable") | list %}
+                {% if viewable_obs %}
+                <optgroup label="{{ g.display_name }} — {{ g.instrument or '—' }}">
+                  {% for h in viewable_obs %}
+                  <option value="{{ h.id }}">{{ h.obs_date or "no date" }}{% if h.spectrum_size_hint %} ({{ h.spectrum_size_hint }}){% endif %}</option>
+                  {% endfor %}
+                </optgroup>
+                {% endif %}
+              {% endfor %}
+            </select>
+            <button type="button" id="spectrum-add">Add to plot</button>
+            <button type="button" id="spectrum-clear">Clear plot</button>
+          </div>
+          <div id="spectrum-viewer-plot"></div>
+          <p id="spectrum-viewer-note" class="note"></p>
+        </div>
+        <div class="wavelength-panel">
+          <p class="note">Each bar is one archive/instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power.</p>
+          <div id="wavelength-plot"></div>
+        </div>
+      </div>
       <script>
         (function() {
+          // Both plots share one height -- the spectrum viewer is the
+          // reference (a fixed, readable size for a line plot); the
+          // wavelength-coverage bar chart is fit to match it rather than
+          // growing with however many archives this star has.
+          var SPECTRUM_PANEL_HEIGHT = 420;
+          var PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b', '#8e44ad', '#16a085', '#d4ac0d', '#7f8c8d'];
+
           var bars = {{ wavelength_chart.bars | tojson }};
           var nRows = {{ wavelength_chart.n_rows }};
           var trace = {
@@ -862,11 +900,115 @@ PAGE_TEMPLATE = """
           };
           Plotly.newPlot('wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 20 + nRows * 22) + 20,
+            height: SPECTRUM_PANEL_HEIGHT,
             margin: { l: 8, r: 8, t: 4, b: 48 },
             xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
           }, { responsive: true, displayModeBar: false });
+
+          // Spectrum viewer: starts as an empty flux-vs-wavelength plot: no
+          // data fetched until the user picks an instrument and clicks "Add
+          // to plot" -- matches the fetch-only-on-click discipline the rest
+          // of this feature is built around. Several holdings can be added
+          // to the same plot for comparison; plotted[] tracks what's on it
+          // (by holding_id) so re-adding the same one is a no-op.
+          var plotted = []; // [{id, result}]
+
+          function emptyPlot() {
+            Plotly.newPlot('spectrum-viewer-plot', [], {
+              height: SPECTRUM_PANEL_HEIGHT,
+              margin: { t: 20 },
+              xaxis: { title: 'Wavelength (Å)' },
+              yaxis: { title: 'Flux' },
+            }, { responsive: true });
+          }
+          emptyPlot();
+
+          function render() {
+            var traces = [];
+            var families = {};
+            plotted.forEach(function(entry, i) {
+              var result = entry.result;
+              families[result.flux_unit_family] = true;
+              var color = PALETTE[i % PALETTE.length];
+              result.segments.forEach(function(seg) {
+                if (seg.uncertainty) {
+                  var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
+                  var upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
+                                showlegend: false, hoverinfo: 'skip' });
+                  traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
+                                fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
+                }
+                traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines',
+                              name: entry.label + ' ' + seg.label, line: { color: color, width: 1.2 } });
+              });
+            });
+            var familyCount = Object.keys(families).length;
+            var xTitle = plotted.length ? 'Wavelength (' + plotted[0].result.wavelength_unit + ')' : 'Wavelength (Å)';
+            var yTitle = familyCount > 1 ? 'Flux (mixed units -- see note)'
+                       : plotted.length ? 'Flux (' + plotted[0].result.flux_unit + ')' : 'Flux';
+            Plotly.newPlot('spectrum-viewer-plot', traces, {
+              height: SPECTRUM_PANEL_HEIGHT,
+              margin: { t: 20 },
+              xaxis: { title: xTitle },
+              yaxis: { title: yTitle },
+              hovermode: 'closest',
+            }, { responsive: true });
+
+            var noteEl = document.getElementById('spectrum-viewer-note');
+            if (familyCount > 1) {
+              noteEl.textContent = 'Mixed flux units on this plot -- only spectra reporting the same '
+                + 'flux_unit are on a directly comparable physical scale; others are shown in their '
+                + 'own native (often uncalibrated/arbitrary) units.';
+            } else {
+              noteEl.textContent = '';
+            }
+          }
+
+          function addToPlot(holdingId, confirmed) {
+            var noteEl = document.getElementById('spectrum-viewer-note');
+            noteEl.textContent = 'Loading…';
+            var url = '/spectrum/' + holdingId + '/data' + (confirmed ? '?confirm=1' : '');
+            fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+              if (data.ok) {
+                var select = document.getElementById('spectrum-select');
+                var opt = select.querySelector('option[value="' + holdingId + '"]');
+                var label = opt ? opt.closest('optgroup').label : ('holding ' + holdingId);
+                plotted.push({ id: holdingId, label: label, result: data.result });
+                noteEl.textContent = '';
+                render();
+              } else if (data.needs_confirm) {
+                noteEl.innerHTML = '';
+                var warn = document.createElement('span');
+                warn.textContent = 'This archive’s spectrum files run large'
+                  + (data.size_hint ? ' (typically ' + data.size_hint + ')' : '') + '. ';
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = 'Load anyway';
+                btn.onclick = function() { addToPlot(holdingId, true); };
+                noteEl.appendChild(warn);
+                noteEl.appendChild(btn);
+              } else {
+                noteEl.textContent = 'Could not display this spectrum: ' + data.error;
+              }
+            }).catch(function(err) {
+              noteEl.textContent = 'Could not reach the server: ' + err;
+            });
+          }
+
+          document.getElementById('spectrum-add').addEventListener('click', function() {
+            var select = document.getElementById('spectrum-select');
+            var holdingId = select.value;
+            if (!holdingId) { return; }
+            if (plotted.some(function(e) { return e.id === holdingId; })) { return; } // already on the plot
+            addToPlot(holdingId, false);
+          });
+          document.getElementById('spectrum-clear').addEventListener('click', function() {
+            plotted = [];
+            document.getElementById('spectrum-viewer-note').textContent = '';
+            emptyPlot();
+          });
         })();
       </script>
     {% endif %}
@@ -884,7 +1026,7 @@ PAGE_TEMPLATE = """
           <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
         </summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th><th>Spectrum</th></tr>
+          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
@@ -892,7 +1034,6 @@ PAGE_TEMPLATE = """
             <td>{{ h.match_method }}</td>
             <td>{{ h.reduction_status }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
-            <td>{% if h.spectrum_viewable %}<a href="/spectrum/{{ h.id }}">view{% if h.spectrum_size_hint %} ({{ h.spectrum_size_hint }}){% endif %}</a>{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </table>
@@ -1289,14 +1430,7 @@ SPECTRUM_TEMPLATE = """
 """
 
 
-@app.route("/spectrum/<int:holding_id>")
-def spectrum(holding_id: int):
-    """Fetches and plots one holding's actual spectrum file -- gated to
-    SUPPORTED_ARCHIVES (see webapp.spectrum_viewer), the only archives with a
-    confirmed direct file + known column shape. The fetch/parse/downsample
-    all happen per-request, on demand -- nothing here is precomputed or
-    cached, matching the fetch-only-on-click discipline the whole feature was
-    scoped around (a star's holdings list never triggers this on its own)."""
+def _get_holding_or_404(holding_id: int) -> dict:
     cur = get_cursor()
     cur.execute(
         "SELECT h.*, a.display_name FROM spectroscopy_holdings h "
@@ -1306,8 +1440,50 @@ def spectrum(holding_id: int):
     rows = _rows_as_dicts(cur)
     if not rows:
         abort(404)
-    holding = rows[0]
+    return rows[0]
 
+
+def _resolve_spectrum(holding: dict) -> dict:
+    """Shared by the HTML page and the JSON data endpoint below -- exactly
+    one place decides "implemented? heavy-and-unconfirmed? rate-limited?
+    fetch it", so the two routes can't drift into different behavior.
+    Returns one of:
+      {"ok": True, "result": {...}}
+      {"ok": False, "needs_confirm": True, "size_hint": str | None}
+      {"ok": False, "error": str}
+    """
+    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
+        return {"ok": False, "error": f"Spectrum display isn't implemented for {holding['display_name']} yet."}
+    if is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
+        # Ask before fetching rather than after -- a plain <a href> is
+        # exactly the shape a crawler/link-preview bot follows automatically,
+        # and even a real user shouldn't trigger a many-MB archive fetch by
+        # accident. MAX_DOWNLOAD_BYTES in spectrum_viewer.py is still the
+        # real enforcement; this is just informed consent before it's tried.
+        return {"ok": False, "needs_confirm": True, "size_hint": size_hint_label(holding["archive_code"])}
+    try:
+        check_rate_limit(request.remote_addr)
+        result = fetch_spectrum(holding)
+    except SpectrumUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "result": result}
+
+
+@app.route("/spectrum/<int:holding_id>")
+def spectrum(holding_id: int):
+    """Fetches and plots one holding's actual spectrum file -- gated to
+    SUPPORTED_ARCHIVES (see webapp.spectrum_viewer), the only archives with a
+    confirmed direct file + known column shape. The fetch/parse/downsample
+    all happen per-request, on demand -- nothing here is precomputed or
+    cached, matching the fetch-only-on-click discipline the whole feature was
+    scoped around (a star's holdings list never triggers this on its own).
+
+    Kept as a standalone page (direct-link/shareable) alongside the embedded
+    multi-spectrum panel on the search page (see spectrum_data below) --
+    the two share _resolve_spectrum so they can't drift apart."""
+    holding = _get_holding_or_404(holding_id)
+
+    cur = get_cursor()
     cur.execute(
         "SELECT gaia_source_id, bsc_hr_number, name_aliases, input_name FROM stars WHERE star_id = ?",
         [holding["star_id"]],
@@ -1319,31 +1495,27 @@ def spectrum(holding_id: int):
         star["gaia_source_id"] if star["gaia_source_id"] is not None else star["bsc_hr_number"]
     )
 
-    error = None
-    result = None
-    needs_confirm = False
-    size_hint = None
-    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
-        error = f"Spectrum display isn't implemented for {holding['display_name']} yet."
-    elif is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
-        # Ask before fetching rather than after -- a plain <a href> is
-        # exactly the shape a crawler/link-preview bot follows automatically,
-        # and even a real user shouldn't trigger a many-MB archive fetch by
-        # accident. MAX_DOWNLOAD_BYTES in spectrum_viewer.py is still the
-        # real enforcement; this is just informed consent before it's tried.
-        needs_confirm = True
-        size_hint = size_hint_label(holding["archive_code"])
-    else:
-        try:
-            check_rate_limit(request.remote_addr)
-            result = fetch_spectrum(holding)
-        except SpectrumUnavailable as exc:
-            error = str(exc)
+    resolved = _resolve_spectrum(holding)
+    result = resolved.get("result")
+    error = resolved.get("error")
+    needs_confirm = resolved.get("needs_confirm", False)
+    size_hint = resolved.get("size_hint")
 
     return render_template_string(
         SPECTRUM_TEMPLATE, holding=holding, known_as=known_as, star_search_id=star_search_id,
         result=result, error=error, needs_confirm=needs_confirm, size_hint=size_hint, active_tab=None,
     )
+
+
+@app.route("/spectrum/<int:holding_id>/data")
+def spectrum_data(holding_id: int):
+    """JSON version of _resolve_spectrum for the embedded multi-spectrum
+    panel on the search page -- fetched client-side via JS so a user can
+    add several holdings' spectra to one plot without a full page reload
+    per fetch. Same gating (SUPPORTED_ARCHIVES/is_heavy/rate limit) as the
+    standalone /spectrum/<id> page, just JSON instead of HTML."""
+    holding = _get_holding_or_404(holding_id)
+    return _resolve_spectrum(holding)
 
 
 CMD_TEMPLATE = """

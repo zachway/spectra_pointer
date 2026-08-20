@@ -91,6 +91,24 @@ per-healpix coadd file's real size (600KB-200MB+, confirmed live this
 session). Arrays are downsampled to MAX_PLOT_POINTS per segment before
 they ever leave this module -- nothing here holds a raw multi-thousand-point
 array longer than one request.
+
+Units are standardized where a real physical conversion exists, so several
+archives' spectra can be overlaid on one plot and actually mean something --
+NOT normalized/rescaled to "look similar", which would misrepresent
+uncalibrated data as if it were comparable. Wavelength is always Å (mast_jwst
+and irsa_missions/Spitzer are natively μm -- converted, ×1e4, real unit
+conversion not a guess). Flux is converted to DESI/SDSS's own native
+"1e-17 erg/s/cm²/Å" convention wherever the source unit is a real physical
+one with a well-defined conversion: mast_jwst's Jy (F_ν) via the standard
+F_λ = F_ν·c/λ² relation (_jy_to_flambda_1e17 below). Every result also
+carries flux_unit_family -- 'erg_cm2_s_A_1e-17' for anything on that
+converted/native scale, else 'arbitrary' (eso's adu, and every archive whose
+FITS/VOTable carried no unit metadata at all when checked live -- lamost,
+lamost_mrs, sdss_v_apogee, elodie, irsa_missions, and the whole GAVO/DaCHS
+family: confirmed live these genuinely have no calibration to convert, not
+a gap in this module). The webapp uses flux_unit_family to warn rather than
+silently mislead when a user overlays 'arbitrary' spectra alongside
+'erg_cm2_s_A_1e-17' ones.
 """
 
 from __future__ import annotations
@@ -165,6 +183,25 @@ def size_hint_label(archive_code: str) -> str | None:
     if hint is None:
         return None
     return f"~{hint / (1024 * 1024):.1f} MB" if hint >= 1024 * 1024 else f"~{hint // 1024} KB"
+
+
+# The common baseline every physically-calibrated archive's flux gets
+# converted to -- DESI/SDSS's own native convention, chosen because it's
+# already what 3 of the 18 archives report natively, not an arbitrary pick.
+FLUX_UNIT_ERG_CM2_S_A = "10⁻¹⁷ erg/s/cm²/Å"
+FLUX_FAMILY_ERG_CM2_S_A = "erg_cm2_s_A_1e-17"
+FLUX_FAMILY_ARBITRARY = "arbitrary"
+
+_C_CM_PER_S = 2.99792458e10
+
+
+def _jy_to_flambda_1e17(wave_angstrom: np.ndarray, flux_jy: np.ndarray) -> np.ndarray:
+    """F_nu[Jy] -> F_lambda[10^-17 erg/s/cm^2/A] via F_lambda = F_nu * c / lambda^2,
+    a standard physical relation (not a fitted/per-instrument calibration).
+    Jy = 1e-23 erg/s/cm^2/Hz; the 1e8 cm->A and 1e17-baseline factors fold
+    into the single constant below (see the module docstring for the full
+    derivation)."""
+    return flux_jy * (_C_CM_PER_S * 1e-15 * 1e17) / (wave_angstrom**2)
 
 
 class SpectrumUnavailable(Exception):
@@ -357,7 +394,7 @@ def _parse_desi(holding: dict) -> dict:
 
     return {
         "wavelength_unit": "Å",
-        "flux_unit": "10⁻¹⁷ erg/s/cm²/Å (DESI flux units)",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A,
         "segments": segments,
     }
 
@@ -376,7 +413,7 @@ def _parse_sdss_spec(label: str, holding: dict) -> dict:
     uncertainty = _ivar_to_uncertainty(ivar)
     return {
         "wavelength_unit": "Å",
-        "flux_unit": "10⁻¹⁷ erg/s/cm²/Å (SDSS flux units)",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A,
         "segments": [_segment(label, wave, flux, uncertainty)],
     }
 
@@ -393,14 +430,19 @@ def _parse_mast_jwst(holding: dict) -> dict:
     raw = _fetch_bytes(holding["archive_url"])
     with fits.open(io.BytesIO(raw)) as hdul:
         data = hdul["EXTRACT1D"].data
-        wave = np.asarray(data["WAVELENGTH"], dtype=float)
-        flux = np.asarray(data["FLUX"], dtype=float)
-        uncertainty = np.asarray(data["FLUX_ERROR"], dtype=float)
+        wave_um = np.asarray(data["WAVELENGTH"], dtype=float)
+        flux_jy = np.asarray(data["FLUX"], dtype=float)
+        unc_jy = np.asarray(data["FLUX_ERROR"], dtype=float)
     # Confirmed live: WAVELENGTH is in microns and FLUX/FLUX_ERROR in Jy for
-    # a real x1d product, not Å/arbitrary like this module's other archives.
+    # a real x1d product -- converted to Å / 10^-17 erg/s/cm^2/Å (a real
+    # physical conversion, not a guess) so this overlays meaningfully with
+    # DESI/SDSS on the same plot instead of sharing an axis in name only.
+    wave = wave_um * 1e4
+    flux = _jy_to_flambda_1e17(wave, flux_jy)
+    uncertainty = _jy_to_flambda_1e17(wave, unc_jy)
     return {
-        "wavelength_unit": "μm",
-        "flux_unit": "Jy",
+        "wavelength_unit": "Å",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A,
         "segments": [_segment("JWST", wave, flux, uncertainty)],
     }
 
@@ -495,13 +537,18 @@ def _parse_irsa_missions(holding: dict) -> dict:
     raw = _fetch_bytes(holding["archive_url"])
     with fits.open(io.BytesIO(raw)) as hdul:
         data = hdul[1].data  # unnamed extension, confirmed live -- index, not extname
-        wave = np.asarray(data["WAVELENGTH"], dtype=float)
+        wave_um = np.asarray(data["WAVELENGTH"], dtype=float)
         flux = np.asarray(data["FLUX"], dtype=float)
         uncertainty = np.asarray(data["ERROR"], dtype=float)
     # Confirmed live: already order-matched into one monotonic sequence
     # (unlike DESI's genuinely disjoint per-camera ranges) -- one segment.
+    # Wavelength converted to Å (real unit conversion, ×1e4) so it shares an
+    # x-axis with every other archive here -- but FLUX/ERROR carry no unit
+    # metadata at all (confirmed live: no TUNIT, no BUNIT), so unlike
+    # mast_jwst there's no calibration to convert flux by -- stays arbitrary.
+    wave = wave_um * 1e4
     return {
-        "wavelength_unit": "μm",
+        "wavelength_unit": "Å",
         "flux_unit": "arbitrary (pipeline flux units)",
         "segments": [_segment("Spitzer/IRS", wave, flux, uncertainty)],
     }
@@ -616,11 +663,22 @@ _PARSERS = {
 def fetch_spectrum(holding: dict) -> dict:
     """holding needs at least archive_code, archive_url, archive_obs_id (DESI only).
 
-    Returns {"wavelength_unit": str, "flux_unit": str, "segments": [{"label", "wavelength", "flux", "uncertainty"}, ...]}
+    Returns {"wavelength_unit": str, "flux_unit": str, "flux_unit_family": str,
+    "segments": [{"label", "wavelength", "flux", "uncertainty"}, ...]}
     Raises SpectrumUnavailable with a message safe to show a user.
+
+    flux_unit_family is derived here, centrally, from flux_unit rather than
+    set per-parser -- every parser reporting FLUX_UNIT_ERG_CM2_S_A already
+    means "converted to (or natively in) that real physical scale", so
+    there's exactly one place that needs to agree with the constant, not one
+    per archive.
     """
     archive_code = holding["archive_code"]
     parser = _PARSERS.get(archive_code)
     if parser is None:
         raise SpectrumUnavailable(f"Spectrum display isn't implemented for {archive_code} yet.")
-    return parser(holding)
+    result = parser(holding)
+    result["flux_unit_family"] = (
+        FLUX_FAMILY_ERG_CM2_S_A if result["flux_unit"] == FLUX_UNIT_ERG_CM2_S_A else FLUX_FAMILY_ARBITRARY
+    )
+    return result
