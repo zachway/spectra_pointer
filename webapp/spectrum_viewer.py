@@ -145,6 +145,7 @@ SUPPORTED_ARCHIVES = {
     "lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical",
     "mast_jwst", "eso", "lamost_mrs", "elodie", "irsa_missions",
     "rave", "feros_gavo", "flashheros_gavo", "ondrejov", "heros_ondrejov", "sophie", "hermes_mercator",
+    "carmenes_tac", "carmenes_reiners2018",
 }
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
@@ -188,6 +189,13 @@ SIZE_HINT_BYTES = {
     "heros_ondrejov": 112_000,
     "sophie": 2_500_000,
     "hermes_mercator": 3_600_000,
+    # VIS files run ~5.0-5.5MB (61 orders x ~3700-4100 px x 3-4 image
+    # extensions), just over HEAVY_THRESHOLD_BYTES -- NIR files are smaller
+    # (~2.3-2.8MB) but archive_code granularity can't distinguish the two
+    # channels here (see is_heavy/SIZE_HINT_BYTES docstring), so this uses
+    # the heavier VIS figure rather than understate a real VIS fetch.
+    "carmenes_tac": 5_500_000,
+    "carmenes_reiners2018": 5_100_000,
 }
 
 HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
@@ -329,11 +337,11 @@ def _fetch_bytes(url: str) -> bytes:
     return b"".join(chunks)
 
 
-def _downsample(x: np.ndarray, y: np.ndarray) -> tuple[list[float], list[float]]:
+def _downsample(x: np.ndarray, y: np.ndarray, max_points: int = MAX_PLOT_POINTS) -> tuple[list[float], list[float]]:
     n = len(x)
-    if n <= MAX_PLOT_POINTS:
+    if n <= max_points:
         return x.tolist(), y.tolist()
-    step = int(np.ceil(n / MAX_PLOT_POINTS))
+    step = int(np.ceil(n / max_points))
     return x[::step].tolist(), y[::step].tolist()
 
 
@@ -352,7 +360,9 @@ def _finite_mask(*arrays: np.ndarray) -> np.ndarray:
     return mask
 
 
-def _segment(label: str, wave: np.ndarray, flux: np.ndarray, unc: np.ndarray | None) -> dict:
+def _segment(
+    label: str, wave: np.ndarray, flux: np.ndarray, unc: np.ndarray | None, max_points: int = MAX_PLOT_POINTS
+) -> dict:
     # An uncertainty column can genuinely exist but be entirely NaN for a
     # given file (confirmed live: a real ESO/FEROS spectrum with a
     # populated WAVE/FLUX but a fully-empty ERR) -- requiring it finite
@@ -369,10 +379,10 @@ def _segment(label: str, wave: np.ndarray, flux: np.ndarray, unc: np.ndarray | N
     wave, flux = wave[mask], flux[mask]
     unc = unc[mask] if unc is not None else None
 
-    wx, wy = _downsample(wave, flux)
+    wx, wy = _downsample(wave, flux, max_points)
     result = {"label": label, "wavelength": wx, "flux": wy, "uncertainty": None}
     if unc is not None:
-        _, wu = _downsample(wave, unc)
+        _, wu = _downsample(wave, unc, max_points)
         result["uncertainty"] = wu
     return result
 
@@ -706,6 +716,61 @@ def _parse_hermes_mercator(holding: dict) -> dict:
     }
 
 
+# 61 orders (VIS) / 28-56 orders (NIR, varies by archive) x a full-resolution
+# MAX_PLOT_POINTS each would be 60,000+ points sent to the browser for one
+# spectrum -- keep the per-order budget small so the *total* across all
+# orders lands in the same ballpark as a single-segment archive, not 60x it.
+_CARMENES_ORDER_MAX_POINTS = 100
+
+
+def _parse_carmenes_orders(label: str, holding: dict, wave_is_log: bool) -> dict:
+    """Shared by carmenes_tac and carmenes_reiners2018 -- same SPEC/SIG/WAVE
+    per-order image shape (confirmed live for both: (61, 3699) tac VIS,
+    (61, 4096) reiners2018 VIS), but a real convention difference between
+    them: tac's WAVE is natural log of vacuum wavelength (confirmed live,
+    exp() of a raw ~8.84 gives a sensible ~6895 Å); reiners2018's WAVE is
+    already linear Å (confirmed live -- exp() of a raw ~6888 overflows to
+    inf, so this is NOT log-scale despite using the same column name).
+    Every order gets the SAME label (not "Order N") so the webapp's legend
+    collapses all of them into one entry per spectrum instead of 28-61
+    near-identical ones -- see the dedup logic in webapp.app's render()."""
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        spec = np.asarray(hdul["SPEC"].data, dtype=float)
+        sig = np.asarray(hdul["SIG"].data, dtype=float)
+        wave = np.asarray(hdul["WAVE"].data, dtype=float)
+    if wave_is_log:
+        wave = np.exp(wave)
+    # Several of the 61 nominal order slots are genuinely all-zero in a real
+    # sample (confirmed live: orders 0-2 and 59-60 of a real tac VIS file --
+    # not every physical order has usable data in every reduction) -- skip
+    # those before segmenting rather than plot a degenerate flat line at
+    # wave=exp(0)=1 Å.
+    real_orders = [i for i in range(spec.shape[0]) if not np.all(spec[i] == 0)]
+    segments = [
+        _segment(label, wave[i], spec[i], sig[i], max_points=_CARMENES_ORDER_MAX_POINTS)
+        for i in real_orders
+    ]
+    segments = [s for s in segments if s["wavelength"]]  # drop orders with no finite pixels at all
+    if not segments:
+        raise SpectrumUnavailable("No usable data in any echelle order for this file.")
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (pipeline flux units)",
+        "segments": segments,
+    }
+
+
+def _parse_carmenes_tac(holding: dict) -> dict:
+    label = "CARMENES NIR" if holding.get("instrument") == "CARMENES NIR" else "CARMENES VIS"
+    return _parse_carmenes_orders(label, holding, wave_is_log=True)
+
+
+def _parse_carmenes_reiners2018(holding: dict) -> dict:
+    label = "CARMENES NIR" if holding.get("instrument") == "CARMENES NIR" else "CARMENES VIS"
+    return _parse_carmenes_orders(label, holding, wave_is_log=False)
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
@@ -725,6 +790,8 @@ _PARSERS = {
     "heros_ondrejov": _parse_gavo_wcs_image("HEROS (Ondrejov)", "arbitrary (pipeline flux units)"),
     "sophie": _parse_sophie,
     "hermes_mercator": _parse_hermes_mercator,
+    "carmenes_tac": _parse_carmenes_tac,
+    "carmenes_reiners2018": _parse_carmenes_reiners2018,
 }
 
 

@@ -1010,6 +1010,17 @@ PAGE_TEMPLATE = """
               var result = entry.result;
               families[result.flux_unit_family] = true;
               var color = PALETTE[i % PALETTE.length];
+              // Segments sharing the same computed name only get ONE
+              // legend entry -- most archives have 1-3 genuinely distinct
+              // segments (DESI's B/R/Z, lamost_mrs's blue/red) where every
+              // one is worth its own legend line, but the two CARMENES
+              // archives return one segment per echelle order (28-61 of
+              // them) all sharing the same label on purpose -- without
+              // this, that's 28-61 near-identical legend entries per
+              // spectrum plotted. The trace itself (and its uncertainty
+              // band) still renders for every segment either way; only the
+              // legend visibility collapses.
+              var seenNames = {};
               result.segments.forEach(function(seg) {
                 if (seg.uncertainty) {
                   var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
@@ -1029,8 +1040,10 @@ PAGE_TEMPLATE = """
                 // the ORIGINAL (pre-scaling) unit + the scale factor
                 // applied, so the real value is still one hover away.
                 var fullName = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
+                var showInLegend = !seenNames[fullName];
+                seenNames[fullName] = true;
                 traces.push({
-                  x: seg.wavelength, y: seg.flux, mode: 'lines',
+                  x: seg.wavelength, y: seg.flux, mode: 'lines', showlegend: showInLegend,
                   name: truncate(fullName), line: { color: color, width: 1.2 },
                   hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} scaled flux'
                     + '<br>(' + result.flux_unit + ' × ' + result.flux_scale_factor.toPrecision(3) + ')<extra></extra>',
