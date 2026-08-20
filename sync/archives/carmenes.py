@@ -14,8 +14,10 @@ the same cumulative, one-row-per-star treatment as sdss_v_apogee.py. DR1 is
 a fixed release (2016-2020 GTO), so — like rave.py — this is a one-time pull
 gated by a "synced_at" cursor rather than an incremental watermark.
 
-TAC (the co-added template library) and the broader CAHA archive are not
-covered here — see the artifact's CARMENES card for that context.
+TAC (the co-added telluric-corrected template library) is now its own
+archive, carmenes_tac.py — a real per-star/per-channel direct file, unlike
+this module's whole-star zip. The broader CAHA archive is separately
+covered by carmenes_caha.py (raw only).
 """
 
 import requests

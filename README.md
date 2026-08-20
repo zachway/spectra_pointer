@@ -1,7 +1,7 @@
 # The Spectra Pointer
 
 A cross-match database and search tool that unifies stellar spectroscopy
-holdings across 57 independent astronomical archives (ESO, SDSS,
+holdings across 58 independent astronomical archives (ESO, SDSS,
 Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single [Gaia DR3](https://www.cosmos.esa.int/web/gaia/dr3) `source_id`
 lookup.
 
@@ -18,7 +18,7 @@ through archival data, and writing proposals for time on large
 telescopes with limited budgets.
 
 The Spectra Pointer solves this by running an independent sync process per
-archive (57 are currently implemented) that discovers spectroscopic
+archive (58 are currently implemented) that discovers spectroscopic
 observations and cross-matches each one to a canonical Gaia DR3 `source_id` 
 — first by a named identifier when the archive publishes one (via
 the [SIMBAD database](https://simbad.cds.unistra.fr/simbad/), falling back
