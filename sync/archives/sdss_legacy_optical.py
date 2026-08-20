@@ -68,15 +68,39 @@ Parquet (DuckDB, not astropy, handles this well). Every fetch() call after
 that is a single DuckDB range query against a small Parquet file --
 observed at a few hundred ms, even repeated ~340 times.
 
-plate_or_fps_field/fiberid/mjd/specobjid/run2d/ra/dec/cas_url are all
-fully populated (no zero/NaN sentinels) for the legacy (instrument=
-'boss', mjd<58932) subset — cas_url is a ready-made SkyServer object
-explorer deep link, used directly rather than reconstructed.
+plate/fiberid/mjd/specobjid/run2d/ra/dec are all fully populated (no
+zero/NaN sentinels) for the legacy (instrument='boss', mjd<58932) subset
+-- plate here is allspec's real per-row plate column, a different, more
+precise field than plate_or_fps_field (which collapses BOSS-plate and
+SDSS-V-fps_field into one column and isn't precise enough to build a
+file path from -- see the archive_url paragraph below).
 
 reduction_status is hardcoded 'reduced' -- the allspec catalog (like every
 SDSS spectro data product) is the pipeline-processed, flux/wavelength-
 calibrated 1D spectrum, never a raw CCD frame; SDSS has no public raw-frame
 distribution path at all.
+
+archive_url previously pointed at cas_url, a SkyServer object-explorer
+*page*, not a spectrum file -- fine as a human deep link but useless for a
+viewer wanting the actual FITS. allspec also carries plate/fiberid columns
+directly (not previously kept -- only the coarser plate_or_fps_field was),
+confirmed live to be fully populated for the legacy subset alongside mjd/
+run2d, which is everything needed to build a direct file URL without
+decoding specobjid's bit-packed encoding by hand. DR20 splits legacy vs.
+SDSS-V reductions across two separate top-level trees -- sdss_v_optical.py's
+boss/redux/ is SDSS-V-only (confirmed live: boss/redux/v5_13_2 404s) --
+legacy run2d values instead live under sdss/redux/{run2d}/spectra/lite/
+{plate}/spec-{plate}-{mjd}-{fiberid:04d}.fits (plate unpadded, fiberid
+zero-padded to 4 digits, no separate mjd subdirectory unlike the SDSS-V
+tree) -- confirmed live via a real directory listing and a real fetched
+file (data.sdss.org/.../sdss/redux/v5_13_2/spectra/lite/6413/
+spec-6413-56336-0522.fits, 200 OK, 218,880 bytes), opened with astropy and
+confirmed to carry the standard SDSS COADD extension shape (flux/loglam/
+ivar/and_mask/or_mask/wdisp/sky/model), same as sdss_v_optical.py's format.
+The Parquet cache filename changed (LEGACY_CACHE_PATH) since the column set
+changed -- an old cache from before this fix wouldn't have plate/fiberid
+and would break the new SELECT, so this intentionally orphans rather than
+reuses it.
 """
 
 import gzip
@@ -93,6 +117,11 @@ from sync.base import RawObservation, clean_float
 
 ALLSPEC_URL = "https://data.sdss.org/sas/dr20/spectro/allspec/1.0.2/allspec-dr20-1.0.2.fits.gz"
 
+SPECTRUM_URL = (
+    "https://data.sdss.org/sas/dr20/spectro/sdss/redux/{run2d}/spectra/lite/{plate}/"
+    "spec-{plate}-{mjd}-{fiberid:04d}.fits"
+)
+
 LEGACY_MJD_CUTOFF = 58932  # first SDSS-V (FPS/robot-era) rows start after this
 FIRST_MJD = 55176  # live-confirmed: MIN(mjd) among instrument='boss' legacy rows
 
@@ -102,7 +131,10 @@ WINDOW_DAYS = 7
 # serves it publicly) -- this is scratch space, not something to publish.
 CACHE_DIR = os.environ.get("SDSS_LEGACY_OPTICAL_CACHE_DIR", os.path.expanduser("~/.cache/spectra_pointer"))
 RAW_FITS_PATH = os.path.join(CACHE_DIR, "sdss_allspec_dr20.fits")  # transient -- deleted after distilling
-LEGACY_CACHE_PATH = os.path.join(CACHE_DIR, "sdss_legacy_boss.parquet")  # what fetch() actually reads
+# _v2: column set changed (added plate/fiberid) -- a pre-fix cache lacks
+# them and would break the SELECT below, so this intentionally orphans
+# rather than reuses an old cache file.
+LEGACY_CACHE_PATH = os.path.join(CACHE_DIR, "sdss_legacy_boss_v2.parquet")  # what fetch() actually reads
 
 
 def _download_and_decompress() -> None:
@@ -142,9 +174,10 @@ def _ensure_cached() -> None:
             "mjd": legacy["mjd"].astype(np.int32),
             "specobjid": np.char.strip(legacy["specobjid"].astype(str)),
             "run2d": np.char.strip(legacy["run2d"].astype(str)),
+            "plate": legacy["plate"].astype(np.int32),
+            "fiberid": legacy["fiberid"].astype(np.int32),
             "ra": legacy["ra"].astype(np.float64),
             "dec": legacy["dec"].astype(np.float64),
-            "cas_url": np.char.strip(legacy["cas_url"].astype(str)),
         }
 
     con = duckdb.connect()
@@ -179,7 +212,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     while True:
         window_end = min(window_start + WINDOW_DAYS, LEGACY_MJD_CUTOFF)
         con.execute(
-            "SELECT mjd, specobjid, run2d, ra, dec, cas_url FROM legacy WHERE mjd >= ? AND mjd < ?",
+            "SELECT mjd, specobjid, run2d, plate, fiberid, ra, dec FROM legacy WHERE mjd >= ? AND mjd < ?",
             [window_start, window_end],
         )
         rows = con.fetchall()
@@ -191,7 +224,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     records = [
         RawObservation(
             archive_obs_id=specobjid,
-            archive_url=cas_url,
+            archive_url=SPECTRUM_URL.format(run2d=run2d, plate=plate, mjd=int(mjd), fiberid=fiberid),
             instrument="SDSS/BOSS",
             obs_date=Time(int(mjd), format="mjd").to_datetime().date(),
             program_id=run2d,
@@ -199,7 +232,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             dec=clean_float(dec),
             reduction_status="reduced",
         )
-        for mjd, specobjid, run2d, ra, dec, cas_url in rows
+        for mjd, specobjid, run2d, plate, fiberid, ra, dec in rows
     ]
 
     if window_end >= LEGACY_MJD_CUTOFF:
