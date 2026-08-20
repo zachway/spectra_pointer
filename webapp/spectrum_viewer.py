@@ -145,7 +145,7 @@ SUPPORTED_ARCHIVES = {
     "lamost", "gaia_rvs", "sdss_v_apogee", "desi", "sdss_v_optical", "sdss_legacy_optical",
     "mast_jwst", "eso", "lamost_mrs", "elodie", "irsa_missions",
     "rave", "feros_gavo", "flashheros_gavo", "ondrejov", "heros_ondrejov", "sophie", "hermes_mercator",
-    "carmenes_tac", "carmenes_reiners2018",
+    "carmenes_tac", "carmenes_reiners2018", "cfht_cadc",
 }
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
@@ -196,6 +196,12 @@ SIZE_HINT_BYTES = {
     # the heavier VIS figure rather than understate a real VIS fetch.
     "carmenes_tac": 5_500_000,
     "carmenes_reiners2018": 5_100_000,
+    # A real usable "t" (telluric-corrected) SPIRou product ran 18.4MB
+    # (49 orders x 4088 px x 11 image extensions) -- the rejected product
+    # types (CCF-only, raw cubes) are smaller or hit MAX_DOWNLOAD_BYTES
+    # outright before this hint would even matter, so the usable case is
+    # the one worth warning about.
+    "cfht_cadc": 18_500_000,
 }
 
 HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
@@ -771,6 +777,80 @@ def _parse_carmenes_reiners2018(holding: dict) -> dict:
     return _parse_carmenes_orders(label, holding, wave_is_log=False)
 
 
+def _parse_cfht_cadc(holding: dict) -> dict:
+    """cfht_cadc's archive_url is a CADC DataLink resolver, not a direct
+    file -- confirmed live this session that its '#this' semantics
+    resolves to genuinely different, incompatible product types depending
+    on the specific observation, not just the instrument: real SPIRou
+    samples came back as a well-structured per-order spectrum (FluxAB/
+    WaveAB/BlazeAB, handled below), a CCF-only file (no spectrum at all),
+    and once even a raw 402MB 3D detector image cube. Real ESPaDOnS
+    samples were worse -- a bare, unlabeled 2D array with no WCS/unit
+    metadata at all, and (confirmed live across 2 real samples) an
+    *inconsistent* row count (12 vs. 28) between observations, so even
+    guessing "row 0 is wavelength" isn't safe without real documentation
+    this session didn't have. Rather than guess, this only handles the
+    one shape confirmed live to be safe and real (SPIRou's FluxAB/WaveAB/
+    BlazeAB) and cleanly rejects everything else -- meaning cfht_cadc
+    support here only covers an unpredictable subset of real holdings,
+    not "SPIRou" or "ESPaDOnS" as a whole. Measured against 8 real random
+    matched holdings each: SPIRou 3/8 usable (the rest were CCF-only or
+    over MAX_DOWNLOAD_BYTES), ESPaDOnS 0/8 (every real sample used one of
+    the unsupported product types) -- ESPaDOnS support here is real in
+    principle but found zero real matches in this sample; don't expect a
+    meaningful hit rate for it without further investigation into which
+    ESPaDOnS product type (if any) reliably carries a displayable 1D
+    spectrum."""
+    # archive_url is the DataLink resolver, not a file -- confirmed live
+    # this session (same shape as gemini.py/dao.py's CADC archives): its
+    # own response is a small VOTable listing this observation's real
+    # products, the '#this'-semantics row being the actual science file.
+    datalink_raw = _fetch_bytes(holding["archive_url"])
+    table = parse_single_table(io.BytesIO(datalink_raw)).to_table()
+    this_rows = [i for i in range(len(table)) if str(table["semantics"][i]) == "#this"]
+    if not this_rows:
+        raise SpectrumUnavailable("This CFHT/CADC observation has no resolvable data product.")
+    file_url = str(table["access_url"][this_rows[0]])
+    raw = _fetch_bytes(file_url)
+    with fits.open(io.BytesIO(raw)) as hdul:
+        names = {h.name for h in hdul}
+        if not {"FluxAB", "WaveAB"}.issubset(names):
+            raise SpectrumUnavailable(
+                "This CFHT/CADC product isn't a displayable 1D spectrum -- cfht_cadc resolves to "
+                "several incompatible product types per observation (raw detector frames, "
+                "cross-correlation-function-only files, ...), and only the FluxAB/WaveAB extracted-"
+                "spectrum shape is supported here."
+            )
+        wave_nm = np.asarray(hdul["WaveAB"].data, dtype=float)
+        flux = np.asarray(hdul["FluxAB"].data, dtype=float)
+        # BlazeAB is the instrument's blaze/response function -- dividing
+        # it out gives the real extracted spectral shape rather than
+        # FluxAB's raw per-order hump (confirmed live: FluxAB alone is
+        # dominated by the blaze envelope, not real spectral features).
+        # No error/uncertainty extension exists in this product at all
+        # (confirmed live: no FluxErrAB or similar).
+        if "BlazeAB" in names:
+            blaze = np.asarray(hdul["BlazeAB"].data, dtype=float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                flux = np.where(blaze != 0, flux / blaze, np.nan)
+    wave = wave_nm * 10.0  # nm -> Å (confirmed live: WaveAB has no unit header at all, but a real
+    # SPIRou sample's values, ~956-2294 nm across orders, match its known near-IR coverage -- Å
+    # keeps this consistent with every other archive here rather than introducing a second
+    # wavelength-unit convention for just this one).
+    segments = [
+        _segment("CFHT/SPIRou", wave[i], flux[i], None, max_points=_CARMENES_ORDER_MAX_POINTS)
+        for i in range(flux.shape[0])
+    ]
+    segments = [s for s in segments if s["wavelength"]]
+    if not segments:
+        raise SpectrumUnavailable("No usable data in any echelle order for this file.")
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (blaze-corrected pipeline flux units)",
+        "segments": segments,
+    }
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
@@ -792,6 +872,7 @@ _PARSERS = {
     "hermes_mercator": _parse_hermes_mercator,
     "carmenes_tac": _parse_carmenes_tac,
     "carmenes_reiners2018": _parse_carmenes_reiners2018,
+    "cfht_cadc": _parse_cfht_cadc,
 }
 
 
