@@ -63,6 +63,7 @@ from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 from webapp.spectrum_viewer import (
     SUPPORTED_ARCHIVES,
     SpectrumUnavailable,
+    check_rate_limit,
     fetch_spectrum,
     is_heavy,
     size_hint_label,
@@ -1334,6 +1335,7 @@ def spectrum(holding_id: int):
         size_hint = size_hint_label(holding["archive_code"])
     else:
         try:
+            check_rate_limit(request.remote_addr)
             result = fetch_spectrum(holding)
         except SpectrumUnavailable as exc:
             error = str(exc)

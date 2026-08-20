@@ -97,6 +97,8 @@ from __future__ import annotations
 
 import gzip
 import io
+import threading
+import time
 
 import numpy as np
 import requests
@@ -167,6 +169,38 @@ def size_hint_label(archive_code: str) -> str | None:
 
 class SpectrumUnavailable(Exception):
     """Raised with a user-facing message -- the route turns this into a page, not a 500."""
+
+
+# Per-IP rate limit on actual archive fetches -- MAX_DOWNLOAD_BYTES bounds
+# any one fetch, but nothing else stops a script from hitting /spectrum/<id>
+# in a loop across many different holdings, each a real external download.
+# In-memory, per-process -- Cloud Run may run several instances, so this
+# blunts casual scripted abuse/crawlers rather than being an airtight global
+# cap (a real distributed limiter would need shared state, not worth it for
+# this project's traffic level -- see project memory on GCP cost
+# minimization). Deliberately scoped to the fetch itself, not page views in
+# general -- viewing the "this looks heavy, load anyway?" interstitial from
+# the is_heavy gate costs nothing and isn't rate-limited.
+_RATE_LIMIT_WINDOW_SECONDS = 600  # 10 minutes
+_RATE_LIMIT_MAX_FETCHES = 20  # per IP per window -- generous for a real person browsing holdings
+
+_rate_limit_lock = threading.Lock()
+_rate_limit_state: dict[str, list[float]] = {}
+
+
+def check_rate_limit(client_ip: str) -> None:
+    now = time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW_SECONDS
+    with _rate_limit_lock:
+        timestamps = [t for t in _rate_limit_state.get(client_ip, []) if t >= cutoff]
+        if len(timestamps) >= _RATE_LIMIT_MAX_FETCHES:
+            _rate_limit_state[client_ip] = timestamps
+            raise SpectrumUnavailable(
+                f"Too many spectrum requests from your address in the last "
+                f"{_RATE_LIMIT_WINDOW_SECONDS // 60} minutes -- please wait a bit before loading more."
+            )
+        timestamps.append(now)
+        _rate_limit_state[client_ip] = timestamps
 
 
 def _fetch_bytes(url: str) -> bytes:
