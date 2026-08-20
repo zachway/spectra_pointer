@@ -2365,6 +2365,8 @@ INSTRUMENTS_TEMPLATE = """
   <title>The Spectra Pointer — Instruments</title>
   <style>""" + SHARED_STYLE + """
     #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
+    .instrument-two-col { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+    .instrument-two-col > div { flex: 1 1 420px; min-width: 320px; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
     .overlap-controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
     .overlap-controls select { font-family: monospace; padding: 0.3rem; }
@@ -2381,25 +2383,65 @@ INSTRUMENTS_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <h2>Holdings by archive and instrument</h2>
-  <p class="note">Size = number of holdings, log-scaled so smaller instruments stay visible next to the largest archives. Click a box to zoom into an archive's instruments.</p>
-  {% if treemap_labels %}
-    <div id="instrument-treemap"></div>
-    <script>
-      Plotly.newPlot('instrument-treemap', [{
-        type: 'treemap',
-        branchvalues: 'total',
-        labels: {{ treemap_labels | tojson }},
-        parents: {{ treemap_parents | tojson }},
-        values: {{ treemap_values | tojson }},
-        customdata: {{ treemap_counts | tojson }},
-        texttemplate: '%{label}<br>%{customdata:,}',
-        hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
-      }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
-    </script>
-  {% else %}
-    <p>No instrument data yet.</p>
-  {% endif %}
+  <div class="instrument-two-col">
+    <div>
+      <h2>Holdings by archive and instrument</h2>
+      <p class="note">Size = number of holdings, log-scaled so smaller instruments stay visible next to the largest archives. Click a box to zoom into an archive's instruments.</p>
+      {% if treemap_labels %}
+        <div id="instrument-treemap"></div>
+        <script>
+          Plotly.newPlot('instrument-treemap', [{
+            type: 'treemap',
+            branchvalues: 'total',
+            labels: {{ treemap_labels | tojson }},
+            parents: {{ treemap_parents | tojson }},
+            values: {{ treemap_values | tojson }},
+            customdata: {{ treemap_counts | tojson }},
+            texttemplate: '%{label}<br>%{customdata:,}',
+            hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
+          }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
+        </script>
+      {% else %}
+        <p>No instrument data yet.</p>
+      {% endif %}
+    </div>
+
+    {% if wavelength_chart %}
+    <div>
+      <h2>Wavelength coverage, every instrument</h2>
+      <p class="note">One bar per instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power. The same physical instrument synced under more than one archive_code (e.g. HARPS via both ESO's Phase 3 and raw archives) is drawn once.</p>
+      <div id="all-instrument-wavelength-plot"></div>
+      <script>
+        (function() {
+          var bars = {{ wavelength_chart.bars | tojson }};
+          var nRows = {{ wavelength_chart.n_rows }};
+          var trace = {
+            type: 'bar',
+            orientation: 'h',
+            base: bars.map(function(b) { return b.wave_min; }),
+            x: bars.map(function(b) { return b.wave_max - b.wave_min; }),
+            y: bars.map(function(b) { return b.row; }),
+            width: 0.85,
+            marker: { color: bars.map(function(b) { return b.color; }) },
+            hovertext: bars.map(function(b) {
+              return b.label + '<br>' + b.resolving_power + '<br>' +
+                b.wave_min + '–' + b.wave_max + ' nm';
+            }),
+            hoverinfo: 'text',
+            showlegend: false,
+          };
+          Plotly.newPlot('all-instrument-wavelength-plot', [trace], {
+            barmode: 'overlay',
+            height: Math.max(60, 12 + nRows * 13) + 20,
+            margin: { l: 8, r: 8, t: 4, b: 48 },
+            xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
+            yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
+          }, { responsive: true, displayModeBar: false });
+        })();
+      </script>
+    </div>
+    {% endif %}
+  </div>
 
   <hr>
   <h2>Tracked instruments</h2>
@@ -2418,40 +2460,6 @@ INSTRUMENTS_TEMPLATE = """
     </table>
   </details>
   {% endfor %}
-
-  {% if wavelength_chart %}
-  <h3>Wavelength coverage, every instrument</h3>
-  <p class="note">One bar per instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power. The same physical instrument synced under more than one archive_code (e.g. HARPS via both ESO's Phase 3 and raw archives) is drawn once.</p>
-  <div id="all-instrument-wavelength-plot"></div>
-  <script>
-    (function() {
-      var bars = {{ wavelength_chart.bars | tojson }};
-      var nRows = {{ wavelength_chart.n_rows }};
-      var trace = {
-        type: 'bar',
-        orientation: 'h',
-        base: bars.map(function(b) { return b.wave_min; }),
-        x: bars.map(function(b) { return b.wave_max - b.wave_min; }),
-        y: bars.map(function(b) { return b.row; }),
-        width: 0.85,
-        marker: { color: bars.map(function(b) { return b.color; }) },
-        hovertext: bars.map(function(b) {
-          return b.label + '<br>' + b.resolving_power + '<br>' +
-            b.wave_min + '–' + b.wave_max + ' nm';
-        }),
-        hoverinfo: 'text',
-        showlegend: false,
-      };
-      Plotly.newPlot('all-instrument-wavelength-plot', [trace], {
-        barmode: 'overlay',
-        height: Math.max(60, 12 + nRows * 13) + 20,
-        margin: { l: 8, r: 8, t: 4, b: 48 },
-        xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
-        yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
-      }, { responsive: true, displayModeBar: false });
-    })();
-  </script>
-  {% endif %}
 
   <hr>
   <h2>Where each instrument points</h2>
