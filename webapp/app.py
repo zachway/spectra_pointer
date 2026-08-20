@@ -55,11 +55,12 @@ import paramiko
 import requests
 import skyplothelper.plotly as sph_plotly
 from astropy.coordinates import SkyCoord
-from flask import Flask, Response, redirect, render_template_string, request
+from flask import Flask, Response, abort, redirect, render_template_string, request
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
+from webapp.spectrum_viewer import SUPPORTED_ARCHIVES, SpectrumUnavailable, fetch_spectrum
 
 app = Flask(__name__)
 
@@ -876,7 +877,7 @@ PAGE_TEMPLATE = """
           <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
         </summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
+          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th><th>Spectrum</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
@@ -884,6 +885,7 @@ PAGE_TEMPLATE = """
             <td>{{ h.match_method }}</td>
             <td>{{ h.reduction_status }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
+            <td>{% if h.spectrum_viewable %}<a href="/spectrum/{{ h.id }}">view</a>{% else %}—{% endif %}</td>
           </tr>
           {% endfor %}
         </table>
@@ -1177,6 +1179,12 @@ def search():
     )
     raw_holdings = _rows_as_dicts(cur)
     holdings_total = len(raw_holdings)
+    # Only 4 archives have a confirmed direct reduced-spectrum file with a
+    # known wavelength/flux/uncertainty shape (see webapp.spectrum_viewer's
+    # module docstring) -- gate the "view spectrum" link on that rather than
+    # showing a link that 404s for the other ~50 archive_codes.
+    for h in raw_holdings:
+        h["spectrum_viewable"] = h["archive_code"] in SUPPORTED_ARCHIVES
     if adv_filters:
         raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
 
@@ -1208,6 +1216,108 @@ def search():
         holdings_total=holdings_total, holdings_shown=len(raw_holdings), adv_active=bool(adv_filters),
         resolve_only=False,
         **_advanced_search_context(),
+    )
+
+
+SPECTRUM_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>The Spectra Pointer — Spectrum</title>
+  <style>""" + SHARED_STYLE + """
+    #spectrum-plot { width: 100%; height: 500px; margin-top: 1rem; }
+  </style>
+  {% if result %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
+</head>
+<body>
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
+  </div>""" + NAV_HTML + """
+  <p><a href="/?q={{ star_search_id }}">&larr; back to {{ known_as }}</a></p>
+  <h2>{{ known_as }} — {{ holding.display_name }}{% if holding.instrument %} ({{ holding.instrument }}){% endif %}</h2>
+  <p class="note">{{ holding.obs_date or "no observation date recorded" }} &middot; reduction: {{ holding.reduction_status }}
+    &middot; <a href="{{ holding.archive_url }}" target="_blank" rel="noopener">archive file</a></p>
+  {% if error %}
+    <p>Could not display this spectrum: {{ error }}</p>
+  {% elif result %}
+    <div id="spectrum-plot"></div>
+    <p class="note">Wavelength in {{ result.wavelength_unit }}, flux in {{ result.flux_unit }}. Shaded band is the
+      per-pixel uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
+    <script>
+      const segments = {{ result.segments | tojson }};
+      const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b'];
+      const traces = [];
+      segments.forEach(function(seg, i) {
+        const color = palette[i % palette.length];
+        if (seg.uncertainty) {
+          const lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
+          const upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+          traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
+                        showlegend: false, hoverinfo: 'skip' });
+          traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
+                        fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
+        }
+        traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines', name: seg.label,
+                      line: { color: color, width: 1.2 } });
+      });
+      Plotly.newPlot('spectrum-plot', traces, {
+        xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
+        yaxis: { title: 'Flux' },
+        hovermode: 'closest',
+        margin: { t: 20 },
+      }, { responsive: true });
+    </script>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+@app.route("/spectrum/<int:holding_id>")
+def spectrum(holding_id: int):
+    """Fetches and plots one holding's actual spectrum file -- gated to
+    SUPPORTED_ARCHIVES (see webapp.spectrum_viewer), the only archives with a
+    confirmed direct file + known column shape. The fetch/parse/downsample
+    all happen per-request, on demand -- nothing here is precomputed or
+    cached, matching the fetch-only-on-click discipline the whole feature was
+    scoped around (a star's holdings list never triggers this on its own)."""
+    cur = get_cursor()
+    cur.execute(
+        "SELECT h.*, a.display_name FROM spectroscopy_holdings h "
+        "JOIN archives a ON a.archive_code = h.archive_code WHERE h.id = ?",
+        [holding_id],
+    )
+    rows = _rows_as_dicts(cur)
+    if not rows:
+        abort(404)
+    holding = rows[0]
+
+    cur.execute(
+        "SELECT gaia_source_id, bsc_hr_number, name_aliases, input_name FROM stars WHERE star_id = ?",
+        [holding["star_id"]],
+    )
+    star_rows = _rows_as_dicts(cur)
+    star = star_rows[0] if star_rows else None
+    known_as = _known_as(star) if star else "this star"
+    star_search_id = "" if star is None else (
+        star["gaia_source_id"] if star["gaia_source_id"] is not None else star["bsc_hr_number"]
+    )
+
+    error = None
+    result = None
+    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
+        error = f"Spectrum display isn't implemented for {holding['display_name']} yet."
+    else:
+        try:
+            result = fetch_spectrum(holding)
+        except SpectrumUnavailable as exc:
+            error = str(exc)
+
+    return render_template_string(
+        SPECTRUM_TEMPLATE, holding=holding, known_as=known_as, star_search_id=star_search_id,
+        result=result, error=error, active_tab=None,
     )
 
 
