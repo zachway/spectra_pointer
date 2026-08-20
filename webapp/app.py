@@ -55,11 +55,19 @@ import paramiko
 import requests
 import skyplothelper.plotly as sph_plotly
 from astropy.coordinates import SkyCoord
-from flask import Flask, Response, redirect, render_template_string, request
+from flask import Flask, Response, abort, redirect, render_template_string, request, stream_with_context
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
+from webapp.spectrum_viewer import (
+    SUPPORTED_ARCHIVES,
+    SpectrumUnavailable,
+    check_rate_limit,
+    fetch_spectrum,
+    is_heavy,
+    size_hint_label,
+)
 
 app = Flask(__name__)
 
@@ -643,7 +651,7 @@ def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_result
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         ra=ra_str, dec=dec_str, radius=radius_str,
         radial_searched=True, radial_error=radial_error, radial_results=radial_results,
         radius_display=radius_display if radius_display is not None else radius_str,
@@ -688,6 +696,14 @@ SHARED_STYLE = """
     nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
                  margin-right: 0.3rem; color: #000; }
     nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
+    nav.subtabs { display: flex; gap: 0; border-bottom: 1px solid #666; margin: 0.5rem 0 1.2rem; }
+    nav.subtabs button { font-family: monospace; font-size: 0.95rem; cursor: pointer; text-decoration: none;
+                          padding: 0.35rem 0.8rem; border: 1px solid #666; border-bottom: none;
+                          margin-right: 0.3rem; color: #000; background: #fff; }
+    nav.subtabs button.active { font-weight: bold; background: #666; color: #fff; }
+    .search-tab-panel[hidden] { display: none; }
+    .instrument-search-controls { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+    .instrument-search-controls select { font-family: monospace; padding: 0.3rem; min-width: 280px; }
     .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
     .site-header h1 { margin: 0; }
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
@@ -712,6 +728,15 @@ PAGE_TEMPLATE = """
   <title>The Spectra Pointer</title>
   <style>""" + SHARED_STYLE + """
     #wavelength-plot { width: 100%; margin-top: 0.5rem; }
+    .spectrum-row { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; margin-top: 0.5rem; }
+    .spectrum-panel { flex: 3 1 480px; min-width: 0; }
+    .wavelength-panel { flex: 2 1 320px; min-width: 0; }
+    .spectrum-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.4rem; }
+    .spectrum-controls select { font-family: monospace; padding: 0.2rem; }
+    #spectrum-instrument-select { flex: 1 1 220px; }
+    #spectrum-epoch-select { flex: 1 1 160px; }
+    #spectrum-viewer-plot { width: 100%; }
+    #spectrum-viewer-note:empty { display: none; }
   </style>
   {% if wavelength_chart %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
 </head>
@@ -722,6 +747,14 @@ PAGE_TEMPLATE = """
   </div>""" + NAV_HTML + """
   <p class="note">A numeric search is read as a Gaia source_id or Bright Star Catalogue (HR) number.</p>
   <p class="note">Under active development — file bugs or feature requests <a href="https://github.com/zachway/spectra_pointer">on GitHub</a> or email zway1 [at] gsu.edu.</p>
+
+  <nav class="subtabs">
+    <button type="button" data-tab="star" class="{{ 'active' if active_search_tab == 'star' else '' }}">Star search</button>
+    <button type="button" data-tab="batch" class="{{ 'active' if active_search_tab == 'batch' else '' }}">Batch search</button>
+    <button type="button" data-tab="instrument" class="{{ 'active' if active_search_tab == 'instrument' else '' }}">Instrument search</button>
+  </nav>
+
+  <div id="tab-star" class="search-tab-panel"{{ "" if active_search_tab == "star" else " hidden" }}>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit" name="mode" value="name">Search</button>
@@ -899,11 +932,62 @@ PAGE_TEMPLATE = """
     </dl>
 
     {% if wavelength_chart %}
-      <h3>Wavelength coverage</h3>
-      <p class="note">Each bar is one archive/instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power.</p>
-      <div id="wavelength-plot"></div>
+      <h3>Spectra</h3>
+      <div class="spectrum-row">
+        <div class="spectrum-panel">
+          <div class="spectrum-controls">
+            <select id="spectrum-instrument-select">
+              <option value="">Select an instrument…</option>
+              {% for g in spectrum_groups %}
+              <option value="{{ loop.index0 }}">{{ g.label }} ({{ g.options|length }})</option>
+              {% endfor %}
+            </select>
+            <select id="spectrum-epoch-select" disabled>
+              <option value="">Select an instrument first…</option>
+            </select>
+            <button type="button" id="spectrum-add">Add to plot</button>
+            <button type="button" id="spectrum-clear">Clear plot</button>
+          </div>
+          <div id="spectrum-viewer-plot"></div>
+          <p id="spectrum-viewer-note" class="note"></p>
+        </div>
+        <div class="wavelength-panel">
+          <p class="note">Each bar is one archive/instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power.</p>
+          <div id="wavelength-plot"></div>
+        </div>
+      </div>
       <script>
         (function() {
+          // Both plots share one height -- the spectrum viewer is the
+          // reference (a fixed, readable size for a line plot); the
+          // wavelength-coverage bar chart is fit to match it rather than
+          // growing with however many archives this star has.
+          var SPECTRUM_PANEL_HEIGHT = 420;
+          var PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b', '#8e44ad', '#16a085', '#d4ac0d', '#7f8c8d'];
+          var SPECTRUM_GROUPS = {{ spectrum_groups | tojson }};
+
+          var instrumentSelect = document.getElementById('spectrum-instrument-select');
+          var epochSelect = document.getElementById('spectrum-epoch-select');
+          instrumentSelect.addEventListener('change', function() {
+            epochSelect.innerHTML = '';
+            if (!instrumentSelect.value) {
+              var placeholder = document.createElement('option');
+              placeholder.value = '';
+              placeholder.textContent = 'Select an instrument first…';
+              epochSelect.appendChild(placeholder);
+              epochSelect.disabled = true;
+              return;
+            }
+            var group = SPECTRUM_GROUPS[instrumentSelect.value];
+            group.options.forEach(function(opt) {
+              var el = document.createElement('option');
+              el.value = opt.id;
+              el.textContent = opt.label;
+              epochSelect.appendChild(el);
+            });
+            epochSelect.disabled = false;
+          });
+
           var bars = {{ wavelength_chart.bars | tojson }};
           var nRows = {{ wavelength_chart.n_rows }};
           var trace = {
@@ -923,11 +1007,183 @@ PAGE_TEMPLATE = """
           };
           Plotly.newPlot('wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 20 + nRows * 22) + 20,
+            height: SPECTRUM_PANEL_HEIGHT,
             margin: { l: 8, r: 8, t: 4, b: 48 },
             xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
           }, { responsive: true, displayModeBar: false });
+
+          // Spectrum viewer: starts as an empty flux-vs-wavelength plot: no
+          // data fetched until the user picks an instrument and clicks "Add
+          // to plot" -- matches the fetch-only-on-click discipline the rest
+          // of this feature is built around. Several holdings can be added
+          // to the same plot for comparison; plotted[] tracks what's on it
+          // (by holding_id) so re-adding the same one is a no-op.
+          var plotted = []; // [{id, result}]
+
+          function emptyPlot() {
+            Plotly.newPlot('spectrum-viewer-plot', [], {
+              height: SPECTRUM_PANEL_HEIGHT,
+              margin: { t: 20 },
+              xaxis: { title: 'Wavelength (Å)' },
+              yaxis: { title: 'Scaled Flux' },
+            }, { responsive: true });
+          }
+          emptyPlot();
+
+          var LEGEND_MAX_CHARS = 28;
+          function truncate(s) {
+            return s.length > LEGEND_MAX_CHARS ? s.slice(0, LEGEND_MAX_CHARS - 1) + '…' : s;
+          }
+
+          var Y_RANGE_CAP = 5;
+          // Median normalization keeps the *typical* flux near 1, but
+          // doesn't clip outliers -- one cosmic ray or bad pixel at, say,
+          // 40x the median would still dominate Plotly's default autorange
+          // and squash the real spectrum flat near the bottom of the plot.
+          // Fits the real data as usual (with a little padding) but never
+          // lets either bound exceed +-Y_RANGE_CAP -- a genuine outlier
+          // just draws off-screen instead of ruining the scale for
+          // everything else on the plot.
+          function yRangeCapped(traces) {
+            var lo = Infinity, hi = -Infinity;
+            traces.forEach(function(t) {
+              (t.y || []).forEach(function(v) {
+                if (typeof v === 'number' && isFinite(v)) {
+                  if (v < lo) lo = v;
+                  if (v > hi) hi = v;
+                }
+              });
+            });
+            if (!isFinite(lo) || !isFinite(hi)) { return [-Y_RANGE_CAP, Y_RANGE_CAP]; }
+            lo = Math.max(lo, -Y_RANGE_CAP);
+            hi = Math.min(hi, Y_RANGE_CAP);
+            var pad = Math.max((hi - lo) * 0.08, 0.05);
+            return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
+          }
+
+          function render() {
+            var traces = [];
+            var families = {};
+            // Every archive's flux/uncertainty already arrives pre-scaled
+            // by a live, per-spectrum factor (webapp.spectrum_viewer.
+            // _apply_display_scale: 1/median(|flux|), computed fresh per
+            // fetch, not a precomputed per-archive constant) -- one shared
+            // linear "Scaled Flux" axis for everything, no per-unit axis
+            // juggling. Not a claim of physical
+            // comparability (flux_unit_family below still tracks that
+            // separately for the note) -- just a display convenience so a
+            // multi-instrument overlay is legible without a forest of
+            // hidden axes.
+            plotted.forEach(function(entry, i) {
+              var result = entry.result;
+              families[result.flux_unit_family] = true;
+              var color = PALETTE[i % PALETTE.length];
+              // Segments sharing the same computed name only get ONE
+              // legend entry -- most archives have 1-3 genuinely distinct
+              // segments (DESI's B/R/Z, lamost_mrs's blue/red) where every
+              // one is worth its own legend line, but the two CARMENES
+              // archives return one segment per echelle order (28-61 of
+              // them) all sharing the same label on purpose -- without
+              // this, that's 28-61 near-identical legend entries per
+              // spectrum plotted. The trace itself (and its uncertainty
+              // band) still renders for every segment either way; only the
+              // legend visibility collapses.
+              var seenNames = {};
+              result.segments.forEach(function(seg) {
+                if (seg.uncertainty) {
+                  var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
+                  var upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
+                                showlegend: false, hoverinfo: 'skip' });
+                  traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
+                                fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
+                }
+                // entry.label already names the instrument (and, via
+                // epochLabel, the date) -- only append the segment label
+                // too when an archive actually has more than one segment
+                // (DESI's B/R/Z, lamost_mrs's blue/red), otherwise it's
+                // just a redundant repeat. Legend text is truncated
+                // (confirmed live: long labels were eating most of the
+                // plot's width) -- hovertemplate keeps the full name and
+                // the ORIGINAL (pre-scaling) unit + the scale factor
+                // applied, so the real value is still one hover away.
+                var fullName = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
+                var showInLegend = !seenNames[fullName];
+                seenNames[fullName] = true;
+                traces.push({
+                  x: seg.wavelength, y: seg.flux, mode: 'lines', showlegend: showInLegend,
+                  name: truncate(fullName), line: { color: color, width: 1.2 },
+                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} scaled flux'
+                    + '<br>(' + result.flux_unit + ' × ' + result.flux_scale_factor.toPrecision(3) + ')<extra></extra>',
+                });
+              });
+            });
+            var familyCount = Object.keys(families).length;
+            var xTitle = plotted.length ? 'Wavelength (' + plotted[0].result.wavelength_unit + ')' : 'Wavelength (Å)';
+            Plotly.newPlot('spectrum-viewer-plot', traces, {
+              height: SPECTRUM_PANEL_HEIGHT,
+              margin: { t: 20, b: 90 },
+              xaxis: { title: xTitle },
+              yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
+              hovermode: 'closest',
+              legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
+            }, { responsive: true });
+
+            var noteEl = document.getElementById('spectrum-viewer-note');
+            if (plotted.length) {
+              noteEl.textContent = 'Each spectrum is normalized by its own median flux (see hover for '
+                + 'the original unit) so everything fits one axis -- not a physical calibration.'
+                + (familyCount > 1
+                  ? ' Only spectra reporting the exact same flux_unit before scaling were ever on a '
+                    + 'directly comparable physical scale to begin with.'
+                  : '');
+            } else {
+              noteEl.textContent = '';
+            }
+          }
+
+          function addToPlot(holdingId, label, confirmed) {
+            var noteEl = document.getElementById('spectrum-viewer-note');
+            noteEl.textContent = 'Loading…';
+            var url = '/spectrum/' + holdingId + '/data' + (confirmed ? '?confirm=1' : '');
+            fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+              if (data.ok) {
+                plotted.push({ id: holdingId, label: label, result: data.result });
+                noteEl.textContent = '';
+                render();
+              } else if (data.needs_confirm) {
+                noteEl.innerHTML = '';
+                var warn = document.createElement('span');
+                warn.textContent = 'This archive’s spectrum files run large'
+                  + (data.size_hint ? ' (typically ' + data.size_hint + ')' : '') + '. ';
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.textContent = 'Load anyway';
+                btn.onclick = function() { addToPlot(holdingId, label, true); };
+                noteEl.appendChild(warn);
+                noteEl.appendChild(btn);
+              } else {
+                noteEl.textContent = 'Could not display this spectrum: ' + data.error;
+              }
+            }).catch(function(err) {
+              noteEl.textContent = 'Could not reach the server: ' + err;
+            });
+          }
+
+          document.getElementById('spectrum-add').addEventListener('click', function() {
+            var holdingId = epochSelect.value;
+            if (!holdingId) { return; }
+            if (plotted.some(function(e) { return e.id === holdingId; })) { return; } // already on the plot
+            var shortLabel = SPECTRUM_GROUPS[instrumentSelect.value].short_label;
+            var epochLabel = epochSelect.options[epochSelect.selectedIndex].textContent;
+            addToPlot(holdingId, shortLabel + ' · ' + epochLabel, false);
+          });
+          document.getElementById('spectrum-clear').addEventListener('click', function() {
+            plotted = [];
+            document.getElementById('spectrum-viewer-note').textContent = '';
+            emptyPlot();
+          });
         })();
       </script>
     {% endif %}
@@ -968,9 +1224,9 @@ PAGE_TEMPLATE = """
       <p>No spectroscopy holdings found for this star yet.</p>
     {% endif %}
   {% endif %}
+  </div>
 
-  <hr>
-
+  <div id="tab-batch" class="search-tab-panel"{{ "" if active_search_tab == "batch" else " hidden" }}>
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
     are capped at {{ max_name_lookups }} per batch; source_id lookups aren't.
@@ -1033,6 +1289,59 @@ PAGE_TEMPLATE = """
       {% endfor %}
     </table>
   {% endif %}
+  </div>
+
+  <div id="tab-instrument" class="search-tab-panel"{{ "" if active_search_tab == "instrument" else " hidden" }}>
+  <h2>Download by instrument</h2>
+  <p class="note">Download every spectroscopy holding recorded for one archive as CSV -- metadata only
+    (observation dates, match status, archive links), not the spectrum files themselves. Large archives run
+    into the millions of rows; the download streams from the database rather than building the whole file in
+    memory first, but it can still take a while and produce a multi-hundred-MB file for the biggest archives.</p>
+  <div class="instrument-search-controls">
+    <select id="instrument-search-select">
+      <option value="">Select an archive…</option>
+      {% for a in instrument_search_options %}
+      <option value="{{ a.archive_code }}">{{ a.display_name }} ({{ "{:,}".format(a.holdings_count) }} holdings)</option>
+      {% endfor %}
+    </select>
+    <a id="instrument-search-download" href="#">Download CSV</a>
+  </div>
+  <script>
+    (function() {
+      var select = document.getElementById('instrument-search-select');
+      var link = document.getElementById('instrument-search-download');
+      function update() {
+        if (select.value) {
+          link.href = '/instrument_holdings.csv?archive_code=' + encodeURIComponent(select.value);
+          link.removeAttribute('aria-disabled');
+        } else {
+          link.href = '#';
+          link.setAttribute('aria-disabled', 'true');
+        }
+      }
+      link.addEventListener('click', function(e) { if (!select.value) { e.preventDefault(); } });
+      select.addEventListener('change', update);
+      update();
+    })();
+  </script>
+  </div>
+
+  <script>
+    (function() {
+      var buttons = document.querySelectorAll('nav.subtabs button');
+      var panels = { star: document.getElementById('tab-star'), batch: document.getElementById('tab-batch'),
+                     instrument: document.getElementById('tab-instrument') };
+      buttons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var target = btn.getAttribute('data-tab');
+          buttons.forEach(function(b) { b.classList.toggle('active', b === btn); });
+          Object.keys(panels).forEach(function(key) {
+            if (panels[key]) { panels[key].hidden = key !== target; }
+          });
+        });
+      });
+    })();
+  </script>
 
 </body>
 </html>
@@ -1045,7 +1354,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
         error=error, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         **_advanced_search_context(),
     )
 
@@ -1056,7 +1365,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_acti
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
-        active_tab="search",
+        active_tab="search", active_search_tab="batch",
         adv_active=adv_active,
         **_advanced_search_context(),
     )
@@ -1229,7 +1538,7 @@ def search():
             error=None, resolved_source_id=resolved_source_id,
             max_name_lookups=MAX_NAME_LOOKUPS,
             batch_error=None, batch_note=None, batch_results=None,
-            active_tab="search",
+            active_tab="search", active_search_tab="star",
             holdings_total=0, holdings_shown=0, adv_active=False, resolve_only=True,
             **_advanced_search_context(),
         )
@@ -1246,6 +1555,15 @@ def search():
     )
     raw_holdings = _rows_as_dicts(cur)
     holdings_total = len(raw_holdings)
+    # Only archives in SUPPORTED_ARCHIVES have a confirmed direct
+    # reduced-spectrum file with a known wavelength/flux/uncertainty shape
+    # (see webapp.spectrum_viewer's module docstring) -- gate the "view
+    # spectrum" link on that rather than showing a link that 404s for
+    # every other archive_code. Heavy archives (see is_heavy) get a size
+    # hint on the link itself, not just after clicking through.
+    for h in raw_holdings:
+        h["spectrum_viewable"] = h["archive_code"] in SUPPORTED_ARCHIVES
+        h["spectrum_size_hint"] = size_hint_label(h["archive_code"]) if is_heavy(h["archive_code"]) else None
     if adv_filters:
         raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
 
@@ -1266,18 +1584,212 @@ def search():
 
     holdings = _group_holdings(raw_holdings)
     wavelength_chart = _wavelength_coverage_bars(holdings)
+    # Pre-filtered to just the viewable groups/holdings, in a plain,
+    # gap-free list -- the instrument <select>'s option values are indices
+    # into THIS list, not into `holdings` (which also carries archives with
+    # no spectrum support), so JS lookups by index can't land on a
+    # non-viewable group. A well-observed archive (e.g. CFHT/CADC ESPaDOnS
+    # can run 2000+ epochs) still gets a full per-epoch list here -- the
+    # two-step instrument-then-epoch UI is what keeps that navigable, not
+    # trimming the data.
+    spectrum_groups = [
+        {
+            "label": f"{g['display_name']} — {g['instrument'] or '—'}",
+            # Short form for the plot legend -- the full "label" above is
+            # right for the dropdown, but repeated per trace it's the kind
+            # of clutter that made the legend eat most of the plot's width
+            # (confirmed live: "Ondrejov Observatory (CCD700) — COUDE700 —
+            # 2003-07-25"). Just the instrument name is usually enough to
+            # tell traces apart at a glance; archives with no distinct
+            # instrument field fall back to display_name instead of "—".
+            "short_label": g["instrument"] or g["display_name"],
+            "options": [
+                {"id": h["id"], "label": f"{h['obs_date'] or 'no date'}{' (' + h['spectrum_size_hint'] + ')' if h['spectrum_size_hint'] else ''}"}
+                for h in g["observations"] if h["spectrum_viewable"]
+            ],
+        }
+        for g in holdings
+        if any(h["spectrum_viewable"] for h in g["observations"])
+    ]
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings, star_search_id=star_search_id,
-        wavelength_chart=wavelength_chart,
+        wavelength_chart=wavelength_chart, spectrum_groups=spectrum_groups,
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         holdings_total=holdings_total, holdings_shown=len(raw_holdings), adv_active=bool(adv_filters),
         resolve_only=False,
         **_advanced_search_context(),
     )
+
+
+SPECTRUM_TEMPLATE = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>The Spectra Pointer — Spectrum</title>
+  <style>""" + SHARED_STYLE + """
+    #spectrum-plot { width: 100%; height: 500px; margin-top: 1rem; }
+  </style>
+  {% if result %}<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>{% endif %}
+</head>
+<body>
+  <div class="site-header">
+    <h1>The Spectra Pointer</h1>
+    <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
+  </div>""" + NAV_HTML + """
+  <p><a href="/?q={{ star_search_id }}">&larr; back to {{ known_as }}</a></p>
+  <h2>{{ known_as }} — {{ holding.display_name }}{% if holding.instrument %} ({{ holding.instrument }}){% endif %}</h2>
+  <p class="note">{{ holding.obs_date or "no observation date recorded" }} &middot; reduction: {{ holding.reduction_status }}
+    &middot; <a href="{{ holding.archive_url }}" target="_blank" rel="noopener">archive file</a></p>
+  {% if error %}
+    <p>Could not display this spectrum: {{ error }}</p>
+  {% elif needs_confirm %}
+    <p>This archive's spectrum files run large{% if size_hint %} (typically {{ size_hint }}){% endif %} --
+      loading it will fetch the full file from the archive.</p>
+    <p><a href="?confirm=1">Load spectrum anyway</a></p>
+  {% elif result %}
+    <div id="spectrum-plot"></div>
+    <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is normalized by this spectrum's own
+      median (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
+      comparable scale to other archives -- not a physical calibration. Shaded band is the per-pixel
+      uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
+    <script>
+      const Y_RANGE_CAP = 5;
+      function yRangeCapped(traces) {
+        let lo = Infinity, hi = -Infinity;
+        traces.forEach(function(t) {
+          (t.y || []).forEach(function(v) {
+            if (typeof v === 'number' && isFinite(v)) {
+              if (v < lo) lo = v;
+              if (v > hi) hi = v;
+            }
+          });
+        });
+        if (!isFinite(lo) || !isFinite(hi)) { return [-Y_RANGE_CAP, Y_RANGE_CAP]; }
+        lo = Math.max(lo, -Y_RANGE_CAP);
+        hi = Math.min(hi, Y_RANGE_CAP);
+        const pad = Math.max((hi - lo) * 0.08, 0.05);
+        return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
+      }
+      const segments = {{ result.segments | tojson }};
+      const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b'];
+      const traces = [];
+      segments.forEach(function(seg, i) {
+        const color = palette[i % palette.length];
+        if (seg.uncertainty) {
+          const lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
+          const upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+          traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
+                        showlegend: false, hoverinfo: 'skip' });
+          traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
+                        fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
+        }
+        traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines', name: seg.label,
+                      line: { color: color, width: 1.2 } });
+      });
+      Plotly.newPlot('spectrum-plot', traces, {
+        xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
+        yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
+        hovermode: 'closest',
+        margin: { t: 20 },
+      }, { responsive: true });
+    </script>
+  {% endif %}
+</body>
+</html>
+"""
+
+
+def _get_holding_or_404(holding_id: int) -> dict:
+    cur = get_cursor()
+    cur.execute(
+        "SELECT h.*, a.display_name FROM spectroscopy_holdings h "
+        "JOIN archives a ON a.archive_code = h.archive_code WHERE h.id = ?",
+        [holding_id],
+    )
+    rows = _rows_as_dicts(cur)
+    if not rows:
+        abort(404)
+    return rows[0]
+
+
+def _resolve_spectrum(holding: dict) -> dict:
+    """Shared by the HTML page and the JSON data endpoint below -- exactly
+    one place decides "implemented? heavy-and-unconfirmed? rate-limited?
+    fetch it", so the two routes can't drift into different behavior.
+    Returns one of:
+      {"ok": True, "result": {...}}
+      {"ok": False, "needs_confirm": True, "size_hint": str | None}
+      {"ok": False, "error": str}
+    """
+    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
+        return {"ok": False, "error": f"Spectrum display isn't implemented for {holding['display_name']} yet."}
+    if is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
+        # Ask before fetching rather than after -- a plain <a href> is
+        # exactly the shape a crawler/link-preview bot follows automatically,
+        # and even a real user shouldn't trigger a many-MB archive fetch by
+        # accident. MAX_DOWNLOAD_BYTES in spectrum_viewer.py is still the
+        # real enforcement; this is just informed consent before it's tried.
+        return {"ok": False, "needs_confirm": True, "size_hint": size_hint_label(holding["archive_code"])}
+    try:
+        check_rate_limit(request.remote_addr)
+        result = fetch_spectrum(holding)
+    except SpectrumUnavailable as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "result": result}
+
+
+@app.route("/spectrum/<int:holding_id>")
+def spectrum(holding_id: int):
+    """Fetches and plots one holding's actual spectrum file -- gated to
+    SUPPORTED_ARCHIVES (see webapp.spectrum_viewer), the only archives with a
+    confirmed direct file + known column shape. The fetch/parse/downsample
+    all happen per-request, on demand -- nothing here is precomputed or
+    cached, matching the fetch-only-on-click discipline the whole feature was
+    scoped around (a star's holdings list never triggers this on its own).
+
+    Kept as a standalone page (direct-link/shareable) alongside the embedded
+    multi-spectrum panel on the search page (see spectrum_data below) --
+    the two share _resolve_spectrum so they can't drift apart."""
+    holding = _get_holding_or_404(holding_id)
+
+    cur = get_cursor()
+    cur.execute(
+        "SELECT gaia_source_id, bsc_hr_number, name_aliases, input_name FROM stars WHERE star_id = ?",
+        [holding["star_id"]],
+    )
+    star_rows = _rows_as_dicts(cur)
+    star = star_rows[0] if star_rows else None
+    known_as = _known_as(star) if star else "this star"
+    star_search_id = "" if star is None else (
+        star["gaia_source_id"] if star["gaia_source_id"] is not None else star["bsc_hr_number"]
+    )
+
+    resolved = _resolve_spectrum(holding)
+    result = resolved.get("result")
+    error = resolved.get("error")
+    needs_confirm = resolved.get("needs_confirm", False)
+    size_hint = resolved.get("size_hint")
+
+    return render_template_string(
+        SPECTRUM_TEMPLATE, holding=holding, known_as=known_as, star_search_id=star_search_id,
+        result=result, error=error, needs_confirm=needs_confirm, size_hint=size_hint, active_tab=None,
+    )
+
+
+@app.route("/spectrum/<int:holding_id>/data")
+def spectrum_data(holding_id: int):
+    """JSON version of _resolve_spectrum for the embedded multi-spectrum
+    panel on the search page -- fetched client-side via JS so a user can
+    add several holdings' spectra to one plot without a full page reload
+    per fetch. Same gating (SUPPORTED_ARCHIVES/is_heavy/rate limit) as the
+    standalone /spectrum/<id> page, just JSON instead of HTML."""
+    holding = _get_holding_or_404(holding_id)
+    return _resolve_spectrum(holding)
 
 
 CMD_TEMPLATE = """
@@ -2277,17 +2789,95 @@ def _advanced_search_options() -> tuple[list[dict], list[dict]]:
     return _advanced_search_options_cache
 
 
+# Same caching rationale as _advanced_search_options -- archive-level
+# holdings counts only change when a fresh Parquet snapshot loads at
+# process startup, so there's nothing to gain re-querying per request.
+_instrument_search_options_cache: list[dict] | None = None
+
+
+def _instrument_search_options() -> list[dict]:
+    global _instrument_search_options_cache
+    if _instrument_search_options_cache is None:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT h.archive_code, a.display_name, COUNT(*) AS holdings_count "
+            "FROM spectroscopy_holdings h JOIN archives a ON a.archive_code = h.archive_code "
+            "GROUP BY h.archive_code, a.display_name HAVING COUNT(*) > 0 ORDER BY a.display_name"
+        )
+        _instrument_search_options_cache = _rows_as_dicts(cur)
+    return _instrument_search_options_cache
+
+
+INSTRUMENT_EXPORT_FIELDNAMES = [
+    "archive_code", "archive_obs_id", "instrument", "obs_date", "program_id",
+    "match_status", "match_method", "reduction_status", "archive_url", "star_id",
+]
+INSTRUMENT_EXPORT_CHUNK_SIZE = 5_000
+
+
+@app.route("/instrument_holdings.csv")
+def instrument_holdings_csv():
+    """Streams every spectroscopy_holdings row for one archive as CSV --
+    the Instrument search tab's "download all holdings" feature. The
+    biggest archives run into the millions of rows (sdss_legacy_optical
+    alone is 4.5M+), so this is a real streamed response (Response wrapped
+    in stream_with_context, DuckDB read via fetchmany in a loop) rather than
+    _csv_response's build-the-whole-string-in-memory-then-return approach
+    used elsewhere in this file for much smaller result sets -- constant
+    memory regardless of archive size, matching this project's GCP
+    cost-minimization stance. No join against `stars` (e.g. for
+    gaia_source_id) -- a single-table scan+filter is dramatically cheaper
+    at this scale than a join across two multi-million-row tables, and
+    star_id is still exported as the cross-reference key."""
+    archive_code = request.args.get("archive_code", "").strip()
+    if not archive_code:
+        abort(400)
+    cur = get_cursor()
+    cur.execute("SELECT 1 FROM archives WHERE archive_code = ?", [archive_code])
+    if cur.fetchone() is None:
+        abort(404)
+
+    def generate():
+        export_cur = get_cursor()
+        export_cur.execute(
+            "SELECT archive_code, archive_obs_id, instrument, obs_date, program_id, "
+            "match_status, match_method, reduction_status, archive_url, star_id "
+            "FROM spectroscopy_holdings WHERE archive_code = ?",
+            [archive_code],
+        )
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(INSTRUMENT_EXPORT_FIELDNAMES)
+        yield buf.getvalue()
+        while True:
+            rows = export_cur.fetchmany(INSTRUMENT_EXPORT_CHUNK_SIZE)
+            if not rows:
+                break
+            buf.seek(0)
+            buf.truncate(0)
+            writer.writerows(rows)
+            yield buf.getvalue()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="spectra_pointer_{archive_code}_holdings.csv"'},
+    )
+
+
 def _advanced_search_context() -> dict:
     """Common template kwargs for the advanced-search panel -- dropdown
     options plus each field's current value (so the panel keeps showing your
     filters after a GET, or after a batch-lookup POST that carried them as
     hidden fields -- see _parse_advanced_filters) -- spread into every
     render of PAGE_TEMPLATE so the panel behaves the same regardless of
-    which search path rendered the page."""
+    which search path rendered the page. instrument_search_options rides
+    along here too rather than needing its own kwarg at every call site."""
     archive_options, instrument_options = _advanced_search_options()
     return {
         "archive_options": archive_options,
         "instrument_options": instrument_options,
+        "instrument_search_options": _instrument_search_options(),
         "reduction_status_choices": REDUCTION_STATUS_CHOICES,
         "adv_archive": request.values.get("adv_archive", "").strip(),
         "adv_instrument": request.values.get("adv_instrument", "").strip(),

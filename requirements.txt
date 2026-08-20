@@ -9,6 +9,7 @@ flask
 duckdb
 scipy
 aiohttp
+fsspec[http]
 pytz
 paramiko
 geoip2fast
