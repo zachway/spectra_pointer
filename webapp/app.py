@@ -652,9 +652,12 @@ PAGE_TEMPLATE = """
   <style>""" + SHARED_STYLE + """
     #wavelength-plot { width: 100%; margin-top: 0.5rem; }
     .spectrum-row { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; margin-top: 0.5rem; }
-    .spectrum-panel, .wavelength-panel { flex: 1 1 420px; min-width: 0; }
+    .spectrum-panel { flex: 3 1 480px; min-width: 0; }
+    .wavelength-panel { flex: 2 1 320px; min-width: 0; }
     .spectrum-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.4rem; }
-    .spectrum-controls select { font-family: monospace; padding: 0.2rem; flex: 1 1 260px; }
+    .spectrum-controls select { font-family: monospace; padding: 0.2rem; }
+    #spectrum-instrument-select { flex: 1 1 220px; }
+    #spectrum-epoch-select { flex: 1 1 160px; }
     #spectrum-viewer-plot { width: 100%; }
     #spectrum-viewer-note:empty { display: none; }
   </style>
@@ -848,18 +851,14 @@ PAGE_TEMPLATE = """
       <div class="spectrum-row">
         <div class="spectrum-panel">
           <div class="spectrum-controls">
-            <select id="spectrum-select">
+            <select id="spectrum-instrument-select">
               <option value="">Select an instrument…</option>
-              {% for g in holdings %}
-                {% set viewable_obs = g.observations | selectattr("spectrum_viewable") | list %}
-                {% if viewable_obs %}
-                <optgroup label="{{ g.display_name }} — {{ g.instrument or '—' }}">
-                  {% for h in viewable_obs %}
-                  <option value="{{ h.id }}">{{ h.obs_date or "no date" }}{% if h.spectrum_size_hint %} ({{ h.spectrum_size_hint }}){% endif %}</option>
-                  {% endfor %}
-                </optgroup>
-                {% endif %}
+              {% for g in spectrum_groups %}
+              <option value="{{ loop.index0 }}">{{ g.label }} ({{ g.options|length }})</option>
               {% endfor %}
+            </select>
+            <select id="spectrum-epoch-select" disabled>
+              <option value="">Select an instrument first…</option>
             </select>
             <button type="button" id="spectrum-add">Add to plot</button>
             <button type="button" id="spectrum-clear">Clear plot</button>
@@ -880,6 +879,29 @@ PAGE_TEMPLATE = """
           // growing with however many archives this star has.
           var SPECTRUM_PANEL_HEIGHT = 420;
           var PALETTE = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b', '#8e44ad', '#16a085', '#d4ac0d', '#7f8c8d'];
+          var SPECTRUM_GROUPS = {{ spectrum_groups | tojson }};
+
+          var instrumentSelect = document.getElementById('spectrum-instrument-select');
+          var epochSelect = document.getElementById('spectrum-epoch-select');
+          instrumentSelect.addEventListener('change', function() {
+            epochSelect.innerHTML = '';
+            if (!instrumentSelect.value) {
+              var placeholder = document.createElement('option');
+              placeholder.value = '';
+              placeholder.textContent = 'Select an instrument first…';
+              epochSelect.appendChild(placeholder);
+              epochSelect.disabled = true;
+              return;
+            }
+            var group = SPECTRUM_GROUPS[instrumentSelect.value];
+            group.options.forEach(function(opt) {
+              var el = document.createElement('option');
+              el.value = opt.id;
+              el.textContent = opt.label;
+              epochSelect.appendChild(el);
+            });
+            epochSelect.disabled = false;
+          });
 
           var bars = {{ wavelength_chart.bars | tojson }};
           var nRows = {{ wavelength_chart.n_rows }};
@@ -940,8 +962,15 @@ PAGE_TEMPLATE = """
                   traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
                                 fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
                 }
+                // entry.label already names the archive+instrument (and,
+                // via epochLabel, the date) -- only append the segment
+                // label too when an archive actually has more than one
+                // segment (DESI's B/R/Z, lamost_mrs's blue/red), otherwise
+                // it's just a redundant repeat (e.g. "Gaia RVS — Gaia RVS
+                // Gaia RVS", confirmed clunky in review).
+                var name = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
                 traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines',
-                              name: entry.label + ' ' + seg.label, line: { color: color, width: 1.2 } });
+                              name: name, line: { color: color, width: 1.2 } });
               });
             });
             var familyCount = Object.keys(families).length;
@@ -954,6 +983,7 @@ PAGE_TEMPLATE = """
               xaxis: { title: xTitle },
               yaxis: { title: yTitle },
               hovermode: 'closest',
+              legend: { font: { size: 10 }, itemwidth: 30, y: 1, yanchor: 'top' },
             }, { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
@@ -966,15 +996,12 @@ PAGE_TEMPLATE = """
             }
           }
 
-          function addToPlot(holdingId, confirmed) {
+          function addToPlot(holdingId, label, confirmed) {
             var noteEl = document.getElementById('spectrum-viewer-note');
             noteEl.textContent = 'Loading…';
             var url = '/spectrum/' + holdingId + '/data' + (confirmed ? '?confirm=1' : '');
             fetch(url).then(function(r) { return r.json(); }).then(function(data) {
               if (data.ok) {
-                var select = document.getElementById('spectrum-select');
-                var opt = select.querySelector('option[value="' + holdingId + '"]');
-                var label = opt ? opt.closest('optgroup').label : ('holding ' + holdingId);
                 plotted.push({ id: holdingId, label: label, result: data.result });
                 noteEl.textContent = '';
                 render();
@@ -986,7 +1013,7 @@ PAGE_TEMPLATE = """
                 var btn = document.createElement('button');
                 btn.type = 'button';
                 btn.textContent = 'Load anyway';
-                btn.onclick = function() { addToPlot(holdingId, true); };
+                btn.onclick = function() { addToPlot(holdingId, label, true); };
                 noteEl.appendChild(warn);
                 noteEl.appendChild(btn);
               } else {
@@ -998,11 +1025,13 @@ PAGE_TEMPLATE = """
           }
 
           document.getElementById('spectrum-add').addEventListener('click', function() {
-            var select = document.getElementById('spectrum-select');
-            var holdingId = select.value;
+            var holdingId = epochSelect.value;
             if (!holdingId) { return; }
             if (plotted.some(function(e) { return e.id === holdingId; })) { return; } // already on the plot
-            addToPlot(holdingId, false);
+            var instrumentLabel = instrumentSelect.options[instrumentSelect.selectedIndex].textContent
+              .replace(/\\s*\\(\\d+\\)$/, ''); // drop the trailing "(N)" count, not useful on a trace name
+            var epochLabel = epochSelect.options[epochSelect.selectedIndex].textContent;
+            addToPlot(holdingId, instrumentLabel + ' — ' + epochLabel, false);
           });
           document.getElementById('spectrum-clear').addEventListener('click', function() {
             plotted = [];
@@ -1356,10 +1385,29 @@ def search():
 
     holdings = _group_holdings(raw_holdings)
     wavelength_chart = _wavelength_coverage_bars(holdings)
+    # Pre-filtered to just the viewable groups/holdings, in a plain,
+    # gap-free list -- the instrument <select>'s option values are indices
+    # into THIS list, not into `holdings` (which also carries archives with
+    # no spectrum support), so JS lookups by index can't land on a
+    # non-viewable group. A well-observed archive (e.g. CFHT/CADC ESPaDOnS
+    # can run 2000+ epochs) still gets a full per-epoch list here -- the
+    # two-step instrument-then-epoch UI is what keeps that navigable, not
+    # trimming the data.
+    spectrum_groups = [
+        {
+            "label": f"{g['display_name']} — {g['instrument'] or '—'}",
+            "options": [
+                {"id": h["id"], "label": f"{h['obs_date'] or 'no date'}{' (' + h['spectrum_size_hint'] + ')' if h['spectrum_size_hint'] else ''}"}
+                for h in g["observations"] if h["spectrum_viewable"]
+            ],
+        }
+        for g in holdings
+        if any(h["spectrum_viewable"] for h in g["observations"])
+    ]
 
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=star, holdings=holdings, star_search_id=star_search_id,
-        wavelength_chart=wavelength_chart,
+        wavelength_chart=wavelength_chart, spectrum_groups=spectrum_groups,
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
