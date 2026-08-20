@@ -2364,7 +2364,7 @@ INSTRUMENTS_TEMPLATE = """
   <meta charset="utf-8">
   <title>The Spectra Pointer — Instruments</title>
   <style>""" + SHARED_STYLE + """
-    #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
+    #instrument-treemap, #instrument-sky, #all-instrument-wavelength-plot { width: 100%; height: 700px; margin-top: 1rem; }
     .instrument-two-col { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
     .instrument-two-col > div { flex: 1 1 420px; min-width: 320px; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
@@ -2432,7 +2432,6 @@ INSTRUMENTS_TEMPLATE = """
           };
           Plotly.newPlot('all-instrument-wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 12 + nRows * 13) + 20,
             margin: { l: 8, r: 8, t: 4, b: 48 },
             xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
