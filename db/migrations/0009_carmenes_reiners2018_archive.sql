@@ -6,11 +6,10 @@
 -- sync/archives/carmenes_reiners2018.py for the full live-verification
 -- notes.
 --
--- NOTE: carmenes_tac (PR #119, branch carmenes-tac, still draft as of this
--- writing) also claims migration number 0008 -- same situation as the
--- existing 0003 duplicate on main (0003_reduction_status.sql /
--- 0003_sdss_v_optical_gaia_dr3.sql). Whichever of the two merges second
--- should renumber to 0009 rather than resolve the collision here.
+-- carmenes_tac (PR #119) merged first and claimed migration number 0008
+-- (0008_carmenes_tac_archive.sql, now on main) -- renumbered to 0009 here
+-- to resolve that collision, same situation as the existing 0003 duplicate
+-- on main (0003_reduction_status.sql / 0003_sdss_v_optical_gaia_dr3.sql).
 --
 -- Run inside a transaction against the live database.
 
