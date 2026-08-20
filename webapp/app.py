@@ -941,7 +941,7 @@ PAGE_TEMPLATE = """
               height: SPECTRUM_PANEL_HEIGHT,
               margin: { t: 20 },
               xaxis: { title: 'Wavelength (Å)' },
-              yaxis: { title: 'Flux' },
+              yaxis: { title: 'Scaled Flux' },
             }, { responsive: true });
           }
           emptyPlot();
@@ -954,45 +954,27 @@ PAGE_TEMPLATE = """
           function render() {
             var traces = [];
             var families = {};
-            // Each distinct flux_unit gets its own y-axis, auto-scaled
-            // independently, rather than one shared linear axis -- a
-            // "normalized" spectrum (order ~1) plotted against ADU counts
-            // (order ~1e5) isn't a units *bug*, there's no real physical
-            // conversion between them, but sharing one linear axis made the
-            // smaller one flatline invisibly (confirmed live: Gaia RVS
-            // against Ondrejov/ELODIE). Extra axes are hidden (not stacked
-            // visibly) -- the point is keeping every trace's shape legible,
-            // not reading absolute values off a second ruler.
-            var unitAxis = {};
-            var axisLayout = {};
-            var nextAxisNum = 2;
-            plotted.forEach(function(entry) {
-              var unit = entry.result.flux_unit;
-              if (!(unit in unitAxis)) {
-                if (Object.keys(unitAxis).length === 0) {
-                  unitAxis[unit] = 'y';
-                } else {
-                  var key = 'y' + nextAxisNum;
-                  unitAxis[unit] = key;
-                  axisLayout['yaxis' + nextAxisNum] = { overlaying: 'y', visible: false };
-                  nextAxisNum += 1;
-                }
-              }
-            });
-
+            // Every archive's flux/uncertainty already arrives pre-scaled
+            // by a fixed per-archive factor (webapp.spectrum_viewer.
+            // SCALE_FACTOR, derived from one real example per archive) --
+            // one shared linear "Scaled Flux" axis for everything, no
+            // per-unit axis juggling. Not a claim of physical
+            // comparability (flux_unit_family below still tracks that
+            // separately for the note) -- just a display convenience so a
+            // multi-instrument overlay is legible without a forest of
+            // hidden axes.
             plotted.forEach(function(entry, i) {
               var result = entry.result;
               families[result.flux_unit_family] = true;
               var color = PALETTE[i % PALETTE.length];
-              var yaxis = unitAxis[result.flux_unit];
               result.segments.forEach(function(seg) {
                 if (seg.uncertainty) {
                   var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
                   var upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
-                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 }, yaxis: yaxis,
+                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
                                 showlegend: false, hoverinfo: 'skip' });
                   traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
-                                fillcolor: color + '22', yaxis: yaxis, showlegend: false, hoverinfo: 'skip' });
+                                fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
                 }
                 // entry.label already names the instrument (and, via
                 // epochLabel, the date) -- only append the segment label
@@ -1001,36 +983,35 @@ PAGE_TEMPLATE = """
                 // just a redundant repeat. Legend text is truncated
                 // (confirmed live: long labels were eating most of the
                 // plot's width) -- hovertemplate keeps the full name and
-                // unit on hover regardless of how short the legend shows it.
+                // the ORIGINAL (pre-scaling) unit + the scale factor
+                // applied, so the real value is still one hover away.
                 var fullName = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
                 traces.push({
-                  x: seg.wavelength, y: seg.flux, mode: 'lines', yaxis: yaxis,
+                  x: seg.wavelength, y: seg.flux, mode: 'lines',
                   name: truncate(fullName), line: { color: color, width: 1.2 },
-                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} ' + result.flux_unit + '<extra></extra>',
+                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} scaled flux'
+                    + '<br>(' + result.flux_unit + ' × ' + result.flux_scale_factor.toPrecision(3) + ')<extra></extra>',
                 });
               });
             });
             var familyCount = Object.keys(families).length;
-            var unitCount = Object.keys(unitAxis).length;
             var xTitle = plotted.length ? 'Wavelength (' + plotted[0].result.wavelength_unit + ')' : 'Wavelength (Å)';
-            var yTitle = unitCount > 1 ? 'Flux (independent per-trace scales -- see note)'
-                       : plotted.length ? 'Flux (' + plotted[0].result.flux_unit + ')' : 'Flux';
-            Plotly.newPlot('spectrum-viewer-plot', traces, Object.assign({
+            Plotly.newPlot('spectrum-viewer-plot', traces, {
               height: SPECTRUM_PANEL_HEIGHT,
               margin: { t: 20, b: 90 },
               xaxis: { title: xTitle },
-              yaxis: { title: yTitle },
+              yaxis: { title: 'Scaled Flux' },
               hovermode: 'closest',
               legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
-            }, axisLayout), { responsive: true });
+            }, { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
-            if (unitCount > 1) {
-              noteEl.textContent = 'Traces with different flux units are drawn on independent, '
-                + 'auto-scaled y-axes so each stays visible -- their absolute values are not on the '
-                + 'same axis. ' + (familyCount > 1
-                  ? 'Only spectra reporting the exact same flux_unit are on a directly comparable '
-                    + 'physical scale; others are in their own native (often uncalibrated/arbitrary) units.'
+            if (plotted.length) {
+              noteEl.textContent = 'Each archive is scaled by a fixed per-archive factor (see hover for '
+                + 'the original unit) so everything fits one axis -- not a physical calibration.'
+                + (familyCount > 1
+                  ? ' Only spectra reporting the exact same flux_unit before scaling were ever on a '
+                    + 'directly comparable physical scale to begin with.'
                   : '');
             } else {
               noteEl.textContent = '';
@@ -1494,8 +1475,10 @@ SPECTRUM_TEMPLATE = """
     <p><a href="?confirm=1">Load spectrum anyway</a></p>
   {% elif result %}
     <div id="spectrum-plot"></div>
-    <p class="note">Wavelength in {{ result.wavelength_unit }}, flux in {{ result.flux_unit }}. Shaded band is the
-      per-pixel uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
+    <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is scaled by a fixed per-archive factor
+      (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
+      comparable scale to other archives -- not a physical calibration. Shaded band is the per-pixel
+      uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
     <script>
       const segments = {{ result.segments | tojson }};
       const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b'];
@@ -1515,7 +1498,7 @@ SPECTRUM_TEMPLATE = """
       });
       Plotly.newPlot('spectrum-plot', traces, {
         xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
-        yaxis: { title: 'Flux' },
+        yaxis: { title: 'Scaled Flux' },
         hovermode: 'closest',
         margin: { t: 20 },
       }, { responsive: true });

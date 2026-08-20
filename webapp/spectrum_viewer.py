@@ -109,6 +109,20 @@ family: confirmed live these genuinely have no calibration to convert, not
 a gap in this module). The webapp uses flux_unit_family to warn rather than
 silently mislead when a user overlays 'arbitrary' spectra alongside
 'erg_cm2_s_A_1e-17' ones.
+
+On top of that real unit conversion, every archive also gets a fixed,
+per-archive SCALE_FACTOR (below) applied to flux/uncertainty before this
+module returns them, so the webapp can plot every archive on one shared
+"Scaled Flux" y-axis instead of needing a separate auto-scaled axis per
+flux_unit (an earlier version of this feature did that; it worked, but was
+visually busier than wanted once several instruments were on one plot).
+This is explicitly NOT a claim of physical comparability -- it's a display
+convenience derived from one real example per archive (median |flux|,
+target order ~1, see scripts/derive_flux_scale_factors.py), fixed and
+multiplicative so a real brighter/fainter star still plots higher/lower
+after scaling, not a per-spectrum renormalization that would flatten every
+star to the same height. flux_unit/flux_unit_family (pre-scaling) are still
+returned for hover text and transparency -- only the axis label changes.
 """
 
 from __future__ import annotations
@@ -191,6 +205,47 @@ def size_hint_label(archive_code: str) -> str | None:
 FLUX_UNIT_ERG_CM2_S_A = "10⁻¹⁷ erg/s/cm²/Å"
 FLUX_FAMILY_ERG_CM2_S_A = "erg_cm2_s_A_1e-17"
 FLUX_FAMILY_ARBITRARY = "arbitrary"
+
+# Per-archive display scale so every archive can share one "Scaled Flux"
+# y-axis instead of needing a separate axis per flux_unit -- NOT a physical
+# calibration (most of these archives have none to begin with, see
+# FLUX_FAMILY_ARBITRARY above), just a fixed multiplicative factor that
+# brings each archive's *typical* magnitude to order ~1, derived once from
+# one real fetched example per archive (median |flux| across that example's
+# finite, nonzero pixels, target=1.0) -- see scripts/derive_flux_scale_factors.py.
+# Fixed and multiplicative, not renormalized per spectrum: within one
+# archive, a genuinely brighter star still plots higher than a fainter one
+# (the point of a *display* scale, not a per-plot normalization that would
+# flatten every spectrum to the same height regardless of real brightness).
+#
+# The 4 archives already sharing FLUX_FAMILY_ERG_CM2_S_A (a real physical
+# baseline) get ONE shared factor derived from the geometric mean of 3 real
+# examples (desi, mast_jwst, sdss_v_optical -- sdss_legacy_optical uses the
+# identical SDSS spec-file convention, no separate example needed) rather
+# than 4 independent ones -- giving them different factors would have
+# destroyed the real relative comparability that unit conversion earned
+# them. Every other archive is genuinely on its own incomparable scale
+# already (no shared basis to preserve), so each gets its own factor.
+SCALE_FACTOR = {
+    "desi": 0.00608034,
+    "mast_jwst": 0.00608034,
+    "sdss_v_optical": 0.00608034,
+    "sdss_legacy_optical": 0.00608034,
+    "elodie": 2.1619e-05,
+    "eso": 106.342,
+    "feros_gavo": 1.22498,
+    "flashheros_gavo": 0.996962,
+    "gaia_rvs": 1.02779,
+    "hermes_mercator": 0.000721679,
+    "heros_ondrejov": 34.317,
+    "irsa_missions": 3.94345,
+    "lamost": 0.022563,
+    "lamost_mrs": 0.040983,
+    "ondrejov": 0.000780958,
+    "rave": 1.02128,
+    "sdss_v_apogee": 0.00338629,
+    "sophie": 1658.55,
+}
 
 _C_CM_PER_S = 2.99792458e10
 
@@ -664,14 +719,19 @@ def fetch_spectrum(holding: dict) -> dict:
     """holding needs at least archive_code, archive_url, archive_obs_id (DESI only).
 
     Returns {"wavelength_unit": str, "flux_unit": str, "flux_unit_family": str,
-    "segments": [{"label", "wavelength", "flux", "uncertainty"}, ...]}
-    Raises SpectrumUnavailable with a message safe to show a user.
+    "flux_scale_factor": float, "segments": [{"label", "wavelength", "flux",
+    "uncertainty"}, ...]} -- "flux" and "uncertainty" here are ALREADY scaled
+    by flux_scale_factor (see SCALE_FACTOR above); flux_unit/flux_unit_family
+    describe the *original*, pre-scaling unit, kept for hover text and
+    scientific transparency, not for axis labeling -- the webapp always
+    labels the shared y-axis "Scaled Flux" regardless of archive.
 
-    flux_unit_family is derived here, centrally, from flux_unit rather than
-    set per-parser -- every parser reporting FLUX_UNIT_ERG_CM2_S_A already
-    means "converted to (or natively in) that real physical scale", so
-    there's exactly one place that needs to agree with the constant, not one
-    per archive.
+    flux_unit_family and the scale factor are both derived here, centrally,
+    rather than set per-parser -- every parser reporting FLUX_UNIT_ERG_CM2_S_A
+    already means "converted to (or natively in) that real physical scale",
+    so there's exactly one place that needs to agree with the constant, not
+    one per archive; same reasoning for looking the scale factor up by
+    archive_code here instead of hardcoding it into all 18 parsers.
     """
     archive_code = holding["archive_code"]
     parser = _PARSERS.get(archive_code)
@@ -681,4 +741,11 @@ def fetch_spectrum(holding: dict) -> dict:
     result["flux_unit_family"] = (
         FLUX_FAMILY_ERG_CM2_S_A if result["flux_unit"] == FLUX_UNIT_ERG_CM2_S_A else FLUX_FAMILY_ARBITRARY
     )
+    factor = SCALE_FACTOR.get(archive_code, 1.0)
+    result["flux_scale_factor"] = factor
+    if factor != 1.0:
+        for seg in result["segments"]:
+            seg["flux"] = [f * factor for f in seg["flux"]]
+            if seg["uncertainty"] is not None:
+                seg["uncertainty"] = [u * factor for u in seg["uncertainty"]]
     return result
