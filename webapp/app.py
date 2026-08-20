@@ -2366,7 +2366,8 @@ INSTRUMENTS_TEMPLATE = """
   <style>""" + SHARED_STYLE + """
     #instrument-treemap, #instrument-sky, #all-instrument-wavelength-plot { width: 100%; height: 700px; margin-top: 1rem; }
     .instrument-two-col { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
-    .instrument-two-col > div { flex: 1 1 420px; min-width: 320px; }
+    .instrument-two-col > div:first-child { flex: 2 1 420px; min-width: 320px; }
+    .instrument-two-col > div:last-child { flex: 1 1 320px; min-width: 280px; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
     .overlap-controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
     .overlap-controls select { font-family: monospace; padding: 0.3rem; }
@@ -2441,6 +2442,19 @@ INSTRUMENTS_TEMPLATE = """
     </div>
     {% endif %}
   </div>
+  <script>
+    (function() {
+      // The treemap mounts before its flex sibling (the wavelength chart,
+      // below) exists in the DOM, so Plotly sizes it to the *whole* row's
+      // width -- there's no sibling yet to share it with. Once the second
+      // column is parsed in, the treemap's CSS box shrinks to its true
+      // ~2/3 share, but the already-drawn SVG doesn't shrink with it and
+      // spills into the wavelength chart's column. Now that both columns
+      // exist, force one resize so the treemap re-measures its real box.
+      var gd = document.getElementById('instrument-treemap');
+      if (gd && window.Plotly) { Plotly.Plots.resize(gd); }
+    })();
+  </script>
 
   <hr>
   <h2>Tracked instruments</h2>
