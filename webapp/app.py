@@ -324,7 +324,23 @@ def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
     return {"bars": bars, "n_rows": max(rows) + 1}
 
 
-def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
+def _archive_color_map(archive_names: list[str]) -> dict[str, str]:
+    """Assigns each archive one WAVELENGTH_CHART_PALETTE color, in
+    first-seen order over `archive_names`, cycling once there are more
+    archives than palette slots. Shared by the Instruments page's treemap
+    and wavelength-coverage chart so the same archive reads as the same
+    color in both -- there are more archives (~30) than palette slots (8),
+    so distinct archives can land on the same color; that's an accepted
+    tradeoff for the two charts speaking a consistent visual language over
+    every archive having a guaranteed-unique hue."""
+    order: list[str] = []
+    for name in archive_names:
+        if name not in order:
+            order.append(name)
+    return {name: WAVELENGTH_CHART_PALETTE[i % len(WAVELENGTH_CHART_PALETTE)] for i, name in enumerate(order)}
+
+
+def _all_instrument_wavelength_bars(rows: list[dict], archive_color_map: dict[str, str]) -> dict | None:
     """Instruments page's version of the chart above: one bar per known
     published range across *every* tracked instrument, not one star's
     holdings. `rows` is the (display_name, instrument, n) list already
@@ -334,7 +350,10 @@ def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
     and 'ESO Archive (Raw)') collapses into one bar rather than drawing
     twice -- keyed on (instrument name, range), with every contributing
     archive named in the label. Rows with no known range are silently
-    skipped, same as _wavelength_coverage_bars above."""
+    skipped, same as _wavelength_coverage_bars above. `archive_color_map`
+    (see _archive_color_map) is the same one instruments_page() uses to
+    color the treemap, so a bar's color always matches its archive's box
+    there."""
     grouped: dict[tuple[str, tuple[float, float]], dict] = {}
     for r in rows:
         coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((r["display_name"], r["instrument"]))
@@ -367,13 +386,9 @@ def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
         return None
 
     rows_assign = _pack_wavelength_rows([(b["wave_min"], b["wave_max"]) for b in bars])
-    archive_order: list[str] = []
-    for b in bars:
-        if b["archive"] not in archive_order:
-            archive_order.append(b["archive"])
     for b, row in zip(bars, rows_assign):
         b["row"] = row
-        b["color"] = WAVELENGTH_CHART_PALETTE[archive_order.index(b["archive"]) % len(WAVELENGTH_CHART_PALETTE)]
+        b["color"] = archive_color_map[b["archive"]]
 
     return {"bars": bars, "n_rows": max(rows_assign) + 1}
 
@@ -2364,9 +2379,20 @@ INSTRUMENTS_TEMPLATE = """
   <meta charset="utf-8">
   <title>The Spectra Pointer — Instruments</title>
   <style>""" + SHARED_STYLE + """
-    #instrument-treemap, #instrument-sky { width: 100%; height: 700px; margin-top: 1rem; }
+    #instrument-treemap, #instrument-sky, #all-instrument-wavelength-plot { width: 100%; height: 700px; margin-top: 1rem; }
     .instrument-two-col { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
-    .instrument-two-col > div { flex: 1 1 420px; min-width: 320px; }
+    /* min-width: 0 overrides flex items' default "auto" minimum, which is
+       otherwise driven by their widest descendant -- the Plotly SVG inside,
+       which can carry a stale, too-wide pixel size left over from a resize
+       that ran before its final column width was settled (see the
+       Plotly.Plots.resize() call below). Without this, that descendant's
+       width becomes a floor the column can't shrink below, pushing its
+       sibling column past the viewport instead of the column wrapping/
+       shrinking to fit. overflow: hidden is a belt-and-suspenders clamp so
+       any leftover oversized frame is clipped rather than spilling out. */
+    .instrument-two-col > div { min-width: 0; overflow: hidden; }
+    .instrument-two-col > div:first-child { flex: 2 1 420px; }
+    .instrument-two-col > div:last-child { flex: 1 1 320px; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
     .overlap-controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
     .overlap-controls select { font-family: monospace; padding: 0.3rem; }
@@ -2397,6 +2423,7 @@ INSTRUMENTS_TEMPLATE = """
             parents: {{ treemap_parents | tojson }},
             values: {{ treemap_values | tojson }},
             customdata: {{ treemap_counts | tojson }},
+            marker: { colors: {{ treemap_colors | tojson }} },
             texttemplate: '%{label}<br>%{customdata:,}',
             hovertemplate: '%{label}<br>%{customdata:,} holdings<extra></extra>',
           }], { margin: { t: 10, l: 10, r: 10, b: 10 } }, { responsive: true });
@@ -2432,7 +2459,6 @@ INSTRUMENTS_TEMPLATE = """
           };
           Plotly.newPlot('all-instrument-wavelength-plot', [trace], {
             barmode: 'overlay',
-            height: Math.max(60, 12 + nRows * 13) + 20,
             margin: { l: 8, r: 8, t: 4, b: 48 },
             xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
             yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
@@ -2442,6 +2468,24 @@ INSTRUMENTS_TEMPLATE = """
     </div>
     {% endif %}
   </div>
+  <script>
+    (function() {
+      // The treemap mounts before its flex sibling (the wavelength chart,
+      // below) exists in the DOM, so Plotly sizes it to the *whole* row's
+      // width -- there's no sibling yet to share it with. Once the second
+      // column is parsed in, both columns' CSS boxes settle to their true
+      // ~2:1 share, but neither chart's already-drawn SVG shrinks on its
+      // own to match (this app's Plotly build only re-autosizes on a
+      // window resize event, not on a plain DOM/layout change). Resize
+      // both now that the full row -- and each column's real width --
+      // exists, so each measures against its actual final box instead of
+      // whatever it saw at its own mount time.
+      ['instrument-treemap', 'all-instrument-wavelength-plot'].forEach(function(id) {
+        var gd = document.getElementById(id);
+        if (gd && window.Plotly) { Plotly.Plots.resize(gd); }
+      });
+    })();
+  </script>
 
   <hr>
   <h2>Tracked instruments</h2>
@@ -2859,7 +2903,11 @@ def instruments_page():
         leaf_weights_by_archive[r["display_name"]].append(math.log10(r["n"] + 1))
     weight_sum_by_archive = {a: sum(ws) for a, ws in leaf_weights_by_archive.items()}
 
-    treemap_labels, treemap_parents, treemap_values, treemap_counts = [], [], [], []
+    # Shared with the wavelength-coverage chart below (_all_instrument_
+    # wavelength_bars) so the same archive is the same color in both.
+    archive_color_map = _archive_color_map([r["display_name"] for r in rows])
+
+    treemap_labels, treemap_parents, treemap_values, treemap_counts, treemap_colors = [], [], [], [], []
     seen_archives = set()
     for r in rows:
         archive = r["display_name"]
@@ -2869,6 +2917,7 @@ def instruments_page():
             treemap_parents.append("")
             treemap_values.append(archive_value)
             treemap_counts.append(archive_totals[archive])
+            treemap_colors.append(archive_color_map[archive])
             seen_archives.add(archive)
         weight_sum = weight_sum_by_archive[archive]
         leaf_weight = math.log10(r["n"] + 1)
@@ -2877,6 +2926,7 @@ def instruments_page():
         treemap_parents.append(archive)
         treemap_values.append(leaf_value)
         treemap_counts.append(r["n"])
+        treemap_colors.append(archive_color_map[archive])
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -2967,12 +3017,12 @@ def instruments_page():
         for r in _rows_as_dicts(cur)
     ]
 
-    wavelength_chart = _all_instrument_wavelength_bars(rows)
+    wavelength_chart = _all_instrument_wavelength_bars(rows, archive_color_map)
 
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
-        treemap_counts=treemap_counts,
+        treemap_counts=treemap_counts, treemap_colors=treemap_colors,
         instruments=instruments,
         wavelength_chart=wavelength_chart,
         instrument_sky_fig=instrument_sky_fig,
