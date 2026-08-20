@@ -2366,8 +2366,18 @@ INSTRUMENTS_TEMPLATE = """
   <style>""" + SHARED_STYLE + """
     #instrument-treemap, #instrument-sky, #all-instrument-wavelength-plot { width: 100%; height: 700px; margin-top: 1rem; }
     .instrument-two-col { display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
-    .instrument-two-col > div:first-child { flex: 2 1 420px; min-width: 320px; }
-    .instrument-two-col > div:last-child { flex: 1 1 320px; min-width: 280px; }
+    /* min-width: 0 overrides flex items' default "auto" minimum, which is
+       otherwise driven by their widest descendant -- the Plotly SVG inside,
+       which can carry a stale, too-wide pixel size left over from a resize
+       that ran before its final column width was settled (see the
+       Plotly.Plots.resize() call below). Without this, that descendant's
+       width becomes a floor the column can't shrink below, pushing its
+       sibling column past the viewport instead of the column wrapping/
+       shrinking to fit. overflow: hidden is a belt-and-suspenders clamp so
+       any leftover oversized frame is clipped rather than spilling out. */
+    .instrument-two-col > div { min-width: 0; overflow: hidden; }
+    .instrument-two-col > div:first-child { flex: 2 1 420px; }
+    .instrument-two-col > div:last-child { flex: 1 1 320px; }
     #overlap-heatmap { width: 100%; height: 650px; margin-top: 1rem; }
     .overlap-controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin: 1rem 0; }
     .overlap-controls select { font-family: monospace; padding: 0.3rem; }
@@ -2447,12 +2457,17 @@ INSTRUMENTS_TEMPLATE = """
       // The treemap mounts before its flex sibling (the wavelength chart,
       // below) exists in the DOM, so Plotly sizes it to the *whole* row's
       // width -- there's no sibling yet to share it with. Once the second
-      // column is parsed in, the treemap's CSS box shrinks to its true
-      // ~2/3 share, but the already-drawn SVG doesn't shrink with it and
-      // spills into the wavelength chart's column. Now that both columns
-      // exist, force one resize so the treemap re-measures its real box.
-      var gd = document.getElementById('instrument-treemap');
-      if (gd && window.Plotly) { Plotly.Plots.resize(gd); }
+      // column is parsed in, both columns' CSS boxes settle to their true
+      // ~2:1 share, but neither chart's already-drawn SVG shrinks on its
+      // own to match (this app's Plotly build only re-autosizes on a
+      // window resize event, not on a plain DOM/layout change). Resize
+      // both now that the full row -- and each column's real width --
+      // exists, so each measures against its actual final box instead of
+      // whatever it saw at its own mount time.
+      ['instrument-treemap', 'all-instrument-wavelength-plot'].forEach(function(id) {
+        var gd = document.getElementById(id);
+        if (gd && window.Plotly) { Plotly.Plots.resize(gd); }
+      });
     })();
   </script>
 
