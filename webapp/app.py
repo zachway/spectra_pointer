@@ -55,7 +55,7 @@ import paramiko
 import requests
 import skyplothelper.plotly as sph_plotly
 from astropy.coordinates import SkyCoord
-from flask import Flask, Response, abort, redirect, render_template_string, request
+from flask import Flask, Response, abort, redirect, render_template_string, request, stream_with_context
 from pyvo.dal.exceptions import DALServiceError
 
 from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
@@ -582,7 +582,7 @@ def _render_radial(ra_str, dec_str, radius_str, radial_error=None, radial_result
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         ra=ra_str, dec=dec_str, radius=radius_str,
         radial_searched=True, radial_error=radial_error, radial_results=radial_results,
         radius_display=radius_display if radius_display is not None else radius_str,
@@ -627,6 +627,14 @@ SHARED_STYLE = """
     nav.tabs a { text-decoration: none; padding: 0.5rem 1rem; border: 1px solid #000; border-bottom: none;
                  margin-right: 0.3rem; color: #000; }
     nav.tabs a.active { font-weight: bold; background: #000; color: #fff; }
+    nav.subtabs { display: flex; gap: 0; border-bottom: 1px solid #666; margin: 0.5rem 0 1.2rem; }
+    nav.subtabs button { font-family: monospace; font-size: 0.95rem; cursor: pointer; text-decoration: none;
+                          padding: 0.35rem 0.8rem; border: 1px solid #666; border-bottom: none;
+                          margin-right: 0.3rem; color: #000; background: #fff; }
+    nav.subtabs button.active { font-weight: bold; background: #666; color: #fff; }
+    .search-tab-panel[hidden] { display: none; }
+    .instrument-search-controls { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+    .instrument-search-controls select { font-family: monospace; padding: 0.3rem; min-width: 280px; }
     .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
     .site-header h1 { margin: 0; }
     .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
@@ -670,6 +678,14 @@ PAGE_TEMPLATE = """
   </div>""" + NAV_HTML + """
   <p class="note">A numeric search is read as a Gaia source_id or Bright Star Catalogue (HR) number.</p>
   <p class="note">Under active development — file bugs or feature requests <a href="https://github.com/zachway/spectra_pointer">on GitHub</a> or email zway1 [at] gsu.edu.</p>
+
+  <nav class="subtabs">
+    <button type="button" data-tab="star" class="{{ 'active' if active_search_tab == 'star' else '' }}">Star search</button>
+    <button type="button" data-tab="batch" class="{{ 'active' if active_search_tab == 'batch' else '' }}">Batch search</button>
+    <button type="button" data-tab="instrument" class="{{ 'active' if active_search_tab == 'instrument' else '' }}">Instrument search</button>
+  </nav>
+
+  <div id="tab-star" class="search-tab-panel"{{ "" if active_search_tab == "star" else " hidden" }}>
   <form method="get" action="">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit" name="mode" value="name">Search</button>
@@ -951,6 +967,32 @@ PAGE_TEMPLATE = """
             return s.length > LEGEND_MAX_CHARS ? s.slice(0, LEGEND_MAX_CHARS - 1) + '…' : s;
           }
 
+          var Y_RANGE_CAP = 5;
+          // Median normalization keeps the *typical* flux near 1, but
+          // doesn't clip outliers -- one cosmic ray or bad pixel at, say,
+          // 40x the median would still dominate Plotly's default autorange
+          // and squash the real spectrum flat near the bottom of the plot.
+          // Fits the real data as usual (with a little padding) but never
+          // lets either bound exceed +-Y_RANGE_CAP -- a genuine outlier
+          // just draws off-screen instead of ruining the scale for
+          // everything else on the plot.
+          function yRangeCapped(traces) {
+            var lo = Infinity, hi = -Infinity;
+            traces.forEach(function(t) {
+              (t.y || []).forEach(function(v) {
+                if (typeof v === 'number' && isFinite(v)) {
+                  if (v < lo) lo = v;
+                  if (v > hi) hi = v;
+                }
+              });
+            });
+            if (!isFinite(lo) || !isFinite(hi)) { return [-Y_RANGE_CAP, Y_RANGE_CAP]; }
+            lo = Math.max(lo, -Y_RANGE_CAP);
+            hi = Math.min(hi, Y_RANGE_CAP);
+            var pad = Math.max((hi - lo) * 0.08, 0.05);
+            return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
+          }
+
           function render() {
             var traces = [];
             var families = {};
@@ -1001,14 +1043,14 @@ PAGE_TEMPLATE = """
               height: SPECTRUM_PANEL_HEIGHT,
               margin: { t: 20, b: 90 },
               xaxis: { title: xTitle },
-              yaxis: { title: 'Scaled Flux' },
+              yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
               hovermode: 'closest',
               legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
             }, { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
             if (plotted.length) {
-              noteEl.textContent = 'Each archive is scaled by a fixed per-archive factor (see hover for '
+              noteEl.textContent = 'Each spectrum is normalized by its own median flux (see hover for '
                 + 'the original unit) so everything fits one axis -- not a physical calibration.'
                 + (familyCount > 1
                   ? ' Only spectra reporting the exact same flux_unit before scaling were ever on a '
@@ -1100,9 +1142,9 @@ PAGE_TEMPLATE = """
       <p>No spectroscopy holdings found for this star yet.</p>
     {% endif %}
   {% endif %}
+  </div>
 
-  <hr>
-
+  <div id="tab-batch" class="search-tab-panel"{{ "" if active_search_tab == "batch" else " hidden" }}>
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
     are capped at {{ max_name_lookups }} per batch; source_id lookups aren't.
@@ -1165,6 +1207,59 @@ PAGE_TEMPLATE = """
       {% endfor %}
     </table>
   {% endif %}
+  </div>
+
+  <div id="tab-instrument" class="search-tab-panel"{{ "" if active_search_tab == "instrument" else " hidden" }}>
+  <h2>Download by instrument</h2>
+  <p class="note">Download every spectroscopy holding recorded for one archive as CSV -- metadata only
+    (observation dates, match status, archive links), not the spectrum files themselves. Large archives run
+    into the millions of rows; the download streams from the database rather than building the whole file in
+    memory first, but it can still take a while and produce a multi-hundred-MB file for the biggest archives.</p>
+  <div class="instrument-search-controls">
+    <select id="instrument-search-select">
+      <option value="">Select an archive…</option>
+      {% for a in instrument_search_options %}
+      <option value="{{ a.archive_code }}">{{ a.display_name }} ({{ "{:,}".format(a.holdings_count) }} holdings)</option>
+      {% endfor %}
+    </select>
+    <a id="instrument-search-download" href="#">Download CSV</a>
+  </div>
+  <script>
+    (function() {
+      var select = document.getElementById('instrument-search-select');
+      var link = document.getElementById('instrument-search-download');
+      function update() {
+        if (select.value) {
+          link.href = '/instrument_holdings.csv?archive_code=' + encodeURIComponent(select.value);
+          link.removeAttribute('aria-disabled');
+        } else {
+          link.href = '#';
+          link.setAttribute('aria-disabled', 'true');
+        }
+      }
+      link.addEventListener('click', function(e) { if (!select.value) { e.preventDefault(); } });
+      select.addEventListener('change', update);
+      update();
+    })();
+  </script>
+  </div>
+
+  <script>
+    (function() {
+      var buttons = document.querySelectorAll('nav.subtabs button');
+      var panels = { star: document.getElementById('tab-star'), batch: document.getElementById('tab-batch'),
+                     instrument: document.getElementById('tab-instrument') };
+      buttons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var target = btn.getAttribute('data-tab');
+          buttons.forEach(function(b) { b.classList.toggle('active', b === btn); });
+          Object.keys(panels).forEach(function(key) {
+            if (panels[key]) { panels[key].hidden = key !== target; }
+          });
+        });
+      });
+    })();
+  </script>
 
 </body>
 </html>
@@ -1177,7 +1272,7 @@ def _blank(query=None, error=None, resolved_source_id=None):
         error=error, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         **_advanced_search_context(),
     )
 
@@ -1188,7 +1283,7 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_acti
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
-        active_tab="search",
+        active_tab="search", active_search_tab="batch",
         adv_active=adv_active,
         **_advanced_search_context(),
     )
@@ -1361,7 +1456,7 @@ def search():
             error=None, resolved_source_id=resolved_source_id,
             max_name_lookups=MAX_NAME_LOOKUPS,
             batch_error=None, batch_note=None, batch_results=None,
-            active_tab="search",
+            active_tab="search", active_search_tab="star",
             holdings_total=0, holdings_shown=0, adv_active=False, resolve_only=True,
             **_advanced_search_context(),
         )
@@ -1441,7 +1536,7 @@ def search():
         error=None, resolved_source_id=resolved_source_id,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
-        active_tab="search",
+        active_tab="search", active_search_tab="star",
         holdings_total=holdings_total, holdings_shown=len(raw_holdings), adv_active=bool(adv_filters),
         resolve_only=False,
         **_advanced_search_context(),
@@ -1476,11 +1571,28 @@ SPECTRUM_TEMPLATE = """
     <p><a href="?confirm=1">Load spectrum anyway</a></p>
   {% elif result %}
     <div id="spectrum-plot"></div>
-    <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is scaled by a fixed per-archive factor
-      (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
+    <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is normalized by this spectrum's own
+      median (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
       comparable scale to other archives -- not a physical calibration. Shaded band is the per-pixel
       uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
     <script>
+      const Y_RANGE_CAP = 5;
+      function yRangeCapped(traces) {
+        let lo = Infinity, hi = -Infinity;
+        traces.forEach(function(t) {
+          (t.y || []).forEach(function(v) {
+            if (typeof v === 'number' && isFinite(v)) {
+              if (v < lo) lo = v;
+              if (v > hi) hi = v;
+            }
+          });
+        });
+        if (!isFinite(lo) || !isFinite(hi)) { return [-Y_RANGE_CAP, Y_RANGE_CAP]; }
+        lo = Math.max(lo, -Y_RANGE_CAP);
+        hi = Math.min(hi, Y_RANGE_CAP);
+        const pad = Math.max((hi - lo) * 0.08, 0.05);
+        return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
+      }
       const segments = {{ result.segments | tojson }};
       const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b'];
       const traces = [];
@@ -1499,7 +1611,7 @@ SPECTRUM_TEMPLATE = """
       });
       Plotly.newPlot('spectrum-plot', traces, {
         xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
-        yaxis: { title: 'Scaled Flux' },
+        yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
         hovermode: 'closest',
         margin: { t: 20 },
       }, { responsive: true });
@@ -2595,17 +2707,95 @@ def _advanced_search_options() -> tuple[list[dict], list[dict]]:
     return _advanced_search_options_cache
 
 
+# Same caching rationale as _advanced_search_options -- archive-level
+# holdings counts only change when a fresh Parquet snapshot loads at
+# process startup, so there's nothing to gain re-querying per request.
+_instrument_search_options_cache: list[dict] | None = None
+
+
+def _instrument_search_options() -> list[dict]:
+    global _instrument_search_options_cache
+    if _instrument_search_options_cache is None:
+        cur = get_cursor()
+        cur.execute(
+            "SELECT h.archive_code, a.display_name, COUNT(*) AS holdings_count "
+            "FROM spectroscopy_holdings h JOIN archives a ON a.archive_code = h.archive_code "
+            "GROUP BY h.archive_code, a.display_name HAVING COUNT(*) > 0 ORDER BY a.display_name"
+        )
+        _instrument_search_options_cache = _rows_as_dicts(cur)
+    return _instrument_search_options_cache
+
+
+INSTRUMENT_EXPORT_FIELDNAMES = [
+    "archive_code", "archive_obs_id", "instrument", "obs_date", "program_id",
+    "match_status", "match_method", "reduction_status", "archive_url", "star_id",
+]
+INSTRUMENT_EXPORT_CHUNK_SIZE = 5_000
+
+
+@app.route("/instrument_holdings.csv")
+def instrument_holdings_csv():
+    """Streams every spectroscopy_holdings row for one archive as CSV --
+    the Instrument search tab's "download all holdings" feature. The
+    biggest archives run into the millions of rows (sdss_legacy_optical
+    alone is 4.5M+), so this is a real streamed response (Response wrapped
+    in stream_with_context, DuckDB read via fetchmany in a loop) rather than
+    _csv_response's build-the-whole-string-in-memory-then-return approach
+    used elsewhere in this file for much smaller result sets -- constant
+    memory regardless of archive size, matching this project's GCP
+    cost-minimization stance. No join against `stars` (e.g. for
+    gaia_source_id) -- a single-table scan+filter is dramatically cheaper
+    at this scale than a join across two multi-million-row tables, and
+    star_id is still exported as the cross-reference key."""
+    archive_code = request.args.get("archive_code", "").strip()
+    if not archive_code:
+        abort(400)
+    cur = get_cursor()
+    cur.execute("SELECT 1 FROM archives WHERE archive_code = ?", [archive_code])
+    if cur.fetchone() is None:
+        abort(404)
+
+    def generate():
+        export_cur = get_cursor()
+        export_cur.execute(
+            "SELECT archive_code, archive_obs_id, instrument, obs_date, program_id, "
+            "match_status, match_method, reduction_status, archive_url, star_id "
+            "FROM spectroscopy_holdings WHERE archive_code = ?",
+            [archive_code],
+        )
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(INSTRUMENT_EXPORT_FIELDNAMES)
+        yield buf.getvalue()
+        while True:
+            rows = export_cur.fetchmany(INSTRUMENT_EXPORT_CHUNK_SIZE)
+            if not rows:
+                break
+            buf.seek(0)
+            buf.truncate(0)
+            writer.writerows(rows)
+            yield buf.getvalue()
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="spectra_pointer_{archive_code}_holdings.csv"'},
+    )
+
+
 def _advanced_search_context() -> dict:
     """Common template kwargs for the advanced-search panel -- dropdown
     options plus each field's current value (so the panel keeps showing your
     filters after a GET, or after a batch-lookup POST that carried them as
     hidden fields -- see _parse_advanced_filters) -- spread into every
     render of PAGE_TEMPLATE so the panel behaves the same regardless of
-    which search path rendered the page."""
+    which search path rendered the page. instrument_search_options rides
+    along here too rather than needing its own kwarg at every call site."""
     archive_options, instrument_options = _advanced_search_options()
     return {
         "archive_options": archive_options,
         "instrument_options": instrument_options,
+        "instrument_search_options": _instrument_search_options(),
         "reduction_status_choices": REDUCTION_STATUS_CHOICES,
         "adv_archive": request.values.get("adv_archive", "").strip(),
         "adv_instrument": request.values.get("adv_instrument", "").strip(),
