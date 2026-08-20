@@ -946,51 +946,92 @@ PAGE_TEMPLATE = """
           }
           emptyPlot();
 
+          var LEGEND_MAX_CHARS = 28;
+          function truncate(s) {
+            return s.length > LEGEND_MAX_CHARS ? s.slice(0, LEGEND_MAX_CHARS - 1) + '…' : s;
+          }
+
           function render() {
             var traces = [];
             var families = {};
+            // Each distinct flux_unit gets its own y-axis, auto-scaled
+            // independently, rather than one shared linear axis -- a
+            // "normalized" spectrum (order ~1) plotted against ADU counts
+            // (order ~1e5) isn't a units *bug*, there's no real physical
+            // conversion between them, but sharing one linear axis made the
+            // smaller one flatline invisibly (confirmed live: Gaia RVS
+            // against Ondrejov/ELODIE). Extra axes are hidden (not stacked
+            // visibly) -- the point is keeping every trace's shape legible,
+            // not reading absolute values off a second ruler.
+            var unitAxis = {};
+            var axisLayout = {};
+            var nextAxisNum = 2;
+            plotted.forEach(function(entry) {
+              var unit = entry.result.flux_unit;
+              if (!(unit in unitAxis)) {
+                if (Object.keys(unitAxis).length === 0) {
+                  unitAxis[unit] = 'y';
+                } else {
+                  var key = 'y' + nextAxisNum;
+                  unitAxis[unit] = key;
+                  axisLayout['yaxis' + nextAxisNum] = { overlaying: 'y', visible: false };
+                  nextAxisNum += 1;
+                }
+              }
+            });
+
             plotted.forEach(function(entry, i) {
               var result = entry.result;
               families[result.flux_unit_family] = true;
               var color = PALETTE[i % PALETTE.length];
+              var yaxis = unitAxis[result.flux_unit];
               result.segments.forEach(function(seg) {
                 if (seg.uncertainty) {
                   var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
                   var upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
-                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
+                  traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 }, yaxis: yaxis,
                                 showlegend: false, hoverinfo: 'skip' });
                   traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
-                                fillcolor: color + '22', showlegend: false, hoverinfo: 'skip' });
+                                fillcolor: color + '22', yaxis: yaxis, showlegend: false, hoverinfo: 'skip' });
                 }
-                // entry.label already names the archive+instrument (and,
-                // via epochLabel, the date) -- only append the segment
-                // label too when an archive actually has more than one
-                // segment (DESI's B/R/Z, lamost_mrs's blue/red), otherwise
-                // it's just a redundant repeat (e.g. "Gaia RVS — Gaia RVS
-                // Gaia RVS", confirmed clunky in review).
-                var name = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
-                traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines',
-                              name: name, line: { color: color, width: 1.2 } });
+                // entry.label already names the instrument (and, via
+                // epochLabel, the date) -- only append the segment label
+                // too when an archive actually has more than one segment
+                // (DESI's B/R/Z, lamost_mrs's blue/red), otherwise it's
+                // just a redundant repeat. Legend text is truncated
+                // (confirmed live: long labels were eating most of the
+                // plot's width) -- hovertemplate keeps the full name and
+                // unit on hover regardless of how short the legend shows it.
+                var fullName = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
+                traces.push({
+                  x: seg.wavelength, y: seg.flux, mode: 'lines', yaxis: yaxis,
+                  name: truncate(fullName), line: { color: color, width: 1.2 },
+                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} ' + result.flux_unit + '<extra></extra>',
+                });
               });
             });
             var familyCount = Object.keys(families).length;
+            var unitCount = Object.keys(unitAxis).length;
             var xTitle = plotted.length ? 'Wavelength (' + plotted[0].result.wavelength_unit + ')' : 'Wavelength (Å)';
-            var yTitle = familyCount > 1 ? 'Flux (mixed units -- see note)'
+            var yTitle = unitCount > 1 ? 'Flux (independent per-trace scales -- see note)'
                        : plotted.length ? 'Flux (' + plotted[0].result.flux_unit + ')' : 'Flux';
-            Plotly.newPlot('spectrum-viewer-plot', traces, {
+            Plotly.newPlot('spectrum-viewer-plot', traces, Object.assign({
               height: SPECTRUM_PANEL_HEIGHT,
-              margin: { t: 20 },
+              margin: { t: 20, b: 90 },
               xaxis: { title: xTitle },
               yaxis: { title: yTitle },
               hovermode: 'closest',
-              legend: { font: { size: 10 }, itemwidth: 30, y: 1, yanchor: 'top' },
-            }, { responsive: true });
+              legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
+            }, axisLayout), { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
-            if (familyCount > 1) {
-              noteEl.textContent = 'Mixed flux units on this plot -- only spectra reporting the same '
-                + 'flux_unit are on a directly comparable physical scale; others are shown in their '
-                + 'own native (often uncalibrated/arbitrary) units.';
+            if (unitCount > 1) {
+              noteEl.textContent = 'Traces with different flux units are drawn on independent, '
+                + 'auto-scaled y-axes so each stays visible -- their absolute values are not on the '
+                + 'same axis. ' + (familyCount > 1
+                  ? 'Only spectra reporting the exact same flux_unit are on a directly comparable '
+                    + 'physical scale; others are in their own native (often uncalibrated/arbitrary) units.'
+                  : '');
             } else {
               noteEl.textContent = '';
             }
@@ -1028,10 +1069,9 @@ PAGE_TEMPLATE = """
             var holdingId = epochSelect.value;
             if (!holdingId) { return; }
             if (plotted.some(function(e) { return e.id === holdingId; })) { return; } // already on the plot
-            var instrumentLabel = instrumentSelect.options[instrumentSelect.selectedIndex].textContent
-              .replace(/\\s*\\(\\d+\\)$/, ''); // drop the trailing "(N)" count, not useful on a trace name
+            var shortLabel = SPECTRUM_GROUPS[instrumentSelect.value].short_label;
             var epochLabel = epochSelect.options[epochSelect.selectedIndex].textContent;
-            addToPlot(holdingId, instrumentLabel + ' — ' + epochLabel, false);
+            addToPlot(holdingId, shortLabel + ' · ' + epochLabel, false);
           });
           document.getElementById('spectrum-clear').addEventListener('click', function() {
             plotted = [];
@@ -1396,6 +1436,14 @@ def search():
     spectrum_groups = [
         {
             "label": f"{g['display_name']} — {g['instrument'] or '—'}",
+            # Short form for the plot legend -- the full "label" above is
+            # right for the dropdown, but repeated per trace it's the kind
+            # of clutter that made the legend eat most of the plot's width
+            # (confirmed live: "Ondrejov Observatory (CCD700) — COUDE700 —
+            # 2003-07-25"). Just the instrument name is usually enough to
+            # tell traces apart at a glance; archives with no distinct
+            # instrument field fall back to display_name instead of "—".
+            "short_label": g["instrument"] or g["display_name"],
             "options": [
                 {"id": h["id"], "label": f"{h['obs_date'] or 'no date'}{' (' + h['spectrum_size_hint'] + ')' if h['spectrum_size_hint'] else ''}"}
                 for h in g["observations"] if h["spectrum_viewable"]
