@@ -324,6 +324,60 @@ def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
     return {"bars": bars, "n_rows": max(rows) + 1}
 
 
+def _all_instrument_wavelength_bars(rows: list[dict]) -> dict | None:
+    """Instruments page's version of the chart above: one bar per known
+    published range across *every* tracked instrument, not one star's
+    holdings. `rows` is the (display_name, instrument, n) list already
+    fetched by instruments_page() from the precomputed `instruments` table.
+    The same physical instrument synced under two archive_codes with an
+    identical published range (e.g. HARPS via both 'ESO Science Archive'
+    and 'ESO Archive (Raw)') collapses into one bar rather than drawing
+    twice -- keyed on (instrument name, range), with every contributing
+    archive named in the label. Rows with no known range are silently
+    skipped, same as _wavelength_coverage_bars above."""
+    grouped: dict[tuple[str, tuple[float, float]], dict] = {}
+    for r in rows:
+        coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((r["display_name"], r["instrument"]))
+        if coverage is None:
+            continue
+        key = (r["instrument"], coverage)
+        g = grouped.get(key)
+        if g is None:
+            grouped[key] = {
+                "archives": [r["display_name"]],
+                "instrument": r["instrument"],
+                "resolving_power": INSTRUMENT_RESOLVING_POWER.get((r["display_name"], r["instrument"]), "—"),
+                "wave_min": coverage[0],
+                "wave_max": coverage[1],
+            }
+        elif r["display_name"] not in g["archives"]:
+            g["archives"].append(r["display_name"])
+
+    bars = [
+        {
+            "archive": g["archives"][0],
+            "label": f"{', '.join(g['archives'])} — {g['instrument']}",
+            "resolving_power": g["resolving_power"],
+            "wave_min": g["wave_min"],
+            "wave_max": g["wave_max"],
+        }
+        for g in grouped.values()
+    ]
+    if not bars:
+        return None
+
+    rows_assign = _pack_wavelength_rows([(b["wave_min"], b["wave_max"]) for b in bars])
+    archive_order: list[str] = []
+    for b in bars:
+        if b["archive"] not in archive_order:
+            archive_order.append(b["archive"])
+    for b, row in zip(bars, rows_assign):
+        b["row"] = row
+        b["color"] = WAVELENGTH_CHART_PALETTE[archive_order.index(b["archive"]) % len(WAVELENGTH_CHART_PALETTE)]
+
+    return {"bars": bars, "n_rows": max(rows_assign) + 1}
+
+
 # How many stars the CMD plots as individually-clickable points. The
 # underlying list (the CMD_SAMPLE_SIZE most-observed stars with valid
 # photometry) is precomputed by scripts.export_to_parquet, not sampled here
@@ -2365,6 +2419,40 @@ INSTRUMENTS_TEMPLATE = """
   </details>
   {% endfor %}
 
+  {% if wavelength_chart %}
+  <h3>Wavelength coverage, every instrument</h3>
+  <p class="note">One bar per instrument's published wavelength range, packed onto as few rows as possible -- hover a bar for its name and resolving power. The same physical instrument synced under more than one archive_code (e.g. HARPS via both ESO's Phase 3 and raw archives) is drawn once.</p>
+  <div id="all-instrument-wavelength-plot"></div>
+  <script>
+    (function() {
+      var bars = {{ wavelength_chart.bars | tojson }};
+      var nRows = {{ wavelength_chart.n_rows }};
+      var trace = {
+        type: 'bar',
+        orientation: 'h',
+        base: bars.map(function(b) { return b.wave_min; }),
+        x: bars.map(function(b) { return b.wave_max - b.wave_min; }),
+        y: bars.map(function(b) { return b.row; }),
+        width: 0.85,
+        marker: { color: bars.map(function(b) { return b.color; }) },
+        hovertext: bars.map(function(b) {
+          return b.label + '<br>' + b.resolving_power + '<br>' +
+            b.wave_min + '–' + b.wave_max + ' nm';
+        }),
+        hoverinfo: 'text',
+        showlegend: false,
+      };
+      Plotly.newPlot('all-instrument-wavelength-plot', [trace], {
+        barmode: 'overlay',
+        height: Math.max(60, 12 + nRows * 13) + 20,
+        margin: { l: 8, r: 8, t: 4, b: 48 },
+        xaxis: { title: { text: 'Wavelength (nm)', standoff: 12 }, type: 'log', automargin: true },
+        yaxis: { visible: false, range: [-0.7, nRows - 0.3] },
+      }, { responsive: true, displayModeBar: false });
+    })();
+  </script>
+  {% endif %}
+
   <hr>
   <h2>Where each instrument points</h2>
   <p class="note">Up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the top {{ top_n }} instruments, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage. Click a legend entry to isolate one.</p>
@@ -2871,11 +2959,14 @@ def instruments_page():
         for r in _rows_as_dicts(cur)
     ]
 
+    wavelength_chart = _all_instrument_wavelength_bars(rows)
+
     return render_template_string(
         INSTRUMENTS_TEMPLATE,
         treemap_labels=treemap_labels, treemap_parents=treemap_parents, treemap_values=treemap_values,
         treemap_counts=treemap_counts,
         instruments=instruments,
+        wavelength_chart=wavelength_chart,
         instrument_sky_fig=instrument_sky_fig,
         top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
         archive_items=archive_items, archive_pairs=archive_pairs, archive_triples=archive_triples,
