@@ -41,7 +41,12 @@ jobs:
           PGPASSWORD=runner psql -h localhost -U runner -d spectra_test -f db/schema.sql
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt pytest
+        run: |
+          pip install -r requirements.txt pytest
+          # --no-deps: same reason as the Dockerfile -- mdwarf-contin's own
+          # pinned numpy<2.0 conflicts with astropy/healpy's numpy>=2.0
+          # above; its real runtime deps are already installed above instead.
+          pip install --no-deps "mdwarf-contin @ https://github.com/imedan/mdwarf_contin/archive/refs/heads/main.tar.gz"
 
       - name: Run tests
         env:

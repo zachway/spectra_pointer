@@ -9,6 +9,11 @@ WORKDIR /app
 
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
+# --no-deps: see requirements.txt's comment above -- mdwarf-contin's own
+# pinned numpy<2.0 conflicts with astropy/healpy's numpy>=2.0 above; its
+# real runtime deps are already installed via requirements.txt instead.
+RUN pip install --no-cache-dir --user --no-deps \
+    "mdwarf-contin @ https://github.com/imedan/mdwarf_contin/archive/refs/heads/main.tar.gz"
 
 COPY --chown=user ingest/ ingest/
 COPY --chown=user sync/ sync/
