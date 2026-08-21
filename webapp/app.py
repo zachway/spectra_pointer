@@ -981,6 +981,7 @@ PAGE_TEMPLATE = """
             </select>
             <button type="button" id="spectrum-add">Add to plot</button>
             <button type="button" id="spectrum-clear">Clear plot</button>
+            <label><input type="checkbox" id="spectrum-continuum"> Continuum fit (experimental)</label>
           </div>
           <div id="spectrum-viewer-plot"></div>
           <p id="spectrum-viewer-note" class="note"></p>
@@ -1070,16 +1071,18 @@ PAGE_TEMPLATE = """
             return s.length > LEGEND_MAX_CHARS ? s.slice(0, LEGEND_MAX_CHARS - 1) + '…' : s;
           }
 
-          var Y_RANGE_CAP = 5;
           // Median normalization keeps the *typical* flux near 1, but
           // doesn't clip outliers -- one cosmic ray or bad pixel at, say,
           // 40x the median would still dominate Plotly's default autorange
           // and squash the real spectrum flat near the bottom of the plot.
           // Fits the real data as usual (with a little padding) but never
-          // lets either bound exceed +-Y_RANGE_CAP -- a genuine outlier
-          // just draws off-screen instead of ruining the scale for
-          // everything else on the plot.
-          function yRangeCapped(traces) {
+          // lets either bound exceed +-cap -- a genuine outlier just draws
+          // off-screen instead of ruining the scale for everything else on
+          // the plot. Continuum-normalized flux is dimensionless and
+          // centered on ~1, not the same axis at all, so it gets a tighter
+          // cap than raw scaled flux.
+          function yRangeCapped(traces, continuumNormalized) {
+            var cap = continuumNormalized ? 3 : 5;
             var lo = Infinity, hi = -Infinity;
             traces.forEach(function(t) {
               (t.y || []).forEach(function(v) {
@@ -1089,11 +1092,11 @@ PAGE_TEMPLATE = """
                 }
               });
             });
-            if (!isFinite(lo) || !isFinite(hi)) { return [-Y_RANGE_CAP, Y_RANGE_CAP]; }
-            lo = Math.max(lo, -Y_RANGE_CAP);
-            hi = Math.min(hi, Y_RANGE_CAP);
+            if (!isFinite(lo) || !isFinite(hi)) { return [-cap, cap]; }
+            lo = Math.max(lo, -cap);
+            hi = Math.min(hi, cap);
             var pad = Math.max((hi - lo) * 0.08, 0.05);
-            return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
+            return [Math.max(lo - pad, -cap), Math.min(hi + pad, cap)];
           }
 
           function render() {
@@ -1145,27 +1148,48 @@ PAGE_TEMPLATE = """
                 var fullName = result.segments.length > 1 ? entry.label + ' (' + seg.label + ')' : entry.label;
                 var showInLegend = !seenNames[fullName];
                 seenNames[fullName] = true;
+                var hoverY = result.continuum_normalized
+                  ? '%{y} (flux / continuum)'
+                  : '%{y} scaled flux<br>(' + result.flux_unit + ' × ' + result.flux_scale_factor.toPrecision(3) + ')';
                 traces.push({
                   x: seg.wavelength, y: seg.flux, mode: 'lines', showlegend: showInLegend,
                   name: truncate(fullName), line: { color: color, width: 1.2 },
-                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', %{y} scaled flux'
-                    + '<br>(' + result.flux_unit + ' × ' + result.flux_scale_factor.toPrecision(3) + ')<extra></extra>',
+                  hovertemplate: fullName + '<br>%{x} ' + result.wavelength_unit + ', ' + hoverY + '<extra></extra>',
                 });
               });
             });
+            // All currently plotted spectra share one continuum-normalized
+            // state -- the checkbox toggle refetches everything already on
+            // the plot (see its change handler below) rather than allowing
+            // a mix of scaled-flux and continuum-normalized traces sharing
+            // one axis, which wouldn't mean anything as an overlay.
+            var continuumNormalized = plotted.length > 0 && plotted.every(function(e) { return e.result.continuum_normalized; });
+            if (continuumNormalized) {
+              var allX = [].concat.apply([], plotted.map(function(e) {
+                return [].concat.apply([], e.result.segments.map(function(s) { return s.wavelength; }));
+              }));
+              traces.push({ x: [Math.min.apply(null, allX), Math.max.apply(null, allX)], y: [1, 1],
+                            mode: 'lines', name: 'continuum', showlegend: false,
+                            line: { color: '#888', width: 1, dash: 'dash' }, hoverinfo: 'skip' });
+            }
             var familyCount = Object.keys(families).length;
             var xTitle = plotted.length ? 'Wavelength (' + plotted[0].result.wavelength_unit + ')' : 'Wavelength (Å)';
             Plotly.newPlot('spectrum-viewer-plot', traces, {
               height: SPECTRUM_PANEL_HEIGHT,
               margin: { t: 20, b: 90 },
               xaxis: { title: xTitle },
-              yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
+              yaxis: { title: continuumNormalized ? 'Continuum-Normalized Flux' : 'Scaled Flux',
+                       range: yRangeCapped(traces, continuumNormalized) },
               hovermode: 'closest',
               legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
             }, { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
-            if (plotted.length) {
+            if (plotted.length && continuumNormalized) {
+              noteEl.textContent = 'Each spectrum is divided by its own fitted continuum (alpha-hull + '
+                + 'local regression, experimental) -- values near 1 are the continuum, dips/bumps are '
+                + 'real spectral features relative to it, not an absolute scale.';
+            } else if (plotted.length) {
               noteEl.textContent = 'Each spectrum is normalized by its own median flux (see hover for '
                 + 'the original unit) so everything fits one axis -- not a physical calibration.'
                 + (familyCount > 1
@@ -1177,10 +1201,19 @@ PAGE_TEMPLATE = """
             }
           }
 
+          var continuumCheckbox = document.getElementById('spectrum-continuum');
+
+          function spectrumDataUrl(holdingId, confirmed) {
+            var params = [];
+            if (confirmed) { params.push('confirm=1'); }
+            if (continuumCheckbox.checked) { params.push('continuum=1'); }
+            return '/spectrum/' + holdingId + '/data' + (params.length ? '?' + params.join('&') : '');
+          }
+
           function addToPlot(holdingId, label, confirmed) {
             var noteEl = document.getElementById('spectrum-viewer-note');
             noteEl.textContent = 'Loading…';
-            var url = '/spectrum/' + holdingId + '/data' + (confirmed ? '?confirm=1' : '');
+            var url = spectrumDataUrl(holdingId, confirmed);
             fetch(url).then(function(r) { return r.json(); }).then(function(data) {
               if (data.ok) {
                 plotted.push({ id: holdingId, label: label, result: data.result });
@@ -1217,6 +1250,33 @@ PAGE_TEMPLATE = """
             plotted = [];
             document.getElementById('spectrum-viewer-note').textContent = '';
             emptyPlot();
+          });
+          continuumCheckbox.addEventListener('change', function() {
+            // Re-fetches everything already on the plot with the new
+            // continuum state -- flux/continuum is computed server-side
+            // (see webapp.spectrum_viewer._apply_continuum_normalization),
+            // so toggling can't just relabel data already in the browser.
+            // confirmed=true on every refetch: each of these already loaded
+            // successfully once, so re-asking about a large-file warning
+            // for something already on the plot would be pointless.
+            if (!plotted.length) { return; }
+            continuumCheckbox.disabled = true;
+            var noteEl = document.getElementById('spectrum-viewer-note');
+            noteEl.textContent = 'Loading…';
+            Promise.all(plotted.map(function(entry) {
+              return fetch(spectrumDataUrl(entry.id, true)).then(function(r) { return r.json(); }).then(function(data) {
+                if (data.ok) { entry.result = data.result; }
+                return data;
+              });
+            })).then(function(results) {
+              continuumCheckbox.disabled = false;
+              var failed = results.find(function(d) { return !d.ok; });
+              noteEl.textContent = failed ? ('Could not display this spectrum: ' + failed.error) : '';
+              render();
+            }).catch(function(err) {
+              continuumCheckbox.disabled = false;
+              noteEl.textContent = 'Could not reach the server: ' + err;
+            });
           });
         })();
       </script>
@@ -1684,19 +1744,25 @@ SPECTRUM_TEMPLATE = """
     <p><a href="?confirm=1{% if request.args.get('continuum') == '1' %}&continuum=1{% endif %}">Load spectrum anyway</a></p>
   {% elif result %}
     <div id="spectrum-plot"></div>
-    <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is normalized by this spectrum's own
-      median (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
-      comparable scale to other archives -- not a physical calibration. Shaded band is the per-pixel
-      uncertainty, where the archive provides one. Long spectra are downsampled for display.
-      {% if request.args.get('continuum') == '1' %}
-        Dotted lines are a fitted continuum (alpha-hull + local regression, experimental --
-        <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">hide</a>).
+    <p class="note">Wavelength in {{ result.wavelength_unit }}.
+      {% if result.continuum_normalized %}
+        Flux is divided by a fitted continuum (alpha-hull + local regression, experimental) -- values
+        near 1 are the continuum, dips/bumps are real spectral features relative to it, not an absolute
+        scale.
+        <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">Back to scaled flux</a>.
       {% else %}
-        <a href="?continuum=1{% if request.args.get('confirm') == '1' %}&confirm=1{% endif %}">Show continuum fit (experimental)</a>.
+        Flux is normalized by this spectrum's own median (×{{ "%.3g"|format(result.flux_scale_factor) }},
+        originally {{ result.flux_unit }}) so it plots on a comparable scale to other archives -- not a
+        physical calibration.
+        <a href="?continuum=1{% if request.args.get('confirm') == '1' %}&confirm=1{% endif %}">Show continuum-normalized flux (experimental)</a>.
       {% endif %}
+      Shaded band is the per-pixel uncertainty, where the archive provides one. Long spectra are
+      downsampled for display.
     </p>
     <script>
-      const Y_RANGE_CAP = 5;
+      const segments = {{ result.segments | tojson }};
+      const continuumNormalized = {{ result.continuum_normalized | tojson }};
+      const Y_RANGE_CAP = continuumNormalized ? 3 : 5; // continuum-normalized flux is dimensionless, ~1
       function yRangeCapped(traces) {
         let lo = Infinity, hi = -Infinity;
         traces.forEach(function(t) {
@@ -1713,7 +1779,6 @@ SPECTRUM_TEMPLATE = """
         const pad = Math.max((hi - lo) * 0.08, 0.05);
         return [Math.max(lo - pad, -Y_RANGE_CAP), Math.min(hi + pad, Y_RANGE_CAP)];
       }
-      const segments = {{ result.segments | tojson }};
       const palette = ['#2a78d6', '#eb6834', '#1baf7a', '#c0392b'];
       const traces = [];
       segments.forEach(function(seg, i) {
@@ -1728,14 +1793,17 @@ SPECTRUM_TEMPLATE = """
         }
         traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines', name: seg.label,
                       line: { color: color, width: 1.2 } });
-        if (seg.continuum) {
-          traces.push({ x: seg.wavelength, y: seg.continuum, mode: 'lines', name: seg.label + ' continuum',
-                        line: { color: color, width: 1.5, dash: 'dot' } });
-        }
       });
+      if (continuumNormalized) {
+        const allX = [].concat(...segments.map(function(s) { return s.wavelength; }));
+        traces.push({ x: [Math.min.apply(null, allX), Math.max.apply(null, allX)], y: [1, 1],
+                      mode: 'lines', name: 'continuum', showlegend: false,
+                      line: { color: '#888', width: 1, dash: 'dash' }, hoverinfo: 'skip' });
+      }
       Plotly.newPlot('spectrum-plot', traces, {
         xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
-        yaxis: { title: 'Scaled Flux', range: yRangeCapped(traces) },
+        yaxis: { title: continuumNormalized ? 'Continuum-Normalized Flux' : 'Scaled Flux',
+                 range: yRangeCapped(traces) },
         hovermode: 'closest',
         margin: { t: 20 },
       }, { responsive: true });

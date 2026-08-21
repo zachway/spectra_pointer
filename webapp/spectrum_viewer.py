@@ -930,47 +930,67 @@ _PARSERS = {
 }
 
 
-def _add_continuum_fits(result: dict) -> None:
-    """Adds an optional "continuum" array (same length/order as "flux") to
-    each segment that fits cleanly, via mdwarf_contin's alpha-hull + local
-    polynomial regression (see webapp/continuum.py). Computed AFTER
-    _apply_display_scale so the continuum is expressed in the same "Scaled
-    Flux" units already on the plot -- scaling flux by a constant before or
-    after the fit gives the same shape either way, this way there's only one
-    number system in the response.
+def _apply_continuum_normalization(result: dict) -> None:
+    """Replaces each segment's "flux"/"uncertainty" with flux/continuum and
+    uncertainty/continuum -- an actual continuum normalization (features as
+    deviations around ~1), not an overlay on top of the existing "Scaled
+    Flux" values. Fit via mdwarf_contin's alpha-hull + local polynomial
+    regression (see webapp/continuum.py), computed AFTER _apply_display_scale
+    -- a constant scale factor applied to flux before the fit would cancel
+    out in the flux/continuum ratio either way, so the two don't interact;
+    keeping the fit after just means there's only one number system in the
+    response to reason about.
 
     Runs per segment, on the already-downsampled wavelength/flux (still
     monotonic within one segment -- see continuum.py's own docstring for why
     that matters and can't be skipped by concatenating segments first).
     One segment's fit failing (too few points, a degenerate alpha shape,
-    ...) shouldn't take down the rest of an otherwise-displayable spectrum,
-    so failures are caught per segment and just leave "continuum" absent
-    rather than raising.
+    continuum touching zero, ...) shouldn't take down the rest of an
+    otherwise-displayable spectrum -- caught per segment, that segment's
+    flux/uncertainty are left as the pre-normalization (median-scaled)
+    values rather than raising. result["continuum_normalized"] is only set
+    True if at least one segment actually normalized, so the webapp can tell
+    "you asked for this and it worked" from "it silently didn't apply".
     """
+    result["continuum_normalized"] = False
     for seg in result["segments"]:
+        wave = np.array(seg["wavelength"])
+        flux = np.array(seg["flux"])
         try:
-            continuum = continuum_normalize_segment(np.array(seg["wavelength"]), np.array(seg["flux"]))
+            continuum = continuum_normalize_segment(wave, flux)
         except Exception:
             continue
-        if np.any(np.isfinite(continuum)):
-            seg["continuum"] = continuum.tolist()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            normalized_flux = np.where(continuum > 0, flux / continuum, np.nan)
+        if not np.any(np.isfinite(normalized_flux)):
+            continue
+        seg["flux"] = normalized_flux.tolist()
+        if seg["uncertainty"] is not None:
+            unc = np.array(seg["uncertainty"])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                seg["uncertainty"] = np.where(continuum > 0, unc / continuum, np.nan).tolist()
+        result["continuum_normalized"] = True
 
 
 def fetch_spectrum(holding: dict, continuum_normalize: bool = False) -> dict:
     """holding needs at least archive_code, archive_url, archive_obs_id (DESI only).
 
     Returns {"wavelength_unit": str, "flux_unit": str, "flux_unit_family": str,
-    "flux_scale_factor": float, "segments": [{"label", "wavelength", "flux",
-    "uncertainty", "continuum"}, ...]} -- "flux" and "uncertainty" here are
-    ALREADY scaled by flux_scale_factor (see _apply_display_scale above);
-    flux_unit/flux_unit_family describe the *original*, pre-scaling unit,
-    kept for hover text and scientific transparency, not for axis labeling
-    -- the webapp always labels the shared y-axis "Scaled Flux" regardless of
-    archive. "continuum" is present only when continuum_normalize=True AND
-    the fit succeeded for that segment (see _add_continuum_fits) -- an
-    opt-in, off-by-default extra since it costs real per-request compute
-    (~0.1-0.5s/segment, see the PR that added this), unlike the median scale
-    factor above which is effectively free.
+    "flux_scale_factor": float, "continuum_normalized": bool, "segments":
+    [{"label", "wavelength", "flux", "uncertainty"}, ...]} -- "flux" and
+    "uncertainty" here are ALREADY scaled by flux_scale_factor (see
+    _apply_display_scale above); flux_unit/flux_unit_family describe the
+    *original*, pre-scaling unit, kept for hover text and scientific
+    transparency, not for axis labeling -- the webapp always labels the
+    shared y-axis "Scaled Flux" regardless of archive UNLESS
+    continuum_normalized is True, in which case "flux"/"uncertainty" have
+    been further divided by a fitted continuum (see
+    _apply_continuum_normalization) -- dimensionless, ~1 baseline, features
+    as deviations from it, not the same axis at all. Only happens when
+    continuum_normalize=True is passed AND the fit actually succeeded for at
+    least one segment. Opt-in, off-by-default: costs real per-request
+    compute (~0.1-0.5s/segment, see the PR that added this), unlike the
+    median scale factor above which is effectively free.
 
     flux_unit_family is derived here, centrally, rather than set per-parser
     -- every parser reporting FLUX_UNIT_ERG_CM2_S_A already means "converted
@@ -985,7 +1005,8 @@ def fetch_spectrum(holding: dict, continuum_normalize: bool = False) -> dict:
     result["flux_unit_family"] = (
         FLUX_FAMILY_ERG_CM2_S_A if result["flux_unit"] == FLUX_UNIT_ERG_CM2_S_A else FLUX_FAMILY_ARBITRARY
     )
+    result["continuum_normalized"] = False
     _apply_display_scale(result)
     if continuum_normalize:
-        _add_continuum_fits(result)
+        _apply_continuum_normalization(result)
     return result
