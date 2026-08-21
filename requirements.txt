@@ -13,4 +13,4 @@ fsspec[http]
 pytz
 paramiko
 geoip2fast
-mdwarf-contin @ git+https://github.com/imedan/mdwarf_contin
+mdwarf-contin @ https://github.com/imedan/mdwarf_contin/archive/refs/heads/main.tar.gz
