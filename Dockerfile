@@ -1,5 +1,11 @@
 FROM python:3.11-slim
 
+# git is needed by pip to install requirements.txt's mdwarf-contin (a
+# git+https dependency, not on PyPI) -- python:3.11-slim doesn't include it.
+# Installed as root, before the user switch below (apt-get needs root).
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # Hugging Face Spaces containers run as a non-root user by convention.
 RUN useradd -m -u 1000 user
 USER user
@@ -9,6 +15,10 @@ WORKDIR /app
 
 COPY --chown=user requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
+# --no-deps: see requirements.txt's comment above -- mdwarf-contin's own
+# pinned numpy<2.0 conflicts with astropy/healpy's numpy>=2.0 above; its
+# real runtime deps are already installed via requirements.txt instead.
+RUN pip install --no-cache-dir --user --no-deps "mdwarf-contin @ git+https://github.com/imedan/mdwarf_contin"
 
 COPY --chown=user ingest/ ingest/
 COPY --chown=user sync/ sync/
