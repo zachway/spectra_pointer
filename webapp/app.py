@@ -1650,13 +1650,20 @@ SPECTRUM_TEMPLATE = """
   {% elif needs_confirm %}
     <p>This archive's spectrum files run large{% if size_hint %} (typically {{ size_hint }}){% endif %} --
       loading it will fetch the full file from the archive.</p>
-    <p><a href="?confirm=1">Load spectrum anyway</a></p>
+    <p><a href="?confirm=1{% if request.args.get('continuum') == '1' %}&continuum=1{% endif %}">Load spectrum anyway</a></p>
   {% elif result %}
     <div id="spectrum-plot"></div>
     <p class="note">Wavelength in {{ result.wavelength_unit }}. Flux is normalized by this spectrum's own
       median (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally {{ result.flux_unit }}) so it plots on a
       comparable scale to other archives -- not a physical calibration. Shaded band is the per-pixel
-      uncertainty, where the archive provides one. Long spectra are downsampled for display.</p>
+      uncertainty, where the archive provides one. Long spectra are downsampled for display.
+      {% if request.args.get('continuum') == '1' %}
+        Dotted lines are a fitted continuum (alpha-hull + local regression, experimental --
+        <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">hide</a>).
+      {% else %}
+        <a href="?continuum=1{% if request.args.get('confirm') == '1' %}&confirm=1{% endif %}">Show continuum fit (experimental)</a>.
+      {% endif %}
+    </p>
     <script>
       const Y_RANGE_CAP = 5;
       function yRangeCapped(traces) {
@@ -1690,6 +1697,10 @@ SPECTRUM_TEMPLATE = """
         }
         traces.push({ x: seg.wavelength, y: seg.flux, mode: 'lines', name: seg.label,
                       line: { color: color, width: 1.2 } });
+        if (seg.continuum) {
+          traces.push({ x: seg.wavelength, y: seg.continuum, mode: 'lines', name: seg.label + ' continuum',
+                        line: { color: color, width: 1.5, dash: 'dot' } });
+        }
       });
       Plotly.newPlot('spectrum-plot', traces, {
         xaxis: { title: 'Wavelength (' + {{ result.wavelength_unit | tojson }} + ')' },
@@ -1737,7 +1748,7 @@ def _resolve_spectrum(holding: dict) -> dict:
         return {"ok": False, "needs_confirm": True, "size_hint": size_hint_label(holding["archive_code"])}
     try:
         check_rate_limit(request.remote_addr)
-        result = fetch_spectrum(holding)
+        result = fetch_spectrum(holding, continuum_normalize=request.args.get("continuum") == "1")
     except SpectrumUnavailable as exc:
         return {"ok": False, "error": str(exc)}
     return {"ok": True, "result": result}
