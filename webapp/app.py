@@ -1186,9 +1186,10 @@ PAGE_TEMPLATE = """
 
             var noteEl = document.getElementById('spectrum-viewer-note');
             if (plotted.length && continuumNormalized) {
-              noteEl.textContent = 'Each spectrum is divided by its own fitted continuum (alpha-hull + '
-                + 'local regression, experimental) -- values near 1 are the continuum, dips/bumps are '
-                + 'real spectral features relative to it, not an absolute scale.';
+              noteEl.innerHTML = 'Each spectrum is divided by its own fitted continuum (alpha-hull + '
+                + 'local regression, experimental, via <a href="https://github.com/imedan/mdwarf_contin" '
+                + 'target="_blank" rel="noopener">Ilija Medan\'s mdwarf_contin</a>) -- values near 1 are '
+                + 'the continuum, dips/bumps are real spectral features relative to it, not an absolute scale.';
             } else if (plotted.length) {
               noteEl.textContent = 'Each spectrum is normalized by its own median flux (see hover for '
                 + 'the original unit) so everything fits one axis -- not a physical calibration.'
@@ -1746,9 +1747,10 @@ SPECTRUM_TEMPLATE = """
     <div id="spectrum-plot"></div>
     <p class="note">Wavelength in {{ result.wavelength_unit }}.
       {% if result.continuum_normalized %}
-        Flux is divided by a fitted continuum (alpha-hull + local regression, experimental) -- values
-        near 1 are the continuum, dips/bumps are real spectral features relative to it, not an absolute
-        scale.
+        Flux is divided by a fitted continuum (alpha-hull + local regression, experimental, via
+        <a href="https://github.com/imedan/mdwarf_contin" target="_blank" rel="noopener">Ilija Medan's
+        mdwarf_contin</a>) -- values near 1 are the continuum, dips/bumps are real spectral features
+        relative to it, not an absolute scale.
         <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">Back to scaled flux</a>.
       {% else %}
         Flux is normalized by this spectrum's own median (×{{ "%.3g"|format(result.flux_scale_factor) }},
