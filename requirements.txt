@@ -13,4 +13,19 @@ fsspec[http]
 pytz
 paramiko
 geoip2fast
-mdwarf-contin @ https://github.com/imedan/mdwarf_contin/archive/refs/heads/main.tar.gz
+# mdwarf-contin itself is installed --no-deps in the Dockerfile: its
+# pyproject.toml pins numpy="^1.26.4" (numpy<2.0), which conflicts with
+# astropy/healpy/astropy-healpix all requiring numpy>=2.0 above. Unresolved,
+# that conflict sends pip's resolver backtracking through every scipy
+# release looking for a combination that satisfies both, down to versions
+# with no prebuilt wheel for this Python, which then fail to build (no
+# compiler in this image, deliberately -- see Dockerfile). Confirmed live:
+# mdwarf_contin actually runs fine against numpy 2.5.2 (continuum_normalize_
+# segment produced identical, all-finite output) -- the <2.0 pin is just
+# stale, not a real constraint. Its own real runtime deps (numpy/astropy
+# already covered above) are listed explicitly instead of pulled in via
+# its pin. This is independent of the git-vs-tarball fetch method above --
+# switching how the package is *fetched* doesn't change what its own
+# pyproject.toml *declares*, so that alone doesn't avoid this conflict.
+alpha-shapes
+localreg
