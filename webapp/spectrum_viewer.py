@@ -50,7 +50,16 @@ ESO/FEROS sample this session also had a fully-NaN ERR column (populated
 WAVE/FLUX, no usable uncertainty at all for that file) -- _segment() below
 treats an all-non-finite uncertainty array as absent rather than letting
 it wipe out every real data point, a latent bug this caught that could
-have affected any archive, not just this one.
+have affected any archive, not just this one. A later live sweep of all
+17 real eso instrument values found the WAVE column's actual unit is NOT
+always Å despite the parser previously hardcoding that label: XSHOOTER/
+CRIRES/GIRAFFE report nm and SINFONI reports um (confirmed via each
+column's own TUNIT, cross-checked against known instrument coverage) --
+_eso_wave_to_angstrom below converts using the real per-file unit instead
+of assuming. APEXHET (sub-mm heterodyne, FREQ not WAVE) and APEXHET/
+EFOSC/SOFI/VIMOS's SPECTRUM-less raw/imaging products are cleanly
+rejected rather than crashing with a raw KeyError, same defensive pattern
+as everywhere else in this module.
 
 rave/feros_gavo/flashheros_gavo/ondrejov/heros_ondrejov/sophie/
 hermes_mercator added after re-checking real production samples for each
@@ -533,6 +542,35 @@ def _parse_mast_jwst(holding: dict) -> dict:
 
 ESO_FILE_URL = "https://dataportal.eso.org/dataportal_new/file/{dp_id}"
 
+# eso.py's SPECTRUM/WAVE column's real unit varies by instrument -- confirmed
+# live across all 17 real eso instruments: HARPS/UVES/FEROS/ESPRESSO/FORS1/
+# FORS2/MUSE/KMOS/NIRPS report angstrom (or no TUNIT at all, which every
+# checked no-TUNIT sample's numeric range confirmed was already Å) and need
+# no conversion, but XSHOOTER/CRIRES/GIRAFFE report nm and SINFONI reports um
+# -- a real bug this caught: the parser used to hardcode "Å" and pass WAVE
+# through unconverted, so e.g. a real XSHOOTER sample's 298.92-555.98 (nm)
+# was mislabeled as 298.92-555.98 Å (off by 10x, landing in the far-UV
+# instead of XSHOOTER's real optical/near-IR coverage). APEXHET/EFOSC/SOFI/
+# VIMOS have no SPECTRUM extension at all in real samples (raw/imaging
+# products, not 1D spectra) -- cleanly rejected below rather than crashing.
+_ESO_WAVE_UNIT_TO_ANGSTROM = {
+    "angstrom": 1.0,
+    "aa": 1.0,
+    "nm": 10.0,
+    "um": 1e4,
+    "micron": 1e4,
+    "microns": 1e4,
+}
+
+
+def _eso_wave_to_angstrom(wave: np.ndarray, unit: str | None) -> np.ndarray:
+    if not unit:
+        return wave  # no TUNIT metadata -- every real no-TUNIT sample checked was already Å
+    factor = _ESO_WAVE_UNIT_TO_ANGSTROM.get(unit.strip().lower())
+    if factor is None:
+        raise SpectrumUnavailable(f"Unrecognized wavelength unit '{unit}' for this ESO spectrum.")
+    return wave * factor
+
 
 def _parse_eso(holding: dict) -> dict:
     # sync/archives/eso.py stores archive_url as a human landing page
@@ -541,8 +579,21 @@ def _parse_eso(holding: dict) -> dict:
     # the real FITS file with zero extra API calls.
     raw = _fetch_bytes(ESO_FILE_URL.format(dp_id=holding["archive_obs_id"]))
     with fits.open(io.BytesIO(raw)) as hdul:
+        if "SPECTRUM" not in hdul:
+            raise SpectrumUnavailable(
+                "This ESO product has no SPECTRUM extension (not a 1D extracted spectrum)."
+            )
         cols = hdul["SPECTRUM"].data
         col_names = hdul["SPECTRUM"].columns.names
+        if "WAVE" not in col_names:
+            # apexhet (sub-mm heterodyne) reports FREQ, not WAVE -- a
+            # fundamentally different axis convention (confirmed live: real
+            # column set was ['FREQ', 'FLUX', 'ERR']), not a units question.
+            raise SpectrumUnavailable(
+                "This ESO product has no WAVE column (its SPECTRUM extension uses a "
+                "different axis convention, e.g. frequency instead of wavelength)."
+            )
+        wave_unit = hdul["SPECTRUM"].columns["WAVE"].unit
         # Some instruments carry both a raw and a reduced-flux column
         # (FLUX_REDUCED/ERR_REDUCED) per the archive survey; a real sample
         # this session only had plain FLUX/ERR -- prefer the _REDUCED
@@ -559,6 +610,7 @@ def _parse_eso(holding: dict) -> dict:
     wave = wave.reshape(-1)
     flux = flux.reshape(-1)
     uncertainty = uncertainty.reshape(-1)
+    wave = _eso_wave_to_angstrom(wave, wave_unit)
     return {
         "wavelength_unit": "Å",
         "flux_unit": f"ESO pipeline units ({flux_col})",
