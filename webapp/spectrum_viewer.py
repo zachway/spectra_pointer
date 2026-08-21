@@ -142,6 +142,7 @@ from __future__ import annotations
 
 import gzip
 import io
+import re
 import threading
 import time
 
@@ -517,7 +518,59 @@ def _parse_sdss_v_optical(holding: dict) -> dict:
     return _parse_sdss_spec("SDSS-V", holding)
 
 
+# Pre-BOSS (SDSS-I/II, run2d 26/103/104) legacy rows have no per-object file
+# in DR20 at all -- only a per-plate spPlate-{plate}-{mjd}.fits holding every
+# fiber on that plate as a 2D image (live-confirmed 2026-08-21: 59MB for one
+# plate, no "spectra/lite" tree under these run2d values). scripts/
+# backfill_sdss_legacy_pre_boss.py repoints those rows' archive_url at the
+# spPlate file with the fiber number tacked on as a query param (confirmed
+# live: a stray query string doesn't change data.sdss.org's static-file
+# response) since there's no dedicated column to carry it and decoding
+# specobjid's bit-packed fiberid by hand is exactly what the plate/fiberid
+# columns elsewhere in this codebase were added to avoid.
+_SDSS_LEGACY_SPPLATE_RE = re.compile(r"/spPlate-\d+-\d+\.fits\?fiber=(\d+)$")
+
+
+def _parse_sdss_legacy_plate(url: str) -> dict:
+    match = _SDSS_LEGACY_SPPLATE_RE.search(url)
+    if match is None:
+        raise SpectrumUnavailable("Malformed spPlate archive_url (missing fiber number).")
+    fiber = int(match.group(1))
+    file_url = url.split("?", 1)[0]
+    try:
+        # Same use_fsspec + lazy_load_hdus technique as _parse_desi -- pulls
+        # only the header blocks plus the one fiber's row via HTTP range
+        # requests, not the full 59MB (640-fiber) file.
+        with fits.open(
+            file_url,
+            use_fsspec=True,
+            lazy_load_hdus=True,
+            fsspec_kwargs={"block_size": 256 * 1024},
+        ) as hdul:
+            header = hdul[0].header
+            # DC-FLAG=1 log-linear dispersion, same convention as
+            # _parse_desi's apStar wavelength solution -- live-confirmed
+            # against a real spPlate primary header (CRVAL1/CD1_1 present,
+            # no EXTNAME on any HDU here so index, not name, is how these
+            # are addressed).
+            wave = 10 ** (header["CRVAL1"] + np.arange(header["NAXIS1"]) * header["CD1_1"])
+            row = fiber - 1  # SDSS fiberid is 1-indexed; plate array rows are 0-indexed
+            flux = np.asarray(hdul[0].data[row], dtype=float)
+            ivar = np.asarray(hdul[1].data[row], dtype=float)
+    except (OSError, IndexError) as exc:
+        raise SpectrumUnavailable(f"Could not reach the archive: {exc}") from exc
+    uncertainty = _ivar_to_uncertainty(ivar)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A,
+        "segments": [_segment("SDSS Legacy (pre-BOSS)", wave, flux, uncertainty)],
+    }
+
+
 def _parse_sdss_legacy_optical(holding: dict) -> dict:
+    url = holding["archive_url"]
+    if "/spPlate-" in url:
+        return _parse_sdss_legacy_plate(url)
     return _parse_sdss_spec("SDSS Legacy", holding)
 
 
