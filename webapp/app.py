@@ -44,7 +44,7 @@ import time
 import urllib.error
 import urllib.request
 import zlib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
@@ -292,6 +292,40 @@ def _pack_wavelength_rows(intervals: list[tuple[float, float]]) -> list[int]:
             row_end.append(end)
             rows[i] = len(row_end) - 1
     return rows
+
+
+def _spectrum_epoch_options(observations: list[dict]) -> list[dict]:
+    """Builds the per-epoch <option> list for one instrument group in the
+    spectrum viewer's dropdown. obs_date alone is the label's only real
+    content -- fine for the common case of one file per star per night, but
+    a real bug this caught live: some instruments (confirmed live --
+    eso/XSHOOTER, which always splits one visit into 3 separate per-arm
+    files -- UVB/VIS/NIR -- with no DB column recording which; eso/GIRAFFE
+    also saw same-night multi-setup pairs) put >1 holding under the exact
+    same obs_date. Every one of those got the textually identical dropdown
+    option AND, since the client builds the plotted legend name from this
+    same label, the identical legend entry too -- so adding two of them
+    (easy to do by accident when they look like one option) silently
+    overlaid two real, disjoint-but-adjacent spectra (confirmed live: a
+    real XSHOOTER VIS file, 5336-10198 Angstrom, plotted alongside a NIR
+    file, 9940-24785 Angstrom, from the same night) under one shared name,
+    reading as a single spectrum with an impossible discontinuity rather
+    than two correct, distinct ones.
+    A short "#2"/"#3" ordinal suffix is appended only when a date is
+    genuinely shared within this group, so the normal single-file-per-night
+    case is untouched. This doesn't know *which* arm/setup each file is
+    (that's only knowable after fetching -- no DB column for it) -- just
+    that they're different files, which is enough to stop the collision."""
+    viewable = [h for h in observations if h["spectrum_viewable"]]
+    date_counts = Counter(h["obs_date"] for h in viewable)
+    date_seen: Counter = Counter()
+    options = []
+    for h in viewable:
+        date_seen[h["obs_date"]] += 1
+        ordinal_suffix = f" #{date_seen[h['obs_date']]}" if date_counts[h["obs_date"]] > 1 else ""
+        size_suffix = f" ({h['spectrum_size_hint']})" if h["spectrum_size_hint"] else ""
+        options.append({"id": h["id"], "label": f"{h['obs_date'] or 'no date'}{ordinal_suffix}{size_suffix}"})
+    return options
 
 
 def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
@@ -1603,10 +1637,7 @@ def search():
             # tell traces apart at a glance; archives with no distinct
             # instrument field fall back to display_name instead of "—".
             "short_label": g["instrument"] or g["display_name"],
-            "options": [
-                {"id": h["id"], "label": f"{h['obs_date'] or 'no date'}{' (' + h['spectrum_size_hint'] + ')' if h['spectrum_size_hint'] else ''}"}
-                for h in g["observations"] if h["spectrum_viewable"]
-            ],
+            "options": _spectrum_epoch_options(g["observations"]),
         }
         for g in holdings
         if any(h["spectrum_viewable"] for h in g["observations"])
