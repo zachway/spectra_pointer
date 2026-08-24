@@ -111,7 +111,7 @@ MAX_NAME_LOOKUPS = 2000
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
-    "leaderboard", "diversity", "cmd_stars", "archive_status", "instruments", "instrument_sky_sample",
+    "leaderboard", "diversity", "cmd_stars", "archive_status", "instruments", "instrument_healpix",
     "sky_sample", "triage_queue", "star_name_index",
     "archive_overlap", "archive_overlap_triple", "instrument_overlap", "instrument_overlap_triple",
     "needs_review", "skipped_by_archive", "skipped", "spectroscopy_holdings_by_position",
@@ -2499,11 +2499,12 @@ def _known_as(row: dict) -> str:
     return row.get("input_name") or str(row["gaia_source_id"])
 
 
-# Descriptive text only -- the actual sampling is baked into
-# scripts.export_to_parquet's INSTRUMENT_SKY_SAMPLE_QUERY (same "duplicated
-# constant, just for the caption" pattern as CMD_SAMPLE_SIZE above).
-INSTRUMENT_SKY_SAMPLE_TOP_N = 12
-INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
+# Must match scripts.export_to_parquet's INSTRUMENT_HEALPIX_NSIDE -- the bin
+# size skyplothelper's add_healpix_sparse renders here has to agree with the
+# nside the counts in instrument_healpix were binned at (same "duplicated
+# constant" pattern as CMD_SAMPLE_SIZE above; app.py can't import
+# scripts.export_to_parquet since that module talks to live Postgres).
+INSTRUMENT_HEALPIX_NSIDE = 32
 
 # Resolving power (R = lambda/delta-lambda) per (archive display_name,
 # instrument) -- like NOT_YET_TRACKED below, this can't be derived from the
@@ -3209,7 +3210,16 @@ INSTRUMENTS_TEMPLATE = """
 
   <hr>
   <h2>Where each instrument points</h2>
-  <p class="note">Up to {{ "{:,}".format(per_instrument_cap) }} position-tagged observations for each of the top {{ top_n }} instruments, Aitoff-projected -- a rough fingerprint of each instrument's sky coverage. Click a legend entry to isolate one.</p>
+  <p class="note">HEALPix-binned density (nside={{ instrument_healpix_nside }}) of position-tagged observations for the selected instrument, Aitoff-projected -- a fingerprint of that instrument's sky coverage.</p>
+  {% if instrument_sky_options %}
+    <div class="overlap-controls">
+      <select id="instrument-sky-select" onchange="location.href = '/instruments?instrument=' + encodeURIComponent(this.value) + '#instrument-sky'">
+        {% for opt in instrument_sky_options %}
+          <option value="{{ opt.instrument }}"{{ " selected" if opt.instrument == selected_instrument else "" }}>{{ opt.instrument }} ({{ "{:,}".format(opt.total) }})</option>
+        {% endfor %}
+      </select>
+    </div>
+  {% endif %}
   {% if instrument_sky_fig %}
     <div id="instrument-sky"></div>
     <script>
@@ -3646,38 +3656,60 @@ def instruments_page():
         for name, insts in instruments_by_archive.items()
     ]
 
-    # instrument_sky_sample is precomputed by scripts.export_to_parquet --
-    # see INSTRUMENT_SKY_SAMPLE_QUERY there for why (a live per-request
-    # ROW_NUMBER()/random() sample over the full holdings table has the same
-    # OOM-shaped risk documented for the Leaderboard elsewhere in this file).
-    cur.execute("SELECT instrument, raw_ra, raw_dec FROM instrument_sky_sample")
-    sky_by_instrument: dict[str, list[dict]] = defaultdict(list)
-    for r in _rows_as_dicts(cur):
-        sky_by_instrument[r["instrument"]].append(r)
+    # instrument_healpix (instrument, healpix_pixel, n) is precomputed by
+    # scripts.export_to_parquet -- see _export_instrument_healpix there for
+    # why (DuckDB has no native HEALPix binning, and a live per-request
+    # ang2pix pass over the full holdings table has the same OOM-shaped risk
+    # documented for the Leaderboard elsewhere in this file). The table
+    # itself is small (one row per populated cell per instrument), so the
+    # two queries below -- totals for the dropdown, cells for whichever
+    # instrument is selected -- run live against it on every request, same
+    # as the other small precomputed tables on this page (e.g. instruments,
+    # archive_overlap).
+    cur.execute("SELECT instrument, sum(n) AS total FROM instrument_healpix GROUP BY instrument ORDER BY total DESC, instrument")
+    instrument_sky_options = _rows_as_dicts(cur)
+
+    selected_instrument = request.args.get("instrument", "")
+    valid_instruments = {r["instrument"] for r in instrument_sky_options}
+    if selected_instrument not in valid_instruments:
+        selected_instrument = instrument_sky_options[0]["instrument"] if instrument_sky_options else None
 
     # Built with skyplothelper (github.com/pjcigan/skyplothelper) rather than
-    # the hand-rolled Aitoff formula this replaced -- that formula turned out
-    # to drift from a true Aitoff projection at high |dec| (~10% off at
-    # RA=180, Dec=60 when checked against this library), and this also gets
-    # us real gridlines/tick labels and a galactic-plane overlay (matching
-    # /sky's own, hand-rolled separately there) for free. Figure is built
-    # server-side and shipped as Plotly JSON for the client's existing
-    # Plotly.js (from CDN) to render -- native legend-click-to-isolate and
-    # zoom/pan behavior are unaffected since each instrument is still its own
-    # named go.Scatter trace.
+    # the hand-rolled Aitoff formula this page used to use -- that formula
+    # turned out to drift from a true Aitoff projection at high |dec| (~10%
+    # off at RA=180, Dec=60 when checked against this library), and this also
+    # gets us real gridlines/tick labels and a galactic-plane overlay
+    # (matching /sky's own, hand-rolled separately there) for free.
+    # add_healpix_sparse renders one tile polygon per populated cell for the
+    # single selected instrument -- a density histogram, replacing the
+    # earlier per-instrument random-sample scatter (which showed an
+    # arbitrary subset of points rather than where an instrument actually
+    # concentrates, and needed a legend click to isolate one instrument at a
+    # time instead of a real selector). Figure is built server-side and
+    # shipped as Plotly JSON for the client's existing Plotly.js (from CDN)
+    # to render.
     instrument_sky_fig = None
-    if sky_by_instrument:
+    if selected_instrument:
+        cur.execute(
+            "SELECT healpix_pixel, n FROM instrument_healpix WHERE instrument = ?",
+            [selected_instrument],
+        )
+        cells = _rows_as_dicts(cur)
         fig = sph_plotly.make_figure(projection="AIT", show_grid=True, theme="light", width=900, height=700)
         sph_plotly.add_plane_overlay(fig, plane="galactic", color="#999999", opacity=0.4, width=1, name="Galactic plane")
-        for instrument, pts in sky_by_instrument.items():
-            sph_plotly.add_scatter(
-                fig, [p["raw_ra"] for p in pts], [p["raw_dec"] for p in pts],
-                name=instrument, mode="markers", marker={"size": 3, "opacity": 0.6},
-                hovertemplate=instrument + "<extra></extra>",
-            )
+        sph_plotly.add_healpix_sparse(
+            fig,
+            [c["healpix_pixel"] for c in cells],
+            [c["n"] for c in cells],
+            nside=INSTRUMENT_HEALPIX_NSIDE,
+            colorscale="Viridis",
+            add_colorbar=True,
+            cbar_title="observations",
+            hover_format="{value:.0f} observations<br>{lon:.1f}°, {lat:.1f}°",
+        )
         sph_plotly.add_coord_labels(fig)
         fig.update_layout(
-            hovermode="closest", legend={"orientation": "h"},
+            hovermode="closest",
             margin={"t": 10, "l": 10, "r": 10, "b": 10},
         )
         instrument_sky_fig = json.loads(fig.to_json())
@@ -3728,7 +3760,8 @@ def instruments_page():
         instruments=instruments,
         wavelength_chart=wavelength_chart,
         instrument_sky_fig=instrument_sky_fig,
-        top_n=INSTRUMENT_SKY_SAMPLE_TOP_N, per_instrument_cap=INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT,
+        instrument_sky_options=instrument_sky_options, selected_instrument=selected_instrument,
+        instrument_healpix_nside=INSTRUMENT_HEALPIX_NSIDE,
         archive_items=archive_items, archive_pairs=archive_pairs, archive_triples=archive_triples,
         instrument_items=instrument_items, instrument_pairs=instrument_pairs, instrument_triples=instrument_triples,
         instrument_heatmap_top_n=INSTRUMENT_OVERLAP_HEATMAP_TOP_N,
