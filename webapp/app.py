@@ -779,7 +779,7 @@ PAGE_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">A numeric search is read as a Gaia source_id or Bright Star Catalogue (HR) number.</p>
+  <p class="note">A numeric search is read as a Gaia source_id or Bright Star Catalogue (HR) number. While I tried my best, completeness and accuracy are never guaranteed. If you expected records that don't appear, try the "Search unmatched records" option.</p>
   <p class="note">Under active development — file bugs or feature requests <a href="https://github.com/zachway/spectra_pointer">on GitHub</a> or email zway1 [at] gsu.edu.</p>
 
   <nav class="subtabs">
