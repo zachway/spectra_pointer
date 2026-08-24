@@ -27,6 +27,8 @@ import shutil
 import tempfile
 
 import duckdb
+import healpy
+import numpy as np
 import psycopg
 
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
@@ -100,36 +102,69 @@ GROUP BY a.display_name, h.instrument
 ORDER BY a.display_name, n DESC
 """
 
-# A sample of position-tagged holdings per top instrument, for the /instruments
-# page's sky-coverage-by-instrument map -- a live-per-request query here would
-# need a ROW_NUMBER()/random() window over potentially tens of millions of
-# rows for the biggest instruments, the same shape of full-table-sort cost
-# that already OOM'd the hosted container elsewhere in this file (see the
-# Leaderboard's long comment). Precomputed here where memory isn't capped,
-# same tradeoff as everything else in this module.
-INSTRUMENT_SKY_SAMPLE_TOP_N = 12
-INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT = 2000
+# Per-(instrument, HEALPix cell) observation counts, for the /instruments
+# page's sky-coverage-by-instrument map. This replaced an earlier per-
+# instrument random() sample (capped at 2000 points/instrument, top 12
+# instruments only) -- that showed an arbitrary subset of each instrument's
+# footprint rather than its actual density, and needed a legend click to
+# isolate one instrument at a time. A true density histogram needs a count
+# per sky cell over *every* position-tagged row, not a capped sample, so
+# there's no meaningful top-N cutoff here -- the query below covers every
+# instrument with position data, and the per-instrument dropdown on the page
+# picks which one's histogram to render.
+#
+# DuckDB has no native HEALPix function, so the actual ang2pix binning can't
+# be pushed down as SQL (unlike everything else in this file) -- it happens
+# in Python via healpy below, then the aggregated (instrument, cell, count)
+# result is fed back into DuckDB just for the final atomic Parquet write.
+# Same "memory isn't capped here" tradeoff as the sample this replaced: this
+# script runs on morgan, not the 1GiB-limited Cloud Run container, so
+# pulling every position-tagged row into Python for one precompute pass is
+# fine even at tens of millions of rows.
+INSTRUMENT_HEALPIX_NSIDE = 32
 
-INSTRUMENT_SKY_SAMPLE_QUERY = f"""
-WITH top_instruments AS (
-    SELECT instrument, count(*) AS n
-    FROM pg.spectroscopy_holdings
-    WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
-    GROUP BY instrument
-    ORDER BY n DESC
-    LIMIT {INSTRUMENT_SKY_SAMPLE_TOP_N}
-),
-sampled AS (
-    SELECT h.instrument, h.raw_ra, h.raw_dec,
-           ROW_NUMBER() OVER (PARTITION BY h.instrument ORDER BY random()) AS rn
-    FROM pg.spectroscopy_holdings h
-    JOIN top_instruments t ON t.instrument = h.instrument
-    WHERE h.raw_ra IS NOT NULL AND h.raw_dec IS NOT NULL
-)
+INSTRUMENT_POSITIONS_QUERY = """
 SELECT instrument, raw_ra, raw_dec
-FROM sampled
-WHERE rn <= {INSTRUMENT_SKY_SAMPLE_PER_INSTRUMENT}
+FROM pg.spectroscopy_holdings
+WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
 """
+
+
+def _export_instrument_healpix(con: duckdb.DuckDBPyConnection, path: str) -> None:
+    # fetchnumpy() rather than .df()/.fetch_arrow_table() -- neither pandas
+    # nor pyarrow is a guaranteed dependency here (both are only pulled in as
+    # optional extras of packages already in requirements.txt), while numpy
+    # is a hard dependency of astropy/astropy-healpix/healpy, all of which
+    # are required unconditionally. fetchnumpy() needs only numpy.
+    result = con.execute(_localize(INSTRUMENT_POSITIONS_QUERY)).fetchnumpy()
+    ra = result["raw_ra"].astype(np.float64)
+    dec = result["raw_dec"].astype(np.float64)
+    pix = healpy.ang2pix(INSTRUMENT_HEALPIX_NSIDE, ra, dec, lonlat=True)
+
+    # Group by (instrument, pix) without pandas: factorize instrument names
+    # to integer codes, fold (code, pix) into one int64 key so np.unique can
+    # do the count in a single vectorized pass, then unpack the key back
+    # apart. npix comfortably fits pix (< 12*64**2) in the low bits for any
+    # nside this project would realistically use.
+    npix = healpy.nside2npix(INSTRUMENT_HEALPIX_NSIDE)
+    uniq_instruments, instrument_codes = np.unique(result["instrument"], return_inverse=True)
+    combined_keys = instrument_codes.astype(np.int64) * npix + pix.astype(np.int64)
+    uniq_keys, counts = np.unique(combined_keys, return_counts=True)
+    out_instrument = uniq_instruments[uniq_keys // npix]
+    out_pixel = (uniq_keys % npix).astype(np.int64)
+
+    con.execute("CREATE OR REPLACE TEMP TABLE instrument_healpix_counts "
+                "(instrument VARCHAR, healpix_pixel BIGINT, n BIGINT)")
+    con.executemany(
+        "INSERT INTO instrument_healpix_counts VALUES (?, ?, ?)",
+        list(zip(out_instrument.tolist(), out_pixel.tolist(), counts.tolist())),
+    )
+    _atomic_copy(
+        con,
+        "SELECT instrument, healpix_pixel, n FROM instrument_healpix_counts ORDER BY instrument, healpix_pixel",
+        path,
+    )
+
 
 # Precomputed sample of all stars for the /sky all-sky map -- was a live
 # `USING SAMPLE n` against the full `stars` table on every page load, which
@@ -1153,9 +1188,9 @@ def export_tables(database_url: str, out_dir: str) -> None:
         _atomic_copy(con, _localize(INSTRUMENTS_QUERY), instruments_path)
         logger.info("exported instruments -> %s", instruments_path)
 
-        instrument_sky_sample_path = os.path.join(out_dir, "instrument_sky_sample.parquet")
-        _atomic_copy(con, _localize(INSTRUMENT_SKY_SAMPLE_QUERY), instrument_sky_sample_path)
-        logger.info("exported instrument_sky_sample -> %s", instrument_sky_sample_path)
+        instrument_healpix_path = os.path.join(out_dir, "instrument_healpix.parquet")
+        _export_instrument_healpix(con, instrument_healpix_path)
+        logger.info("exported instrument_healpix -> %s", instrument_healpix_path)
 
         triage_queue_path = os.path.join(out_dir, "triage_queue.parquet")
         _atomic_copy(con, _localize(TRIAGE_QUEUE_QUERY), triage_queue_path)
