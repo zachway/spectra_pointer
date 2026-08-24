@@ -127,6 +127,7 @@ INSTRUMENT_POSITIONS_QUERY = """
 SELECT instrument, raw_ra, raw_dec
 FROM pg.spectroscopy_holdings
 WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+AND raw_ra BETWEEN 0 AND 360 AND raw_dec BETWEEN -90 AND 90
 """
 
 
