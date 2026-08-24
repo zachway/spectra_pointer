@@ -3213,7 +3213,7 @@ INSTRUMENTS_TEMPLATE = """
   <p class="note">HEALPix-binned density (nside={{ instrument_healpix_nside }}) of position-tagged observations for the selected instrument, Aitoff-projected -- a fingerprint of that instrument's sky coverage.</p>
   {% if instrument_sky_options %}
     <div class="overlap-controls">
-      <select id="instrument-sky-select" onchange="location.href = '/instruments?instrument=' + encodeURIComponent(this.value) + '#instrument-sky'">
+      <select id="instrument-sky-select">
         {% for opt in instrument_sky_options %}
           <option value="{{ opt.instrument }}"{{ " selected" if opt.instrument == selected_instrument else "" }}>{{ opt.instrument }} ({{ "{:,}".format(opt.total) }})</option>
         {% endfor %}
@@ -3225,6 +3225,21 @@ INSTRUMENTS_TEMPLATE = """
     <script>
       const instrumentSkyFig = {{ instrument_sky_fig | tojson }};
       Plotly.newPlot('instrument-sky', instrumentSkyFig.data, instrumentSkyFig.layout, { responsive: true, scrollZoom: true });
+      // Switching instruments re-fetches just this figure and updates the
+      // existing plot in place (Plotly.react) instead of reloading the
+      // whole page -- /instruments/sky-data serves the same figure
+      // instruments_page() builds for the initial instrument.
+      document.getElementById('instrument-sky-select').addEventListener('change', function () {
+        const instrument = this.value;
+        fetch('/instruments/sky-data?instrument=' + encodeURIComponent(instrument))
+          .then(function (r) { return r.json(); })
+          .then(function (fig) {
+            Plotly.react('instrument-sky', fig.data, fig.layout);
+            const url = new URL(window.location);
+            url.searchParams.set('instrument', instrument);
+            history.replaceState(null, '', url);
+          });
+      });
     </script>
   {% else %}
     <p>No position-tagged instrument data yet.</p>
@@ -3572,6 +3587,47 @@ def _split_overlap_rows(rows: list[dict], a_key: str, b_key: str, display_key: s
     return items, pairs
 
 
+# Shared by instruments_page() (the initial server-rendered figure) and
+# instrument_sky_data() (the JSON the page's dropdown fetches on change, so
+# switching instruments doesn't need a full page reload). Built with
+# skyplothelper (github.com/pjcigan/skyplothelper) rather than the
+# hand-rolled Aitoff formula this page used to use -- that formula turned
+# out to drift from a true Aitoff projection at high |dec| (~10% off at
+# RA=180, Dec=60 when checked against this library), and this also gets us
+# real gridlines/tick labels and a galactic-plane overlay (matching /sky's
+# own, hand-rolled separately there) for free. add_healpix_sparse renders
+# one tile polygon per populated cell for the single selected instrument --
+# a density histogram, replacing the earlier per-instrument random-sample
+# scatter (which showed an arbitrary subset of points rather than where an
+# instrument actually concentrates, and needed a legend click to isolate
+# one instrument at a time instead of a real selector).
+def _instrument_sky_fig(cur: duckdb.DuckDBPyConnection, instrument: str | None) -> dict | None:
+    if not instrument:
+        return None
+    cur.execute(
+        "SELECT healpix_pixel, n FROM instrument_healpix WHERE instrument = ?",
+        [instrument],
+    )
+    cells = _rows_as_dicts(cur)
+    if not cells:
+        return None
+    fig = sph_plotly.make_figure(projection="AIT", show_grid=True, theme="light", width=900, height=700)
+    sph_plotly.add_plane_overlay(fig, plane="galactic", color="#999999", opacity=0.4, width=1, name="Galactic plane")
+    sph_plotly.add_healpix_sparse(
+        fig,
+        [c["healpix_pixel"] for c in cells],
+        [c["n"] for c in cells],
+        nside=INSTRUMENT_HEALPIX_NSIDE,
+        colorscale="Viridis",
+        add_colorbar=True,
+        cbar_title="observations",
+        hover_format="{value:.0f} observations<br>{lon:.1f}°, {lat:.1f}°",
+    )
+    sph_plotly.add_coord_labels(fig)
+    fig.update_layout(hovermode="closest", margin={"t": 10, "l": 10, "r": 10, "b": 10})
+    return json.loads(fig.to_json())
+
+
 @app.route("/instruments")
 def instruments_page():
     # instruments (display_name, instrument, n) is precomputed by
@@ -3674,45 +3730,12 @@ def instruments_page():
     if selected_instrument not in valid_instruments:
         selected_instrument = instrument_sky_options[0]["instrument"] if instrument_sky_options else None
 
-    # Built with skyplothelper (github.com/pjcigan/skyplothelper) rather than
-    # the hand-rolled Aitoff formula this page used to use -- that formula
-    # turned out to drift from a true Aitoff projection at high |dec| (~10%
-    # off at RA=180, Dec=60 when checked against this library), and this also
-    # gets us real gridlines/tick labels and a galactic-plane overlay
-    # (matching /sky's own, hand-rolled separately there) for free.
-    # add_healpix_sparse renders one tile polygon per populated cell for the
-    # single selected instrument -- a density histogram, replacing the
-    # earlier per-instrument random-sample scatter (which showed an
-    # arbitrary subset of points rather than where an instrument actually
-    # concentrates, and needed a legend click to isolate one instrument at a
-    # time instead of a real selector). Figure is built server-side and
-    # shipped as Plotly JSON for the client's existing Plotly.js (from CDN)
-    # to render.
-    instrument_sky_fig = None
-    if selected_instrument:
-        cur.execute(
-            "SELECT healpix_pixel, n FROM instrument_healpix WHERE instrument = ?",
-            [selected_instrument],
-        )
-        cells = _rows_as_dicts(cur)
-        fig = sph_plotly.make_figure(projection="AIT", show_grid=True, theme="light", width=900, height=700)
-        sph_plotly.add_plane_overlay(fig, plane="galactic", color="#999999", opacity=0.4, width=1, name="Galactic plane")
-        sph_plotly.add_healpix_sparse(
-            fig,
-            [c["healpix_pixel"] for c in cells],
-            [c["n"] for c in cells],
-            nside=INSTRUMENT_HEALPIX_NSIDE,
-            colorscale="Viridis",
-            add_colorbar=True,
-            cbar_title="observations",
-            hover_format="{value:.0f} observations<br>{lon:.1f}°, {lat:.1f}°",
-        )
-        sph_plotly.add_coord_labels(fig)
-        fig.update_layout(
-            hovermode="closest",
-            margin={"t": 10, "l": 10, "r": 10, "b": 10},
-        )
-        instrument_sky_fig = json.loads(fig.to_json())
+    # Figure is built server-side and shipped as Plotly JSON for the
+    # client's existing Plotly.js (from CDN) to render. Switching instruments
+    # client-side re-fetches this same figure from instrument_sky_data()
+    # below instead of reloading the page -- see the <select> handler in the
+    # template.
+    instrument_sky_fig = _instrument_sky_fig(cur, selected_instrument)
 
     # Star overlap between archives/instruments -- archive_overlap(_triple)
     # and instrument_overlap(_triple) are precomputed by
@@ -3767,6 +3790,19 @@ def instruments_page():
         instrument_heatmap_top_n=INSTRUMENT_OVERLAP_HEATMAP_TOP_N,
         active_tab="instruments",
     )
+
+
+@app.route("/instruments/sky-data")
+def instrument_sky_data():
+    # Fetched client-side by /instruments' dropdown handler (Plotly.react,
+    # not a page navigation) -- see _instrument_sky_fig's docstring-comment
+    # for the figure itself. 404 rather than an empty figure for an unknown
+    # instrument -- request.args.get() input, not something a valid
+    # dropdown selection can produce.
+    fig = _instrument_sky_fig(get_cursor(), request.args.get("instrument", ""))
+    if fig is None:
+        abort(404)
+    return Response(json.dumps(fig), mimetype="application/json")
 
 
 @app.route("/stats")
