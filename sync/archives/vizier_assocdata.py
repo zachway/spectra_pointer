@@ -70,16 +70,29 @@ left at the 'unknown' default rather than fed through
 reduction_status_from_calib_level (which would otherwise misread -1 as
 "raw").
 
-oidsaada is a real per-row unique identifier (confirmed unique, ~19-digit,
-same length across the observed range so string comparison sorts the same
-as numeric) -- used both as archive_obs_id and as the pagination watermark,
-same id-watermark shape as hermes_mercator.py/asiago.py, since VizieR keeps
+oidsaada is a real per-row unique identifier (confirmed unique, ~19-digit)
+-- used both as archive_obs_id and as the pagination watermark, same
+id-watermark shape as hermes_mercator.py/asiago.py, since VizieR keeps
 ingesting new journal tables over time (not a frozen historical dump like
 feros_gavo.py/elodie.py). access_url is a direct, already-resolved download
 link (https://cdsarc.cds.unistra.fr/saadavizier/download?oid=...), no
 further resolution step needed. bib_reference (the paper's bibcode) is
 stored in program_id -- not a literal observing-program ID, but the closest
 available field for retaining per-record provenance back to the publication.
+
+The server's own `oidsaada > '{last_id}'` filter is unreliable at this ID's
+~19-digit scale -- confirmed live 2026-08-24 (first prod run): querying
+with last_id equal to the table's true maximum oidsaada got that exact same
+row back every single call, cursor never advancing, an infinite loop that
+had to be killed manually after 39 pages. Consistent with the comparison
+being coerced through float64 somewhere server-side (exact only to ~15-16
+significant digits, well under 19) so the boundary row satisfies its own
+'>' filter. Fixed by re-checking every row against last_id client-side with
+Python's exact arbitrary-precision int comparison and dropping anything
+that doesn't genuinely satisfy it -- the server-side filter is kept too (it
+still does most of the real filtering work, this is just a safety net), but
+no boundary self-match can turn into an infinite loop again regardless of
+why the server's own comparison misbehaves.
 
 TOP 20000 took ~23s in testing (mostly fixed table-scan overhead from the
 NOT IN literal list against the full 8.3M-row table, not per-row cost) --
@@ -199,17 +212,32 @@ ORDER BY oidsaada ASC
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_id = cursor.get("last_id", "0")
+    last_id_int = int(last_id)
 
     tap = make_tap_service(TAP_URL)
     query = QUERY.format(page_size=PAGE_SIZE, last_id=last_id)
     table = tap.search(query, maxrec=PAGE_SIZE).to_table()
 
     records = []
-    max_id = last_id
+    max_id_int = last_id_int
     for row in table:
         oid = str(row["oidsaada"]).strip()
-        if oid > max_id:
-            max_id = oid
+        oid_int = int(oid)
+
+        # The server's own `oidsaada > '{last_id}'` filter is unreliable at
+        # this ID's ~19-digit scale (observed live 2026-08-24: querying with
+        # last_id equal to the table's true maximum oidsaada gets that same
+        # row back forever, cursor never advancing -- consistent with the
+        # comparison being coerced through float64 somewhere server-side,
+        # which is only exact to ~15-16 significant digits, well under 19).
+        # Re-checking with Python's exact arbitrary-precision int comparison
+        # drops any row the server incorrectly included, so a boundary
+        # self-match can never turn into an infinite loop regardless of why
+        # the server's filter misbehaves.
+        if oid_int <= last_id_int:
+            continue
+        if oid_int > max_id_int:
+            max_id_int = oid_int
 
         t_min = clean_float(row["t_min"])
         obs_date = Time(t_min, format="mjd").to_datetime().date() if t_min is not None else None
@@ -230,5 +258,5 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             )
         )
 
-    new_cursor = {"last_id": max_id}
+    new_cursor = {"last_id": str(max_id_int)}
     return records, new_cursor
