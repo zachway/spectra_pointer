@@ -88,6 +88,7 @@ from sync.archives import (
     sophie,
     subaru_moircs,
     svo_cab,
+    vizier_assocdata,
     xmm,
 )
 from sync.reconcile_eso_raw import reconcile as reconcile_eso_raw
@@ -154,6 +155,7 @@ ARCHIVES = {
     "subaru_moircs": subaru_moircs.fetch,
     "xmm": xmm.fetch,
     "heros_ondrejov": heros_ondrejov.fetch,
+    "vizier_assocdata": vizier_assocdata.fetch,
 }
 
 
