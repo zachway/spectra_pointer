@@ -3722,10 +3722,21 @@ def instruments_page():
     # instrument is selected -- run live against it on every request, same
     # as the other small precomputed tables on this page (e.g. instruments,
     # archive_overlap).
-    cur.execute("SELECT instrument, sum(n) AS total FROM instrument_healpix GROUP BY instrument ORDER BY total DESC, instrument")
+    cur.execute("SELECT instrument, sum(n) AS total FROM instrument_healpix WHERE instrument != '' GROUP BY instrument ORDER BY total DESC, instrument")
     instrument_sky_options = _rows_as_dicts(cur)
 
-    selected_instrument = request.args.get("instrument", "")
+    # request.args.get(..., "") -- rather than the no-default form -- would
+    # make an absent ?instrument= param indistinguishable from an explicit
+    # ?instrument= (empty value), and *that* used to be indistinguishable
+    # from a real but degenerate instrument_healpix row whose instrument
+    # itself was '' (see scripts.export_to_parquet's INSTRUMENT_POSITIONS_
+    # QUERY comment -- confirmed live, 43 ESO rows). That collision made the
+    # "fall back to the top instrument" branch below never trigger on a
+    # plain page load, since '' looked like a deliberately-selected valid
+    # option. Excluded at the source now too, but kept here as well since an
+    # absent selection has to normalize to something no real instrument name
+    # can ever equal.
+    selected_instrument = request.args.get("instrument") or None
     valid_instruments = {r["instrument"] for r in instrument_sky_options}
     if selected_instrument not in valid_instruments:
         selected_instrument = instrument_sky_options[0]["instrument"] if instrument_sky_options else None

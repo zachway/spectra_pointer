@@ -125,6 +125,16 @@ ORDER BY a.display_name, n DESC
 #     left is small single-paper collections from many disparate obscure
 #     telescopes, each usually contributing a handful of rows.
 #
+# trim(instrument) != '' also excludes blank-but-non-NULL instrument values
+# (confirmed live: 43 rows from ESO Science Archive) -- `IS NOT NULL` alone
+# doesn't catch these. This isn't just a dropdown-tidiness thing like the two
+# exclusions above: an empty-string instrument name in instrument_healpix
+# broke the /instruments page for every visitor, since webapp.app's default
+# instrument selection uses request.args.get("instrument", "") -- an actual
+# `instrument = ''` row in the data made that "no selection made" sentinel
+# collide with a real (if degenerate) option, short-circuiting the fallback
+# to the top instrument and landing on a blank one with no cells to render.
+#
 # DuckDB has no native HEALPix function, so the actual ang2pix binning can't
 # be pushed down as SQL (unlike everything else in this file) -- it happens
 # in Python via healpy below, then the aggregated (instrument, cell, count)
@@ -138,7 +148,7 @@ INSTRUMENT_HEALPIX_NSIDE = 32
 INSTRUMENT_POSITIONS_QUERY = """
 SELECT instrument, raw_ra, raw_dec
 FROM pg.spectroscopy_holdings
-WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+WHERE instrument IS NOT NULL AND trim(instrument) != '' AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
 AND raw_ra BETWEEN 0 AND 360 AND raw_dec BETWEEN -90 AND 90
 AND archive_code NOT IN ('bess', 'vizier_assocdata')
 """
