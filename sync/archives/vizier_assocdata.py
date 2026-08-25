@@ -103,6 +103,8 @@ real pagination need today.
 
 from __future__ import annotations
 
+from datetime import date
+
 from astropy.time import Time
 
 from sync.base import RawObservation, clean_float, make_tap_service
@@ -110,6 +112,19 @@ from sync.base import RawObservation, clean_float, make_tap_service
 TAP_URL = "https://cdsarc.cds.unistra.fr/saadavizier.tap/tap"
 
 PAGE_SIZE = 20000
+
+# t_min in this table is sometimes corrupted upstream (e.g. V/127A has
+# t_min > t_max; one BTMon row in J/A+A/560/A49 carries a full JD in an
+# MJD-typed column) or, for old novae in J/A+A/560/A49, only records the
+# eruption year as a bare-integer MJD padded to Jan 1 -- not a real
+# day-precision observation date. Confirmed live 2026-08-25: 70/13,199 rows
+# had obs_date wildly wrong (years up to 8557 or in the future) this way.
+# EARLIEST_VALID_OBS_DATE is 1893-01-01, the date of the oldest verified
+# genuine day-precision spectrum in this archive (Humphreys et al. 2008,
+# 2008AJ....135.1249H, digitized Boyden-station plates of Eta Carinae) --
+# anything before that, or after today, gets obs_date dropped to NULL
+# rather than shown as a fabricated/corrupted date.
+EARLIEST_VALID_OBS_DATE = date(1893, 1, 1)
 
 # Hand-verified 2026-08-24 -- see module docstring. Exact facility_name
 # literals only (ADQL here has no LOWER()/LIKE support to do this fuzzily).
@@ -241,6 +256,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
 
         t_min = clean_float(row["t_min"])
         obs_date = Time(t_min, format="mjd").to_datetime().date() if t_min is not None else None
+        if obs_date is not None and not (EARLIEST_VALID_OBS_DATE <= obs_date <= date.today()):
+            obs_date = None
 
         instrument = str(row["instrument_name"]).strip() or None
         bib_reference = str(row["bib_reference"]).strip() or None
