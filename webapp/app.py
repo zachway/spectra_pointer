@@ -3611,17 +3611,31 @@ def _instrument_sky_fig(cur: duckdb.DuckDBPyConnection, instrument: str | None) 
     cells = _rows_as_dicts(cur)
     if not cells:
         return None
+
+    # Color by log10(n), not n -- per-cell counts span orders of magnitude
+    # (e.g. SDSS/BOSS ranges from single digits up to thousands per cell), so
+    # a linear scale left almost every cell reading as the same dim color
+    # next to a handful of saturated ones. add_healpix_sparse has no built-in
+    # log option, so the values passed in are pre-transformed here; the
+    # colorbar ticks/hover text are mapped back to real observation counts
+    # (via counts_by_pixel, an exact lookup -- not 10**log_value, which would
+    # be lossy) so nothing about log10 leaks into what's actually displayed.
+    counts_by_pixel = {c["healpix_pixel"]: c["n"] for c in cells}
+    min_n, max_n = min(counts_by_pixel.values()), max(counts_by_pixel.values())
+    tick_powers = range(math.floor(math.log10(min_n)), math.floor(math.log10(max_n)) + 1)
+
     fig = sph_plotly.make_figure(projection="AIT", show_grid=True, theme="light", width=900, height=700)
     sph_plotly.add_plane_overlay(fig, plane="galactic", color="#999999", opacity=0.4, width=1, name="Galactic plane")
     sph_plotly.add_healpix_sparse(
         fig,
         [c["healpix_pixel"] for c in cells],
-        [c["n"] for c in cells],
+        [math.log10(c["n"]) for c in cells],
         nside=INSTRUMENT_HEALPIX_NSIDE,
         colorscale="Viridis",
         add_colorbar=True,
         cbar_title="observations",
-        hover_format="{value:.0f} observations<br>{lon:.1f}°, {lat:.1f}°",
+        colorbar_kwargs={"tickvals": list(tick_powers), "ticktext": [f"{10**p:,.0f}" for p in tick_powers]},
+        hover_format=lambda lon, lat, value, ipix: f"{counts_by_pixel[ipix]:,} observations<br>{lon:.1f}°, {lat:.1f}°",
     )
     sph_plotly.add_coord_labels(fig)
     fig.update_layout(hovermode="closest", margin={"t": 10, "l": 10, "r": 10, "b": 10})
