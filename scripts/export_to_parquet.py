@@ -113,13 +113,17 @@ ORDER BY a.display_name, n DESC
 # instrument with position data, and the per-instrument dropdown on the page
 # picks which one's histogram to render.
 #
-# BeSS (archive_code 'bess') is excluded: its `instrument` field is scraped
-# free text typed in by individual amateur observers (see
-# sync/archives/bess.py's `instru` regex group), not a fixed instrument
-# name from a small known set the way every other archive's is -- it
-# contributes a long tail of one-off/near-duplicate spectrograph names that
-# would otherwise dominate the dropdown's option count without being a
-# meaningfully distinct "instrument" to browse by.
+# Two archives excluded, both for the same reason -- neither's `instrument`
+# values are a small fixed set the way every other archive's is, so either
+# would flood the dropdown with a long tail of one-off entries that aren't
+# meaningfully distinct "instruments" to browse by:
+#   - BeSS (archive_code 'bess'): free text typed in by individual amateur
+#     observers (see sync/archives/bess.py's `instru` regex group).
+#   - vizier_assocdata (archive_code 'vizier_assocdata'): a fallback grab-bag
+#     of ~13k rows left over after excluding facilities already covered by a
+#     direct archive elsewhere (see that module's own docstring) -- what's
+#     left is small single-paper collections from many disparate obscure
+#     telescopes, each usually contributing a handful of rows.
 #
 # DuckDB has no native HEALPix function, so the actual ang2pix binning can't
 # be pushed down as SQL (unlike everything else in this file) -- it happens
@@ -136,7 +140,7 @@ SELECT instrument, raw_ra, raw_dec
 FROM pg.spectroscopy_holdings
 WHERE instrument IS NOT NULL AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
 AND raw_ra BETWEEN 0 AND 360 AND raw_dec BETWEEN -90 AND 90
-AND archive_code != 'bess'
+AND archive_code NOT IN ('bess', 'vizier_assocdata')
 """
 
 
