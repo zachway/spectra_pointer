@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "The Spectra Pointer"
+type: software
+abstract: >-
+  A cross-match database and search tool that unifies stellar spectroscopy
+  holdings across dozens of independent astronomical archives (ESO, SDSS,
+  Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single Gaia DR3
+  source_id lookup.
+authors:
+  - family-names: Way
+    given-names: Zachary
+    orcid: "https://orcid.org/0000-0003-0179-9662"
+    affiliation: "Department of Physics and Astronomy, Georgia State University"
+license: MIT
+repository-code: "https://github.com/zachway/spectra_pointer"
+url: "https://spectra-pointer-997472993697.us-central1.run.app"
+# Add a preferred-citation entry for the JOSS paper (see paper.md) once it's
+# published, and set version/date-released to match the first tagged release.
