@@ -36,6 +36,8 @@ CDS’ VizieR [@ochsenbein2000vizier] tool allows a user to search through assoc
 
 The software can be cleanly split into two sections, the cross-match database and The Spectra Pointer webapp.
 
+<img width="772" height="262" alt="The Spectra Pointer ingestion flow chart" src="https://github.com/zachway/spectra_pointer/blob/main/webapp/static/the_spectra_pointer_flow.png" />
+
 ## The Cross-Match Database
 
 Matching stellar data to a particular source is a notoriously difficult problem in astronomy. As new technology is developed our view of the sky becomes sharper and deeper, allowing unresolved or dim objects to be tracked. Furthermore, stars do not stay in one place and have observable, proper motion across the sky. In The Spectra Pointer these issues are accounted for by 1) trusting what observers themselves wrote down as the target and 2) anchoring our cross match to the most complete survey of stars to date, Gaia DR3.
