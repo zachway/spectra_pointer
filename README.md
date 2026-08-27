@@ -100,6 +100,31 @@ See the module docstrings in `sync/main.py`, `ingest/add_star.py`, and
 `webapp/app.py` for the full set of options and environment variables
 (archive-specific auth, caching, and deployment configuration).
 
+### Example: what a lookup actually returns
+
+Querying the live deployment for Proxima Centauri (`?format=csv` on any
+name/`source_id` search returns a CSV instead of the HTML page):
+
+```bash
+curl "https://spectra-pointer-997472993697.us-central1.run.app/?q=Proxima+Cen&format=csv"
+```
+
+```csv
+query,source_id,status,known_as,archive,instrument,obs_date,match_status,match_method,reduction_status,archive_url
+Proxima Cen,5853498713190525696,tracked,"Proxima Centauri, GJ 551, V645 Cen, ...",Chandra X-ray Observatory,HETG (ACIS-S),2001-09-13,matched,name_resolved,unknown,https://cda.harvard.edu/chaser/startViewer.do?menuItem=details&obsid=2388
+Proxima Cen,5853498713190525696,tracked,"Proxima Centauri, GJ 551, V645 Cen, ...",ESO Archive (Raw),CRIRES,2009-02-16,matched,name_resolved,raw,https://archive.eso.org/dataset/CRIRE.2009-02-16T08:13:50.905
+Proxima Cen,5853498713190525696,tracked,"Proxima Centauri, GJ 551, V645 Cen, ...",ESO Science Archive,CRIRES,2024-07-08,matched,name_resolved,reduced,https://archive.eso.org/...
+Proxima Cen,5853498713190525696,tracked,"Proxima Centauri, GJ 551, V645 Cen, ...",Gemini Observatory Archive,GMOS-S,2011-05-07,matched,name_resolved,raw,https://archive.gemini.edu/...
+```
+
+(truncated here — the real response has one row per observation, across
+every archive holding a spectrum of the star; `known_as` is abbreviated
+above, the real field carries every resolved SIMBAD alias). Each row is one
+independently-discovered observation, cross-matched by name or position to
+the same Gaia `source_id` — `archive_url` links straight back to that
+observation in its home archive. The same query without `format=csv`
+returns the interactive search page at the same URL.
+
 ## Testing
 
 Most tests exercise real cross-match logic against Postgres, so they need
