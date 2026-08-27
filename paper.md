@@ -36,11 +36,12 @@ CDS’ VizieR [@ochsenbein2000vizier] tool allows a user to search through assoc
 
 The software can be cleanly split into two sections, the cross-match database and The Spectra Pointer webapp.
 
+<div align="center">
 <figure align="center">
   <img width="772" height="262" alt="The Spectra Pointer ingestion flow chart" src="https://github.com/zachway/spectra_pointer/blob/main/webapp/static/the_spectra_pointer_flow.png" />
   <figcaption>Figure 1: The Spectra Pointer ingestion flow.</figcaption>
 </figure>
-
+</div>
 
 ## The Cross-Match Database
 
