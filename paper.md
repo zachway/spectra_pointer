@@ -19,18 +19,18 @@ bibliography: paper.bib
 
 # Summary
 
-A cross-match database and search tool that unifies stellar spectroscopy holdings across more than 50 independent astronomical archives (ESO, SDSS, Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single Gaia DR3 `source_id` lookup.
+A cross-match database and search tool that unifies stellar spectroscopy holdings across 58 independent astronomical archives (ESO, SDSS, Gaia, LAMOST, Keck/KOA, Gemini, and more) behind a single Gaia DR3 `source_id` lookup.
 
 
-# Statement of need
+# Statement of Need
 
-Since the invention of the charge coupled device (CCD), astronomical data taken at observatories has been stored digitally. It is common for ground- and space-based spectroscopic instruments to publish their data publicly, however these are held under many different conventions — different identifier schemes, different metadata fields, different levels of positional precision, some with public TAP/VO services and some without. As more spectroscopic data is observed, it becomes intractable for an individual researcher to find out if a particular star has been observed or by which observatories. This information is necessary for creating novel research, combing through archival data, and writing proposals for time on large telescopes with limited budgets.
+Since the invention of the charge coupled device (CCD), astronomical data taken at observatories has been stored digitally. It is common for ground- and space-based spectroscopic instruments to publish their data publicly, however these are held under many different conventions — different identifier schemes, different metadata fields, different levels of positional precision, some with public TAP/VO services and some without. As more spectroscopic data are observed, it becomes intractable for an individual researcher to find out if a particular star has been observed or by which observatories. This information is necessary for creating novel research, combing through archival data, and writing proposals for time on large telescopes with limited budgets.
 
-The Spectra Pointer solves this by running an independent sync process per archive (57 are currently implemented) that discovers spectroscopic observations and cross-matches each one to a canonical identifier, either the Gaia DR3 `source_id` [@gaiadr3] or from the Bright Stars Catalog [@hoffleit1991bsc]. First, stars are matched by a named identifier if the archive publishes one (via the SIMBAD database [@wenger2000simbad]. If the name cannot be resolved, the code falls back to a positional match (via a PostgreSQL q3c extension [@koposov2006q3c]). The result is a single Postgres table (spectroscopy_holdings) that a researcher can query by Gaia `source_id` or common name to get a consolidated, deduplicated list of every archive holding a spectrum of that star, along with pointers back to the original data in each home archive. A public search webapp (built on this database) is deployed at https://spectra-pointer-997472993697.us-central1.run.app. This software is developed to be reusable infrastructure for anybody, using no proprietary access and minimal personal keys.
+The Spectra Pointer solves this by running an independent sync process per archive (58 are currently implemented) that discovers spectroscopic observations and cross-matches each one to a canonical identifier, either the Gaia DR3 `source_id` [@gaiadr3] or from the Bright Stars Catalog [@hoffleit1991bsc]. First, stars are matched by a named identifier if the archive publishes one (via the SIMBAD database [@wenger2000simbad]. If the name cannot be resolved, the code falls back to a positional match (via a PostgreSQL q3c extension [@koposov2006q3c]). The result is a single Postgres table (spectroscopy_holdings) that a researcher can query by Gaia `source_id` or common name to get a consolidated, deduplicated list of every archive holding a spectrum of that star, along with pointers back to the original data in each home archive. A public search webapp (built on this database) is deployed at https://spectra-pointer-997472993697.us-central1.run.app. This software is developed to be reusable infrastructure for anybody, using no proprietary access and minimal personal keys.
 
 # State of the Field
 
-CDS’ VizieR [@ochsenbein2000vizier] tool allows a user to search through associated data to look for spectra. However, this tool is based on their internal table matching. The Spectra Pointer, in contrast, directly searches each archive, matches the holding to a star internally, and aggregates the spectroscopic holdings. This method seeks out data which may not be documented in a published paper and effectively casts a much wider net for public data.
+CDS’ VizieR [@ochsenbein2000vizier] tool allows a user to search through associated data to look for spectra. However, their tool is based internal table matching for published target lists. The Spectra Pointer, in contrast, directly searches each archive, matches the holding to a star internally, and aggregates the spectroscopic holdings. In short, The Pointer seeks out data that may not be well-documented or published.
 
 # Software Design
 
@@ -44,9 +44,9 @@ The cross match process works as follows:
  - An online archive is scanned for spectroscopy holdings
  - Each holding is attempted to be resolved in the following order and added to the `spectroscopy_holdings` table
    - A name match to the SIMBAD database which already has a mapped Gaia DR3 `source_id`
-   - An easy, proper motion-propagated coordinate match to a 1 arcsecond radius to the Gaia archive. This is constrained enough to limit false-positives (although they do exist)
-   - A lower quality, 1 arcminute search with underlying match logic (e.g. which source is brightest) is run on the Gaia archive
-   - If the above fail, the holdings is stored as “skipped”
+   - An easy, proper motion-propagated coordinate match out to 1 arcsecond radius. This is constrained enough to limit false-positives (although they do exist)
+   - A lower quality, 1 arcminute search with underlying match logic (e.g. which source is brightest) 
+   - If all of the above fail, the holdings is stored as “skipped”
  - Once the holding is tied to a `source_id`, the table `stars` is checked to see if a star already exists. If not, the row is created. If it does exists, `star_id` is updated for the holding.
 
 This process is completed intermittently through the `sync` method. Each archive has a running cursor which keeps track of how far the sync has reached. When the sync is run, each archive is matched and added into the database.
@@ -57,23 +57,22 @@ Prioritizing the archive’s named target allows the database to be based off of
 
 ## The Spectra Pointer Webapp
 
-The Spectra Pointer is designed to be as accesible as possible while limiting the total cost on cloud services. The webapp is built using Flask and consists of a simple search page with some other interesting plots and features. In order to limit API calls, the Postgres database is periodically exported to static `parquet` files. The Spectra Pointer accesses these files using DuckDB's httpfs extension. This architecture, while convoluted, allows the data to be hosted on Georgia State’s public server while the app is accessible using Google Cloud’s web services.
+The Spectra Pointer webapp design is designed to be as accesible as possible while limiting the total cost on cloud services and accesing the data through Georgia State University's Physics and Astronomy Department web server. The webapp is built using Flask and consists of a simple search page with some other interesting plots and features. In order to limit API calls, the Postgres database is periodically exported to static `parquet` files. The Spectra Pointer accesses these files using DuckDB's httpfs extension. This architecture, while admittedly convoluted, allows the data to be hosted on Georgia State’s public server and queried by Google Cloud’s web services. For those wishing to access the data directly without the webapp, it may be accessed at https://astro.gsu.edu/~way/spectra_data/.
 
 # Research Impact Statement
 
 This work will provide stellar astronomers with a tool that is both broad and deep. With more than 16.8 million stars tracked, an astronomer who studies a particular star can now search immediately to see if their source has been observed. This breadth of coverage is relevant for time-domain astronomy, where a source can be characterized without follow-up, as well as for inter-archival comparison and validation.
 
-The depth of the data is staggering. At the time of writing Vega is the most observed star, with more than 35,000 spectra taken from 1978 until today. AU Microscopii has the most wavelength coverage, with overlapping data taken from the x-ray all the way to the far infrared. The Spectra Pointer allows a user to, at a glance, see all the available spectra for a particular source and enrich the research done on these sources.
+The depth of the data is staggering. At the time of writing Vega is the most observed star, with more than 35,000 spectra taken since 1978. AU Microscopii has the most wavelength coverage, with overlapping data taken from the x-ray all the way to the far infrared. The Spectra Pointer allows a user to, at a glance, see all the available spectra for a particular source and enrich the research on these sources.
 
 # AI usage disclosure
 
-Claude’s Sonnet 5 was used to develop the software throughout the codebase. The author has read through each line of code to verify correctness. Sonnet 5 was also used to generate some of the text in this paper as well as formatting and copy-editing. However, the writing can be largely credited to the author.
+Claude’s Sonnet 5 was used to develop the software throughout the codebase. Sonnet 5 was also used to generate some of the text in the Summary and Statement of Need as well as for formatting and copy-editing. However, the writing can be largely credited to the author.
 
 
 # Acknowledgements
 
-This research has made use of the SIMBAD database,
-operated at CDS, Strasbourg, France
+This research has made use of the SIMBAD database, operated at CDS, Strasbourg, France
 
 For their feedback during development I would like to acknowledge Jamie Tayar, Kayvon Sharifi, Colin Kane, Akshat Chaturvedi, Mahir Patel, Doug Gies, Russel White, Thomas Rivinius, Dietrich Baade, Ilija Medan, and my PhD advisor Sébastien Lépine.
 
