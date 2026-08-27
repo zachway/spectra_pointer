@@ -450,6 +450,14 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     for local_i, r in enumerate(cell_records):
         by_epoch[matcher._to_jyear(r.obs_date)].append(local_i)
 
+    # Accumulated across every epoch group and written in one batched round
+    # trip at the end (see matcher.upsert_holdings_batch) instead of one
+    # _upsert_holding() execute() per record -- a cell can carry tens of
+    # thousands of records (e.g. repeat observations of one bright
+    # calibration standard), for which the per-record round trips were
+    # measured dominating cell wall time far more than the Gaia fetch itself.
+    pending_rows: list[tuple] = []
+
     with conn.cursor() as cur:
         for epoch, local_idxs in by_epoch.items():
             epoch_records = [cell_records[i] for i in local_idxs]
@@ -506,7 +514,7 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
                 winner, reason = pick_best_candidate(archive_code, candidates)
 
                 if winner is None:
-                    matcher._upsert_holding(cur, archive_code, r, None, "shitty_positional_match", "needs_review", None)
+                    pending_rows.append(matcher.upsert_holding_row(archive_code, r, None, "shitty_positional_match", "needs_review", None))
                     counts["no_confident_candidate"] += 1
                     logger.info("%s: no confident shitty_positional_match candidate for %s (%s)", archive_code, r.archive_obs_id, reason)
                     continue
@@ -521,9 +529,11 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
                         lookup_cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (winner.gaia_source_id,))
                         star_id = lookup_cur.fetchone()[0]
 
-                matcher._upsert_holding(cur, archive_code, r, star_id, "shitty_positional_match", "needs_review", float(winner.separation_arcsec))
+                pending_rows.append(matcher.upsert_holding_row(archive_code, r, star_id, "shitty_positional_match", "needs_review", float(winner.separation_arcsec)))
                 counts["shitty_matched"] += 1
                 logger.info("%s: shitty_positional_match %s -> star_id %d (%s)", archive_code, r.archive_obs_id, star_id, reason)
+
+        matcher.upsert_holdings_batch(cur, pending_rows)
     conn.commit()
     logger.info("healpix cell %d: %d records processed -> %s", cell, len(cell_records), counts)
     return counts
