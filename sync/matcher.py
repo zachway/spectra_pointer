@@ -237,6 +237,43 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
     return list(ids), propagated
 
 
+def propagate_many_epochs(star_rows: list[tuple], obs_jyears: list[float]) -> tuple[list[int], SkyCoord]:
+    """Broadcast form of _propagate: propagates every star_row to every
+    epoch in obs_jyears with one apply_space_motion call, instead of
+    building a fresh Time/SkyCoord (measurably expensive per call -- Time's
+    own parsing/validation overhead dominates for a small array) once per
+    epoch. Returns (ids, propagated) where propagated has shape
+    (len(star_rows), len(obs_jyears)); propagated[:, j] is every star
+    propagated to obs_jyears[j], directly usable wherever a single
+    _propagate() call's result would be.
+
+    Added for shitty_positional_match's _process_cell: a HEALPix cell can
+    carry records spanning thousands of distinct observation epochs (e.g.
+    decades of nightly observations of one frequently-reobserved bright
+    calibration standard), and _process_cell calling _propagate once per
+    distinct epoch was observed becoming the dominant per-cell cost once
+    upsert_holdings_batch (above) removed the earlier per-record DB-write
+    bottleneck -- a live run on morgan (2026-08-27) stalled to a near-zero
+    record rate, pegged at ~93% CPU, once it reached a cell with tens of
+    thousands of near-unique epochs.
+    """
+    ids, ra, dec, ref_epoch, pmra, pmdec = zip(*star_rows)
+    coords = SkyCoord(
+        ra=np.array(ra)[:, None] * u.deg,
+        dec=np.array(dec)[:, None] * u.deg,
+        pm_ra_cosdec=np.nan_to_num(np.array(pmra, dtype=float))[:, None] * u.mas / u.yr,
+        pm_dec=np.nan_to_num(np.array(pmdec, dtype=float))[:, None] * u.mas / u.yr,
+        obstime=Time(np.array(ref_epoch, dtype=float)[:, None], format="jyear"),
+        frame="icrs",
+    )
+    new_obstime = Time(np.array(obs_jyears, dtype=float)[None, :], format="jyear")
+    with warnings.catch_warnings():
+        # Same ERFA distance-override note as _propagate.
+        warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
+        propagated = coords.apply_space_motion(new_obstime=new_obstime)
+    return list(ids), propagated
+
+
 def _to_jyear(obs_date) -> float:
     return Time(obs_date.isoformat()).jyear
 

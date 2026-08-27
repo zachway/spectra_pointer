@@ -241,6 +241,14 @@ GAIA_JOB_POLL_SECONDS = 10
 # pages its input instead of loading everything at once.
 GAIA_FETCH_CONCURRENCY = 5
 
+# Distinct observation epochs propagated per matcher.propagate_many_epochs
+# call in _process_cell (see there). Bounds the (candidates x epochs)
+# propagated-position array for a cell that happens to combine both a large
+# tracked/live candidate pool and a large number of distinct epochs, while
+# still cutting per-epoch Time/SkyCoord construction overhead by 3-4 orders
+# of magnitude versus one apply_space_motion call per epoch.
+EPOCH_PROPAGATION_CHUNK_SIZE = 2000
+
 
 def _launch_gaia_job(query: str):
     """Gaia.launch_job_async, retried on transient TAP failures -- same
@@ -449,6 +457,10 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     by_epoch: dict[float, list[int]] = defaultdict(list)
     for local_i, r in enumerate(cell_records):
         by_epoch[matcher._to_jyear(r.obs_date)].append(local_i)
+    epochs = list(by_epoch.keys())
+
+    star_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]
+    live_rows = [(gid, row[0], row[1], row[2], row[3], row[4]) for gid, row in live_astrometry.items()]
 
     # Accumulated across every epoch group and written in one batched round
     # trip at the end (see matcher.upsert_holdings_batch) instead of one
@@ -459,79 +471,97 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     pending_rows: list[tuple] = []
 
     with conn.cursor() as cur:
-        for epoch, local_idxs in by_epoch.items():
-            epoch_records = [cell_records[i] for i in local_idxs]
-            targets = SkyCoord(ra=[r.ra for r in epoch_records] * u.deg, dec=[r.dec for r in epoch_records] * u.deg)
+        # Propagated in chunks of EPOCH_PROPAGATION_CHUNK_SIZE distinct
+        # epochs per matcher.propagate_many_epochs call, rather than one
+        # apply_space_motion call per epoch (each of which builds its own
+        # Time/SkyCoord -- measurably expensive per call): a cell with
+        # thousands of near-unique observation dates was seen stalling to a
+        # near-zero record rate, ~93% CPU, on exactly that per-epoch
+        # construction overhead once upsert_holdings_batch removed the
+        # earlier per-record DB-write bottleneck. Chunked, rather than one
+        # call across every epoch in the cell, to bound the candidates x
+        # epochs propagated array's size for a cell that also happens to
+        # carry a large candidate pool.
+        for chunk_start in range(0, len(epochs), EPOCH_PROPAGATION_CHUNK_SIZE):
+            epoch_chunk = epochs[chunk_start : chunk_start + EPOCH_PROPAGATION_CHUNK_SIZE]
 
-            tracked_hits: dict[int, list[tuple]] = {}
-            if star_positions:
-                star_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]
-                star_ids, star_propagated = matcher._propagate(star_rows, epoch)
-                tracked_hits = _search_around(targets, star_propagated, star_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+            star_ids, star_propagated_chunk = (
+                matcher.propagate_many_epochs(star_rows, epoch_chunk) if star_rows else ([], None)
+            )
+            live_ids, live_propagated_chunk = (
+                matcher.propagate_many_epochs(live_rows, epoch_chunk) if live_rows else ([], None)
+            )
 
-            live_hits: dict[int, list[tuple]] = {}
-            if live_astrometry:
-                live_rows = [(gid, row[0], row[1], row[2], row[3], row[4]) for gid, row in live_astrometry.items()]
-                live_ids, live_propagated = matcher._propagate(live_rows, epoch)
-                live_hits = _search_around(targets, live_propagated, live_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+            for chunk_idx, epoch in enumerate(epoch_chunk):
+                local_idxs = by_epoch[epoch]
+                epoch_records = [cell_records[i] for i in local_idxs]
+                targets = SkyCoord(ra=[r.ra for r in epoch_records] * u.deg, dec=[r.dec for r in epoch_records] * u.deg)
 
-            for pos, local_i in enumerate(local_idxs):
-                archive_code, r = cell_entries[local_i]
+                tracked_hits: dict[int, list[tuple]] = {}
+                if star_rows:
+                    tracked_hits = _search_around(targets, star_propagated_chunk[:, chunk_idx], star_ids, SHITTY_MATCH_RADIUS_ARCSEC)
 
-                by_gaia_id: dict[int, Candidate] = {}
-                tracked_untagged = []
-                for star_id, sep in tracked_hits.get(pos, []):
-                    row = star_positions[star_id]
-                    _, gaia_source_id, source_catalog, _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = row
-                    cand = Candidate(
-                        star_id=star_id,
-                        gaia_source_id=gaia_source_id,
-                        source_catalog=source_catalog,
-                        separation_arcsec=sep,
-                        phot_g_mean_mag=phot_g_mean_mag,
-                    )
-                    if gaia_source_id is not None:
-                        by_gaia_id[gaia_source_id] = cand
-                    else:
-                        tracked_untagged.append(cand)
+                live_hits: dict[int, list[tuple]] = {}
+                if live_rows:
+                    live_hits = _search_around(targets, live_propagated_chunk[:, chunk_idx], live_ids, SHITTY_MATCH_RADIUS_ARCSEC)
 
-                # PM-propagated the same way as tracked stars above -- only
-                # 60"-precise once propagated to this record's own epoch,
-                # not trusted just for having appeared in the raw cell pool.
-                for gaia_source_id, sep in live_hits.get(pos, []):
-                    if gaia_source_id in by_gaia_id:
-                        continue  # already tracked -- richer record wins
-                    _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = live_astrometry[gaia_source_id]
-                    by_gaia_id[gaia_source_id] = Candidate(
-                        star_id=None,
-                        gaia_source_id=gaia_source_id,
-                        source_catalog="gaia_untracked",
-                        separation_arcsec=sep,
-                        phot_g_mean_mag=phot_g_mean_mag,
-                    )
+                for pos, local_i in enumerate(local_idxs):
+                    archive_code, r = cell_entries[local_i]
 
-                candidates = tracked_untagged + list(by_gaia_id.values())
-                winner, reason = pick_best_candidate(archive_code, candidates)
+                    by_gaia_id: dict[int, Candidate] = {}
+                    tracked_untagged = []
+                    for star_id, sep in tracked_hits.get(pos, []):
+                        row = star_positions[star_id]
+                        _, gaia_source_id, source_catalog, _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = row
+                        cand = Candidate(
+                            star_id=star_id,
+                            gaia_source_id=gaia_source_id,
+                            source_catalog=source_catalog,
+                            separation_arcsec=sep,
+                            phot_g_mean_mag=phot_g_mean_mag,
+                        )
+                        if gaia_source_id is not None:
+                            by_gaia_id[gaia_source_id] = cand
+                        else:
+                            tracked_untagged.append(cand)
 
-                if winner is None:
-                    pending_rows.append(matcher.upsert_holding_row(archive_code, r, None, "shitty_positional_match", "needs_review", None))
-                    counts["no_confident_candidate"] += 1
-                    logger.info("%s: no confident shitty_positional_match candidate for %s (%s)", archive_code, r.archive_obs_id, reason)
-                    continue
+                    # PM-propagated the same way as tracked stars above -- only
+                    # 60"-precise once propagated to this record's own epoch,
+                    # not trusted just for having appeared in the raw cell pool.
+                    for gaia_source_id, sep in live_hits.get(pos, []):
+                        if gaia_source_id in by_gaia_id:
+                            continue  # already tracked -- richer record wins
+                        _ra, _dec, _ref_epoch, _pmra, _pmdec, phot_g_mean_mag = live_astrometry[gaia_source_id]
+                        by_gaia_id[gaia_source_id] = Candidate(
+                            star_id=None,
+                            gaia_source_id=gaia_source_id,
+                            source_catalog="gaia_untracked",
+                            separation_arcsec=sep,
+                            phot_g_mean_mag=phot_g_mean_mag,
+                        )
 
-                star_id = winner.star_id
-                if star_id is None:
-                    # A live-Gaia-only hit -- register it the same way
-                    # ingest.add_star.discover_stars does, so future syncs
-                    # (and future runs of this fallback) see it as tracked too.
-                    add_stars_batch(conn, [winner.gaia_source_id])
-                    with conn.cursor() as lookup_cur:
-                        lookup_cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (winner.gaia_source_id,))
-                        star_id = lookup_cur.fetchone()[0]
+                    candidates = tracked_untagged + list(by_gaia_id.values())
+                    winner, reason = pick_best_candidate(archive_code, candidates)
 
-                pending_rows.append(matcher.upsert_holding_row(archive_code, r, star_id, "shitty_positional_match", "needs_review", float(winner.separation_arcsec)))
-                counts["shitty_matched"] += 1
-                logger.info("%s: shitty_positional_match %s -> star_id %d (%s)", archive_code, r.archive_obs_id, star_id, reason)
+                    if winner is None:
+                        pending_rows.append(matcher.upsert_holding_row(archive_code, r, None, "shitty_positional_match", "needs_review", None))
+                        counts["no_confident_candidate"] += 1
+                        logger.info("%s: no confident shitty_positional_match candidate for %s (%s)", archive_code, r.archive_obs_id, reason)
+                        continue
+
+                    star_id = winner.star_id
+                    if star_id is None:
+                        # A live-Gaia-only hit -- register it the same way
+                        # ingest.add_star.discover_stars does, so future syncs
+                        # (and future runs of this fallback) see it as tracked too.
+                        add_stars_batch(conn, [winner.gaia_source_id])
+                        with conn.cursor() as lookup_cur:
+                            lookup_cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (winner.gaia_source_id,))
+                            star_id = lookup_cur.fetchone()[0]
+
+                    pending_rows.append(matcher.upsert_holding_row(archive_code, r, star_id, "shitty_positional_match", "needs_review", float(winner.separation_arcsec)))
+                    counts["shitty_matched"] += 1
+                    logger.info("%s: shitty_positional_match %s -> star_id %d (%s)", archive_code, r.archive_obs_id, star_id, reason)
 
         matcher.upsert_holdings_batch(cur, pending_rows)
     conn.commit()

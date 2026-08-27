@@ -339,3 +339,94 @@ def test_all_cells_processed_when_more_cells_than_fetch_concurrency(conn, monkey
 
     assert len(calls) == 5, "every occupied cell should be fetched, not just the first concurrency window"
     assert counts["no_confident_candidate"] == 5, "every record should still be processed and committed"
+
+
+def test_epoch_chunk_boundary_preserves_per_record_proper_motion(conn, monkeypatch):
+    """_process_cell propagates candidates EPOCH_PROPAGATION_CHUNK_SIZE
+    epochs at a time (see matcher.propagate_many_epochs) instead of all at
+    once. Forced to 1 here so two records at different epochs land in
+    separate chunks -- each must still be matched against the candidate
+    propagated to *its own* epoch, not a neighboring chunk's position."""
+    monkeypatch.setattr(positional_fallback, "EPOCH_PROPAGATION_CHUNK_SIZE", 1)
+
+    import warnings
+
+    from astropy import units as u
+    from astropy.coordinates import SkyCoord
+    from astropy.table import Table
+    from astropy.time import Time
+    from erfa import ErfaWarning
+
+    from sync import matcher
+
+    # A fast mover -- 5000 mas/yr pmra_cosdec from a 2016.0 (Gaia DR3) ref
+    # epoch -- so a record correctly propagated to its own observation epoch
+    # lands well inside SHITTY_MATCH_RADIUS_ARCSEC (60"), while a record
+    # matched against the WRONG epoch's propagated position would miss by
+    # several arcsec per year of epoch error -- easily enough to fall
+    # outside the radius and catch a chunk-boundary regression.
+    source_id = 900000000000000090
+    ref_ra, ref_dec = 10.0, 10.0
+    pmra, pmdec = 5000.0, 0.0
+
+    def fake_pool(pixels):
+        return [(source_id, ref_ra, ref_dec, pmra, pmdec, 12.0)]
+
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
+
+    # This is a live-Gaia-only (not yet tracked) match, so _process_cell also
+    # calls ingest.add_star.add_stars_batch to register the star -- that does
+    # its own separate (real, un-mocked by default) Gaia astrometry lookup,
+    # same as test_run_shitty_positional_match_discovers_untracked_gaia_star
+    # above.
+    class _FakeAstrometryJob:
+        def get_results(self):
+            return Table({
+                "source_id": [source_id],
+                "ra": [ref_ra], "dec": [ref_dec], "ref_epoch": [2016.0],
+                "pmra": [pmra], "pmdec": [pmdec], "parallax": [10.0],
+                "phot_g_mean_mag": [12.0], "phot_bp_mean_mag": [12.5], "phot_rp_mean_mag": [11.5],
+                "has_rvs": [False], "has_xp_continuous": [False],
+            })
+
+    from ingest import add_star as add_star_module
+    monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
+
+    def propagate_to(obs_date_) -> tuple[float, float]:
+        jyear = matcher._to_jyear(obs_date_)
+        coord = SkyCoord(
+            ra=ref_ra * u.deg, dec=ref_dec * u.deg,
+            pm_ra_cosdec=pmra * u.mas / u.yr, pm_dec=pmdec * u.mas / u.yr,
+            obstime=Time(2016.0, format="jyear"), frame="icrs",
+        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
+            moved = coord.apply_space_motion(new_obstime=Time(jyear, format="jyear"))
+        return moved.ra.deg, moved.dec.deg
+
+    date_a, date_b = date(2018, 1, 1), date(2022, 1, 1)
+    ra_a, dec_a = propagate_to(date_a)
+    ra_b, dec_b = propagate_to(date_b)
+
+    rec_a = RawObservation(
+        archive_obs_id="chunk-epoch-a", archive_url="http://example.test/chunk-epoch-a",
+        ra=ra_a, dec=dec_a, obs_date=date_a,
+    )
+    rec_b = RawObservation(
+        archive_obs_id="chunk-epoch-b", archive_url="http://example.test/chunk-epoch-b",
+        ra=ra_b, dec=dec_b, obs_date=date_b,
+    )
+
+    counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    assert counts["shitty_matched"] == 2
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT h.archive_obs_id, s.gaia_source_id FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id IN ('chunk-epoch-a','chunk-epoch-b')"
+        )
+        rows = dict(cur.fetchall())
+
+    assert rows["chunk-epoch-a"] == source_id
+    assert rows["chunk-epoch-b"] == source_id
