@@ -241,13 +241,33 @@ GAIA_JOB_POLL_SECONDS = 10
 # pages its input instead of loading everything at once.
 GAIA_FETCH_CONCURRENCY = 5
 
-# Distinct observation epochs propagated per matcher.propagate_many_epochs
-# call in _process_cell (see there). Bounds the (candidates x epochs)
-# propagated-position array for a cell that happens to combine both a large
-# tracked/live candidate pool and a large number of distinct epochs, while
-# still cutting per-epoch Time/SkyCoord construction overhead by 3-4 orders
-# of magnitude versus one apply_space_motion call per epoch.
+# Upper bound on distinct observation epochs propagated per
+# matcher.propagate_many_epochs call, when the candidate pool is small
+# enough that PROPAGATION_ARRAY_ELEMENT_BUDGET wouldn't otherwise limit it.
 EPOCH_PROPAGATION_CHUNK_SIZE = 2000
+
+# Element (candidates x epochs) budget per matcher.propagate_many_epochs
+# call -- caps a single chunk's propagated-position array regardless of how
+# large a cell's tracked/live candidate pool is. Measured empirically at
+# ~193 bytes/element for a real propagated array (tracemalloc, S=1000,
+# E=2000), so this budget bounds one array to roughly 100MB. Needed because
+# EPOCH_PROPAGATION_CHUNK_SIZE alone assumes a modest candidate count: a
+# live morgan run (2026-08-27) hit a dense/galactic-plane cell whose Gaia
+# pool alone held tens of thousands of sources, and 2000 epochs x that
+# many candidates produced a single allocation that spiked RSS from ~6GB to
+# ~23GB in under a minute -- had to be killed before it OOM-killed the host
+# again. See _epoch_chunk_size.
+PROPAGATION_ARRAY_ELEMENT_BUDGET = 500_000
+
+
+def _epoch_chunk_size(candidate_count: int) -> int:
+    """How many distinct epochs to propagate per matcher.propagate_many_epochs
+    call, given a cell's candidate pool size -- min of the flat
+    EPOCH_PROPAGATION_CHUNK_SIZE cap and whatever keeps candidate_count *
+    chunk_size under PROPAGATION_ARRAY_ELEMENT_BUDGET, so a cell with an
+    unusually large candidate pool automatically gets smaller epoch chunks
+    instead of the same one blowing up memory."""
+    return max(1, min(EPOCH_PROPAGATION_CHUNK_SIZE, PROPAGATION_ARRAY_ELEMENT_BUDGET // max(candidate_count, 1)))
 
 
 def _launch_gaia_job(query: str):
@@ -470,9 +490,14 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     # measured dominating cell wall time far more than the Gaia fetch itself.
     pending_rows: list[tuple] = []
 
+    # See _epoch_chunk_size: shrinks below EPOCH_PROPAGATION_CHUNK_SIZE
+    # whenever this cell's own candidate pool is large enough that a full
+    # chunk would exceed PROPAGATION_ARRAY_ELEMENT_BUDGET.
+    chunk_size = _epoch_chunk_size(max(len(star_rows), len(live_rows)))
+
     with conn.cursor() as cur:
-        # Propagated in chunks of EPOCH_PROPAGATION_CHUNK_SIZE distinct
-        # epochs per matcher.propagate_many_epochs call, rather than one
+        # Propagated in chunks of chunk_size distinct epochs per
+        # matcher.propagate_many_epochs call, rather than one
         # apply_space_motion call per epoch (each of which builds its own
         # Time/SkyCoord -- measurably expensive per call): a cell with
         # thousands of near-unique observation dates was seen stalling to a
@@ -482,8 +507,8 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
         # call across every epoch in the cell, to bound the candidates x
         # epochs propagated array's size for a cell that also happens to
         # carry a large candidate pool.
-        for chunk_start in range(0, len(epochs), EPOCH_PROPAGATION_CHUNK_SIZE):
-            epoch_chunk = epochs[chunk_start : chunk_start + EPOCH_PROPAGATION_CHUNK_SIZE]
+        for chunk_start in range(0, len(epochs), chunk_size):
+            epoch_chunk = epochs[chunk_start : chunk_start + chunk_size]
 
             star_ids, star_ra_chunk, star_dec_chunk = (
                 matcher.propagate_many_epochs(star_rows, epoch_chunk) if star_rows else ([], None, None)

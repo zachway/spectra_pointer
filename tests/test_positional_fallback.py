@@ -7,8 +7,11 @@ from sync import positional_fallback
 from sync.base import RawObservation
 from sync.positional_fallback import (
     Candidate,
+    EPOCH_PROPAGATION_CHUNK_SIZE,
     GAIA_HEALPIX_LEVEL,
     MAG_CONTRAST_THRESHOLD_MAG,
+    PROPAGATION_ARRAY_ELEMENT_BUDGET,
+    _epoch_chunk_size,
     _healpix_cell,
     _healpix_cell_and_ring,
     _healpix_source_id_range,
@@ -471,3 +474,28 @@ def test_multiple_tracked_candidates_across_epochs_does_not_crash(conn, monkeypa
 
     counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
     assert counts["shitty_matched"] + counts["no_confident_candidate"] == 2
+
+
+def test_epoch_chunk_size_shrinks_for_large_candidate_pools():
+    """Reproduces the shape of a real incident: a live morgan run (2026-08-27)
+    hit a dense/galactic-plane cell whose Gaia candidate pool held tens of
+    thousands of sources, and the flat EPOCH_PROPAGATION_CHUNK_SIZE=2000
+    alone produced a single propagated-array allocation that spiked RSS from
+    ~6GB to ~23GB in under a minute -- had to be killed before OOM-killing
+    the host. _epoch_chunk_size must shrink well below the flat cap once
+    candidate_count is large enough that candidate_count * cap would exceed
+    PROPAGATION_ARRAY_ELEMENT_BUDGET."""
+    # Small pool: budget doesn't bind, flat cap wins.
+    assert _epoch_chunk_size(1) == EPOCH_PROPAGATION_CHUNK_SIZE
+    assert _epoch_chunk_size(10) == EPOCH_PROPAGATION_CHUNK_SIZE
+
+    # Large pool (the real incident's shape): budget must bind and the
+    # resulting element count must stay within it.
+    large_pool = 40_000
+    chunk_size = _epoch_chunk_size(large_pool)
+    assert chunk_size < EPOCH_PROPAGATION_CHUNK_SIZE
+    assert large_pool * chunk_size <= PROPAGATION_ARRAY_ELEMENT_BUDGET
+
+    # Never zero, even for a pool larger than the whole budget -- must
+    # still make forward progress (one epoch at a time) rather than hang.
+    assert _epoch_chunk_size(PROPAGATION_ARRAY_ELEMENT_BUDGET * 10) == 1
