@@ -223,21 +223,23 @@ GAIA_JOB_POLL_SECONDS = 10
 
 # How many HEALPix cells' Gaia fetches to keep in flight at once (see
 # run_shitty_positional_match). Gaia's TAP+ service does not give a clean
-# multiplicative speedup from client-side concurrency. At 5-way: 2 of 5
-# launches failed transiently (recovered by the retry logic above), and
-# per-job latency rose once running (a cell that took 366s isolated took
-# 987s under 5-way load; individual jobs ranged 806-1886s+, one didn't
-# finish in ~40 minutes) -- consistent with server-side fair-share
-# throttling for concurrent jobs from the same session, not something
-# fixable client-side. At 2-way: both launches succeeded cleanly (no
-# transient failures), and the one cell also tested at 5-way was faster
-# (861s vs. 1265s at 5-way, still slower than the 366s fully-isolated
-# baseline) -- a real but partial improvement, not a clean 2x. One of the
-# two test cells didn't finish in ~35 minutes at 2-way either, matching its
-# own behaviour at 5-way, so that appears to be a slow/dense cell rather
-# than a concurrency artifact. Chosen as the safer point on this tradeoff
-# given the 5-way failures; not exhaustively tuned against 3+.
-GAIA_FETCH_CONCURRENCY = 2
+# multiplicative speedup from client-side concurrency: an earlier 5-way test
+# (2026-08-19) saw 2 of 5 launches fail transiently and per-job latency rise
+# under load (a cell that took 366s isolated took 987s under 5-way load),
+# consistent with server-side fair-share throttling; 2-way ran cleanly with
+# no failures, so that's what shipped first.
+#
+# Retested 5-way on 2026-08-20 (production run against the real backlog,
+# not an isolated smoke test): all 5 launches succeeded, 4 of 5 completed
+# cleanly in ~1160-1164s each with no transient failures logged, and the
+# one phase regression seen (EXECUTING -> QUEUED briefly) recovered on its
+# own -- a materially better result than the 2026-08-19 test, though it's
+# one data point and the run was cut short by an unrelated cause (see
+# scripts.shitty_positional_match's module docstring: the *caller* loading
+# the full ~13.1M-record backlog into memory before this ever ran OOM-killed
+# morgan, not this concurrency setting). Retrying 5-way now that the caller
+# pages its input instead of loading everything at once.
+GAIA_FETCH_CONCURRENCY = 5
 
 
 def _launch_gaia_job(query: str):

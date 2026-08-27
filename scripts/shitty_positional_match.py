@@ -14,11 +14,22 @@ on a tight schedule -- unlike scripts.reprocess_against_new_stars, nothing
 about *this* fallback's inputs changes between runs except newly-tracked
 stars and whatever Gaia itself updates.
 
-No per-archive/per-chunk looping here -- run_shitty_positional_match takes
-every requested archive's candidates at once and paces itself by HEALPix
-cell internally (see sync/positional_fallback.py's module docstring), so
-archives sharing sky coverage share Gaia round trips instead of each
-re-querying overlapping regions.
+Candidates are paged by HEALPix cell (see _page_candidates_by_cell) instead
+of all being loaded as full RawObservation records up front. Loading the
+whole ~13.1M-record backlog's full columns (archive_url/instrument/obs_date/
+program_id/raw_target_name, several of them text) measured at ~15.9GB
+resident, and on 2026-08-20, combined with GAIA_FETCH_CONCURRENCY=5's extra
+in-flight Gaia result memory, that OOM-killed the whole morgan host (twice,
+confirmed via dmesg -- not just our process; nfsd and systemd-journal also
+hit their own oom-killer paths). Paging keeps only a lightweight (archive_
+code, archive_obs_id, ra, dec) index of the full backlog resident for the
+whole run (~2GB, not ~16GB), and only re-fetches full columns for one page's
+worth of candidates at a time. Pages are built by whole HEALPix cell, never
+splitting one across pages, so run_shitty_positional_match's cross-archive
+cell-sharing still works fully within each page -- the only real cost is a
+cell that would have been queried once now occasionally getting queried
+again in a later page if a different archive's candidates in the same cell
+land on the far side of a page boundary.
 
 Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.shitty_positional_match
@@ -30,40 +41,105 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+from collections import defaultdict
 
 import psycopg
 
 from scripts.reprocess_against_new_stars import _rows_to_records_by_archive
-from sync.positional_fallback import run_shitty_positional_match
+from sync.positional_fallback import _healpix_cell, run_shitty_positional_match
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
+# Max candidates per page. At ~1.2KB/candidate (measured: ~15.9GB / 13.1M
+# full-column records), 1M candidates is ~1.2GB of RawObservation data per
+# page -- comfortably bounded even stacked against several concurrent Gaia
+# HEALPix-pool fetches (see GAIA_FETCH_CONCURRENCY), unlike loading the
+# entire backlog's full columns at once.
+CANDIDATE_PAGE_SIZE = 1_000_000
 
-def _load_candidates(conn: psycopg.Connection, only_archives: list[str] | None) -> dict:
-    query = """
-        SELECT archive_code, archive_obs_id, archive_url, instrument, obs_date, program_id,
-               raw_target_name, raw_ra, raw_dec
-        FROM spectroscopy_holdings
-        WHERE match_status IN ('skipped', 'needs_review')
-          AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
-    """
+_CANDIDATE_WHERE = """
+    match_status IN ('skipped', 'needs_review')
+    AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+"""
+
+
+def _index_candidates_by_cell(conn: psycopg.Connection, only_archives: list[str] | None) -> dict[int, list[tuple[str, str]]]:
+    """Lightweight (archive_code, archive_obs_id, ra, dec) pass over the
+    whole backlog, immediately reduced to just (archive_code, archive_obs_id)
+    keys grouped by HEALPix cell -- never materializes a plain list of every
+    candidate's full row, only this per-cell index, which is what decides
+    page boundaries."""
+    query = f"SELECT archive_code, archive_obs_id, raw_ra, raw_dec FROM spectroscopy_holdings WHERE {_CANDIDATE_WHERE}"
     params: tuple = ()
     if only_archives:
         query += " AND archive_code = ANY(%s)"
         params = (only_archives,)
+
+    by_cell: dict[int, list[tuple[str, str]]] = defaultdict(list)
     with conn.cursor() as cur:
         cur.execute(query, params)
-        rows = cur.fetchall()
+        for archive_code, archive_obs_id, ra, dec in cur:
+            by_cell[_healpix_cell(ra, dec)].append((archive_code, archive_obs_id))
+    return by_cell
+
+
+def _page_candidates_by_cell(by_cell: dict[int, list[tuple[str, str]]], page_size: int):
+    """Yields pages of (archive_code, archive_obs_id) keys, each page made
+    up of whole HEALPix cells -- accumulates cells into a page until the
+    next one would push it over page_size, except a single cell denser than
+    page_size still gets its own (oversized) page rather than being split.
+    Pops each cell out of by_cell as it's consumed so the index doesn't
+    outlive its usefulness."""
+    page: list[tuple[str, str]] = []
+    for cell in list(by_cell.keys()):
+        keys = by_cell.pop(cell)
+        if page and len(page) + len(keys) > page_size:
+            yield page
+            page = []
+        page.extend(keys)
+    if page:
+        yield page
+
+
+def _load_candidate_page(conn: psycopg.Connection, page_keys: list[tuple[str, str]]) -> dict:
+    by_archive_ids: dict[str, list[str]] = defaultdict(list)
+    for archive_code, archive_obs_id in page_keys:
+        by_archive_ids[archive_code].append(archive_obs_id)
+
+    query = f"""
+        SELECT archive_code, archive_obs_id, archive_url, instrument, obs_date, program_id,
+               raw_target_name, raw_ra, raw_dec
+        FROM spectroscopy_holdings
+        WHERE archive_code = %s AND archive_obs_id = ANY(%s) AND {_CANDIDATE_WHERE}
+    """
+    rows: list[tuple] = []
+    with conn.cursor() as cur:
+        for archive_code, archive_obs_ids in by_archive_ids.items():
+            cur.execute(query, (archive_code, archive_obs_ids))
+            rows.extend(cur.fetchall())
     return _rows_to_records_by_archive(rows)
 
 
 def run(conn: psycopg.Connection, only_archives: list[str] | None = None) -> dict:
-    by_archive = _load_candidates(conn, only_archives)
-    total_candidates = sum(len(v) for v in by_archive.values())
-    logger.info("shitty_positional_match: %d candidates across %d archives", total_candidates, len(by_archive))
+    by_cell = _index_candidates_by_cell(conn, only_archives)
+    total_candidates = sum(len(keys) for keys in by_cell.values())
+    logger.info(
+        "shitty_positional_match: %d candidates across %d HEALPix cells, paging by %d",
+        total_candidates,
+        len(by_cell),
+        CANDIDATE_PAGE_SIZE,
+    )
 
-    return run_shitty_positional_match(conn, by_archive)
+    totals: dict[str, int] = {}
+    for page_num, page_keys in enumerate(_page_candidates_by_cell(by_cell, CANDIDATE_PAGE_SIZE), start=1):
+        by_archive = _load_candidate_page(conn, page_keys)
+        logger.info("shitty_positional_match: page %d, %d candidates across %d archives", page_num, len(page_keys), len(by_archive))
+        page_totals = run_shitty_positional_match(conn, by_archive)
+        for key, value in page_totals.items():
+            totals[key] = totals.get(key, 0) + value
+
+    return totals
 
 
 def main() -> None:
