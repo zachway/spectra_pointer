@@ -485,11 +485,11 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
         for chunk_start in range(0, len(epochs), EPOCH_PROPAGATION_CHUNK_SIZE):
             epoch_chunk = epochs[chunk_start : chunk_start + EPOCH_PROPAGATION_CHUNK_SIZE]
 
-            star_ids, star_propagated_chunk = (
-                matcher.propagate_many_epochs(star_rows, epoch_chunk) if star_rows else ([], None)
+            star_ids, star_ra_chunk, star_dec_chunk = (
+                matcher.propagate_many_epochs(star_rows, epoch_chunk) if star_rows else ([], None, None)
             )
-            live_ids, live_propagated_chunk = (
-                matcher.propagate_many_epochs(live_rows, epoch_chunk) if live_rows else ([], None)
+            live_ids, live_ra_chunk, live_dec_chunk = (
+                matcher.propagate_many_epochs(live_rows, epoch_chunk) if live_rows else ([], None, None)
             )
 
             for chunk_idx, epoch in enumerate(epoch_chunk):
@@ -499,11 +499,18 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
 
                 tracked_hits: dict[int, list[tuple]] = {}
                 if star_rows:
-                    tracked_hits = _search_around(targets, star_propagated_chunk[:, chunk_idx], star_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+                    # Fresh plain SkyCoord from the sliced ndarrays, not
+                    # star_ra_chunk/dec_chunk's own broadcast Time carried
+                    # over from apply_space_motion -- see
+                    # matcher.propagate_many_epochs's docstring for why
+                    # slicing that directly crashes search_around_sky.
+                    star_propagated = SkyCoord(ra=star_ra_chunk[:, chunk_idx] * u.deg, dec=star_dec_chunk[:, chunk_idx] * u.deg)
+                    tracked_hits = _search_around(targets, star_propagated, star_ids, SHITTY_MATCH_RADIUS_ARCSEC)
 
                 live_hits: dict[int, list[tuple]] = {}
                 if live_rows:
-                    live_hits = _search_around(targets, live_propagated_chunk[:, chunk_idx], live_ids, SHITTY_MATCH_RADIUS_ARCSEC)
+                    live_propagated = SkyCoord(ra=live_ra_chunk[:, chunk_idx] * u.deg, dec=live_dec_chunk[:, chunk_idx] * u.deg)
+                    live_hits = _search_around(targets, live_propagated, live_ids, SHITTY_MATCH_RADIUS_ARCSEC)
 
                 for pos, local_i in enumerate(local_idxs):
                     archive_code, r = cell_entries[local_i]

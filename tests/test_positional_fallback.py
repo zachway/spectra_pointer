@@ -18,6 +18,17 @@ from sync.positional_fallback import (
 )
 
 
+def _insert_star(cur, gaia_source_id, ra, dec):
+    cur.execute(
+        """
+        INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec)
+        VALUES (%s, %s, %s, 2016.0, 0, 0)
+        ON CONFLICT (gaia_source_id) DO UPDATE SET ra = EXCLUDED.ra, dec = EXCLUDED.dec
+        """,
+        (gaia_source_id, ra, dec),
+    )
+
+
 def _cand(sep, mag, source_catalog="gaia", star_id=None, gaia_source_id=1):
     return Candidate(
         star_id=star_id, gaia_source_id=gaia_source_id, source_catalog=source_catalog,
@@ -430,3 +441,33 @@ def test_epoch_chunk_boundary_preserves_per_record_proper_motion(conn, monkeypat
 
     assert rows["chunk-epoch-a"] == source_id
     assert rows["chunk-epoch-b"] == source_id
+
+
+def test_multiple_tracked_candidates_across_epochs_does_not_crash(conn, monkeypatch):
+    """Reproduces a real crash found live on morgan (2026-08-27): slicing
+    matcher.propagate_many_epochs's broadcast SkyCoord per epoch and passing
+    it through search_around_sky raised a raw astropy IndexError from a
+    non-materialized obstime array -- but only once 2+ candidates were
+    involved (a single-candidate cell, like
+    test_epoch_chunk_boundary_preserves_per_record_proper_motion above,
+    never exercised the fancy-indexing path that triggered it). Two tracked
+    stars in the same field plus two distinct observation epochs reproduces
+    the exact shape that crashed."""
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000091, 10.0, 10.0)
+        _insert_star(cur, 900000000000000092, 10.01, 10.01)  # ~51" away -- a second candidate in the same field
+    conn.commit()
+
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", lambda pixels: [])
+
+    rec_a = RawObservation(
+        archive_obs_id="multi-cand-a", archive_url="http://example.test/multi-cand-a",
+        ra=10.0, dec=10.0, obs_date=date(2018, 1, 1),
+    )
+    rec_b = RawObservation(
+        archive_obs_id="multi-cand-b", archive_url="http://example.test/multi-cand-b",
+        ra=10.0, dec=10.0, obs_date=date(2022, 1, 1),
+    )
+
+    counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    assert counts["shitty_matched"] + counts["no_confident_candidate"] == 2

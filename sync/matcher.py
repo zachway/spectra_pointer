@@ -237,25 +237,29 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
     return list(ids), propagated
 
 
-def propagate_many_epochs(star_rows: list[tuple], obs_jyears: list[float]) -> tuple[list[int], SkyCoord]:
+def propagate_many_epochs(star_rows: list[tuple], obs_jyears: list[float]) -> tuple[list[int], np.ndarray, np.ndarray]:
     """Broadcast form of _propagate: propagates every star_row to every
     epoch in obs_jyears with one apply_space_motion call, instead of
     building a fresh Time/SkyCoord (measurably expensive per call -- Time's
     own parsing/validation overhead dominates for a small array) once per
-    epoch. Returns (ids, propagated) where propagated has shape
-    (len(star_rows), len(obs_jyears)); propagated[:, j] is every star
-    propagated to obs_jyears[j], directly usable wherever a single
-    _propagate() call's result would be.
+    epoch. Returns (ids, ra_deg, dec_deg) where ra_deg/dec_deg are plain
+    numpy arrays of shape (len(star_rows), len(obs_jyears));
+    ra_deg[:, j]/dec_deg[:, j] is every star propagated to obs_jyears[j].
 
-    Added for shitty_positional_match's _process_cell: a HEALPix cell can
-    carry records spanning thousands of distinct observation epochs (e.g.
-    decades of nightly observations of one frequently-reobserved bright
-    calibration standard), and _process_cell calling _propagate once per
-    distinct epoch was observed becoming the dominant per-cell cost once
-    upsert_holdings_batch (above) removed the earlier per-record DB-write
-    bottleneck -- a live run on morgan (2026-08-27) stalled to a near-zero
-    record rate, pegged at ~93% CPU, once it reached a cell with tens of
-    thousands of near-unique epochs.
+    Deliberately returns plain ndarrays, not the broadcast SkyCoord itself:
+    reproduced live (2026-08-27) that slicing a shape-(S, E) SkyCoord
+    returned by apply_space_motion(new_obstime=<shape (1, E) Time>) --
+    e.g. `propagated[:, j]` -- produces a SkyCoord whose ra/dec correctly
+    reduce to shape (S,), but whose internal obstime Time array does NOT
+    (it stays at whatever shape the broadcast new_obstime originally had,
+    since SkyCoord/Time's __getitem__ slices each internal component by its
+    own stored shape rather than the coordinate's logical broadcast shape).
+    A later `coords[idxs]` fancy-index against that mismatched obstime (as
+    search_around_sky does internally) then raises a raw astropy IndexError
+    ("index N is out of bounds for axis 0 with size 1") -- crashed a live
+    morgan run. Extracting .ra.deg/.dec.deg forces full materialization via
+    plain numpy, sidestepping the lazy/broadcast Time entirely; callers
+    build a fresh ordinary SkyCoord from the sliced ndarrays per epoch.
     """
     ids, ra, dec, ref_epoch, pmra, pmdec = zip(*star_rows)
     coords = SkyCoord(
@@ -271,7 +275,7 @@ def propagate_many_epochs(star_rows: list[tuple], obs_jyears: list[float]) -> tu
         # Same ERFA distance-override note as _propagate.
         warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
         propagated = coords.apply_space_motion(new_obstime=new_obstime)
-    return list(ids), propagated
+    return list(ids), np.asarray(propagated.ra.deg), np.asarray(propagated.dec.deg)
 
 
 def _to_jyear(obs_date) -> float:
