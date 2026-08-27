@@ -470,3 +470,73 @@ def test_bogus_sentinel_dec_does_not_crash(conn):
         gaia_id, status = cur.fetchone()
     assert gaia_id is None
     assert status == "skipped"
+
+
+def test_upsert_holdings_batch_inserts_and_updates_on_conflict(conn):
+    """upsert_holdings_batch must behave the same as calling _upsert_holding
+    once per row -- both the initial insert and the ON CONFLICT DO UPDATE
+    path (a later re-match overwriting star_id/theta_arcsec) need to survive
+    being routed through the batched multi-row statement."""
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000080, 30.0, 40.0)
+        cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (900000000000000080,))
+        star_id = cur.fetchone()[0]
+    conn.commit()
+
+    rec1 = RawObservation(archive_obs_id="batch-1", archive_url="http://example.test/batch-1")
+    rec2 = RawObservation(archive_obs_id="batch-2", archive_url="http://example.test/batch-2")
+
+    with conn.cursor() as cur:
+        rows = [
+            matcher.upsert_holding_row("unit_test", rec1, None, "shitty_positional_match", "needs_review", None),
+            matcher.upsert_holding_row("unit_test", rec2, None, "shitty_positional_match", "needs_review", None),
+        ]
+        matcher.upsert_holdings_batch(cur, rows)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT archive_obs_id, star_id, match_status FROM spectroscopy_holdings "
+            "WHERE archive_code='unit_test' AND archive_obs_id IN ('batch-1','batch-2') ORDER BY archive_obs_id"
+        )
+        rows_out = cur.fetchall()
+    assert [r[0] for r in rows_out] == ["batch-1", "batch-2"]
+    assert all(r[1] is None and r[2] == "needs_review" for r in rows_out)
+
+    # A second batch re-matching batch-1 must hit the ON CONFLICT DO UPDATE
+    # path, not fail as a duplicate insert.
+    with conn.cursor() as cur:
+        rows = [matcher.upsert_holding_row("unit_test", rec1, star_id, "shitty_positional_match", "needs_review", 12.5)]
+        matcher.upsert_holdings_batch(cur, rows)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.gaia_source_id, h.theta_arcsec FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='batch-1'"
+        )
+        gaia_id, theta = cur.fetchone()
+    assert gaia_id == 900000000000000080
+    assert theta == 12.5
+
+
+def test_upsert_holdings_batch_chunks_large_row_counts(conn, monkeypatch):
+    """UPSERT_HOLDINGS_BATCH_CHUNK_SIZE splits one call into several
+    multi-row statements -- forced small here so the test doesn't need to
+    write thousands of real rows to exercise the chunk boundary."""
+    monkeypatch.setattr(matcher, "UPSERT_HOLDINGS_BATCH_CHUNK_SIZE", 3)
+    recs = [RawObservation(archive_obs_id=f"chunk-{i}", archive_url=f"http://example.test/chunk-{i}") for i in range(7)]
+    rows = [
+        matcher.upsert_holding_row("unit_test", r, None, "shitty_positional_match", "needs_review", None)
+        for r in recs
+    ]
+
+    with conn.cursor() as cur:
+        matcher.upsert_holdings_batch(cur, rows)
+    conn.commit()
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id LIKE 'chunk-%'")
+        count = cur.fetchone()[0]
+    assert count == 7
