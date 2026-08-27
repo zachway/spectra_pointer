@@ -298,6 +298,77 @@ def _upsert_holding(
     )
 
 
+def upsert_holding_row(
+    archive_code: str,
+    rec: RawObservation,
+    star_id: int | None,
+    match_method: str,
+    match_status: str,
+    theta_arcsec: float | None,
+) -> tuple:
+    """Same column values as _upsert_holding, as a positional tuple in
+    _upsert_holdings_batch's column order -- for accumulating many rows to
+    write with one round trip instead of one _upsert_holding() call each."""
+    return (
+        star_id, archive_code, rec.archive_obs_id, rec.archive_url, rec.instrument,
+        rec.obs_date, rec.program_id, match_method, match_status, theta_arcsec,
+        rec.raw_target_name, rec.ra, rec.dec, rec.reduction_status or "unknown",
+    )
+
+
+# Rows per multi-row INSERT statement in _upsert_holdings_batch -- bounds any
+# single statement's parameter count/text size for a cell with an extreme
+# number of records, while still cutting round trips by ~4 orders of
+# magnitude versus one execute() per row.
+UPSERT_HOLDINGS_BATCH_CHUNK_SIZE = 5000
+
+
+def upsert_holdings_batch(cur: psycopg.Cursor, rows: list[tuple]) -> None:
+    """Batched form of _upsert_holding: one multi-row INSERT ... ON CONFLICT
+    DO UPDATE round trip per chunk instead of one execute() per row. Row
+    tuples come from upsert_holding_row().
+
+    Added because a single HEALPix cell in shitty_positional_match can carry
+    tens of thousands of records -- e.g. every archive's repeat observations
+    of one frequently-reobserved bright calibration standard land in the same
+    cell -- and one execute() per record there was observed dominating a
+    cell's wall time far more than the Gaia fetch itself (a cell with 40k+
+    records ran 25+ minutes and counting, against 366-1160s for the fetch
+    alone in the PR's own benchmark). Each (archive_code, archive_obs_id)
+    pair is unique within a cell's records (see _index_candidates_by_cell),
+    so no chunk can hit two rows sharing a conflict target -- Postgres would
+    otherwise reject that within one statement.
+    """
+    for start in range(0, len(rows), UPSERT_HOLDINGS_BATCH_CHUNK_SIZE):
+        chunk = rows[start : start + UPSERT_HOLDINGS_BATCH_CHUNK_SIZE]
+        placeholders = ", ".join(["(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())"] * len(chunk))
+        params = [value for row in chunk for value in row]
+        cur.execute(
+            f"""
+            INSERT INTO spectroscopy_holdings
+                (star_id, archive_code, archive_obs_id, archive_url, instrument,
+                 obs_date, program_id, match_method, match_status, theta_arcsec,
+                 raw_target_name, raw_ra, raw_dec, reduction_status, updated_at)
+            VALUES {placeholders}
+            ON CONFLICT (archive_code, archive_obs_id) DO UPDATE SET
+                star_id = EXCLUDED.star_id,
+                archive_url = EXCLUDED.archive_url,
+                instrument = EXCLUDED.instrument,
+                obs_date = EXCLUDED.obs_date,
+                program_id = EXCLUDED.program_id,
+                match_method = EXCLUDED.match_method,
+                match_status = EXCLUDED.match_status,
+                theta_arcsec = EXCLUDED.theta_arcsec,
+                raw_target_name = EXCLUDED.raw_target_name,
+                raw_ra = EXCLUDED.raw_ra,
+                raw_dec = EXCLUDED.raw_dec,
+                reduction_status = EXCLUDED.reduction_status,
+                updated_at = now()
+            """,
+            params,
+        )
+
+
 def match_records(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
     counts = {"direct_matched": 0, "name_matched": 0, "positional_matched": 0, "needs_review": 0, "skipped": 0}
 
