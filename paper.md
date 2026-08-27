@@ -76,6 +76,6 @@ Claude’s Sonnet 5 was used to develop the software throughout the codebase. So
 
 This research has made use of the SIMBAD database, operated at CDS, Strasbourg, France
 
-For their feedback during development I would like to acknowledge Jamie Tayar, Kayvon Sharifi, Colin Kane, Akshat Chaturvedi, Mahir Patel, Doug Gies, Russel White, Thomas Rivinius, Dietrich Baade, Ilija Medan, and my PhD advisor Sébastien Lépine.
+For their feedback during development I would like to acknowledge Jamie Tayar, Kayvon Sharifi, Colin Kane, Akshat Chaturvedi, Mahir Patel, Doug Gies, Russel White, Thomas Rivinius, Dietrich Baade, and my PhD advisor Sébastien Lépine.
 
-I would like to send my heartfelt gratitude to Chad Gottuso for designing the logo and his support over the years. Lastly, I would like to thank Gunner, the only dog in the Way family to ever point.
+Ilija Medan provided much feedback and editing for this paper. I would like to send my heartfelt gratitude to Chad Gottuso for designing the logo and his support over the years. Lastly, I would like to thank Gunner, the only dog in the Way family to ever point.
