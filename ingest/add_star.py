@@ -78,6 +78,12 @@ WHERE 1=CONTAINS(
 )
 """
 
+GAIA_POSITION_QUERY = """
+SELECT ra, dec
+FROM gaiadr3.gaia_source
+WHERE source_id = {source_id}
+"""
+
 GAIA_LAUNCH_JOB_ATTEMPTS = 5
 GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 
@@ -143,6 +149,20 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
             f"sources found within {cone_radius_arcsec}\" — needs manual resolution"
         )
     return int(table[0]["source_id"])
+
+
+def resolve_gaia_position(source_id: int) -> tuple[float, float] | None:
+    """RA/Dec (deg, ICRS) for a Gaia DR3 source_id, queried directly from
+    Gaia's own TAP service rather than this project's `stars` table -- for
+    handing a user a coordinate to search by when the source_id they typed
+    isn't one this project tracks. None if Gaia doesn't carry that source_id
+    either (typo, or a DR2-only id that didn't survive into DR3).
+    """
+    job = _launch_gaia_job(GAIA_POSITION_QUERY.format(source_id=source_id))
+    table = job.get_results()
+    if len(table) == 0:
+        return None
+    return float(table[0]["ra"]), float(table[0]["dec"])
 
 
 def fetch_name_aliases(gaia_source_id: int) -> list[str]:

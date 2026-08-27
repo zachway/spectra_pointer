@@ -58,7 +58,13 @@ from astropy.coordinates import SkyCoord
 from flask import Flask, Response, abort, redirect, render_template_string, request, stream_with_context
 from pyvo.dal.exceptions import DALServiceError
 
-from ingest.add_star import _launch_gaia_job, resolve_bsc_hr_number, resolve_gaia_source_id, resolve_stellar_gaia_ids_batch
+from ingest.add_star import (
+    _launch_gaia_job,
+    resolve_bsc_hr_number,
+    resolve_gaia_position,
+    resolve_gaia_source_id,
+    resolve_stellar_gaia_ids_batch,
+)
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 from webapp.spectrum_viewer import (
     SUPPORTED_ARCHIVES,
@@ -948,6 +954,10 @@ PAGE_TEMPLATE = """
 
   {% if error %}
     <p class="error">Error: {{ error }}</p>
+    {% if error_ra is not none and error_dec is not none %}
+    <p>Gaia DR3 position: RA {{ "%.5f"|format(error_ra) }}, Dec {{ "%.5f"|format(error_dec) }}
+      &middot; <a href="/?ra={{ "%.6f"|format(error_ra) }}&amp;dec={{ "%.6f"|format(error_dec) }}&amp;mode=radius">search this position</a></p>
+    {% endif %}
   {% endif %}
 
   {% if star %}
@@ -1443,15 +1453,33 @@ PAGE_TEMPLATE = """
 """
 
 
-def _blank(query=None, error=None, resolved_source_id=None):
+def _blank(query=None, error=None, resolved_source_id=None, error_ra=None, error_dec=None):
     return render_template_string(
         PAGE_TEMPLATE, query=query, star=None, holdings=None, wavelength_chart=None,
-        error=error, resolved_source_id=resolved_source_id,
+        error=error, resolved_source_id=resolved_source_id, error_ra=error_ra, error_dec=error_dec,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=None, batch_note=None, batch_results=None,
         active_tab="search", active_search_tab="star",
         **_advanced_search_context(),
     )
+
+
+def _not_found_error(source_id) -> tuple[str, float | None, float | None]:
+    """Error text for a source_id this project doesn't track, plus its
+    Gaia DR3 position when Gaia itself still has it -- so a "no tracked
+    star" result can hand the user a coordinate to fall back to a radial
+    search on, instead of a dead end. Position is best-effort: if Gaia's
+    TAP service is unreachable, the error still renders, just without it.
+    """
+    error = f"No tracked star with source_id {source_id}."
+    try:
+        position = resolve_gaia_position(int(source_id))
+    except Exception:
+        return error, None, None
+    if position is None:
+        return error, None, None
+    ra, dec = position
+    return error, ra, dec
 
 
 def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_active=False):
@@ -1594,7 +1622,8 @@ def search():
     star = _lookup_local_star(cur, query)
     if star is None:
         if query.isdigit():
-            return _blank(query=query, error=f"No tracked star with source_id {query}.")
+            error, ra, dec = _not_found_error(query)
+            return _blank(query=query, error=error, error_ra=ra, error_dec=dec)
         try:
             source_id = resolve_gaia_source_id(query)
         except DALServiceError:
@@ -1609,10 +1638,13 @@ def search():
         rows = _rows_as_dicts(cur)
         star = rows[0] if rows else None
         if star is None:
+            error, ra, dec = _not_found_error(source_id)
             return _blank(
                 query=query,
-                error=f"No tracked star with source_id {source_id}.",
+                error=error,
                 resolved_source_id=resolved_source_id,
+                error_ra=ra,
+                error_dec=dec,
             )
 
     # gaia_source_id is purely a display value from here on -- it can
