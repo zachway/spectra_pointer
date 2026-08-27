@@ -56,7 +56,7 @@ The cross match process works as follows:
    - If all of the above fail, the holdings is stored as “skipped”
  - Once the holding is tied to a `source_id`, the table `stars` is checked to see if a star already exists. If not, the row is created. If it does exist, `star_id` is updated for the holding and the match method is tracked.
 
-This process is completed intermittently through the `sync` method. Each archive has a "pluggable" module designed to query its particular database with its `fetch` method. Each has a running cursor that keeps track of what data has been accessed and checks for new public data whenever `sync` is called. This design allows a user to easily sync many databases in one command, but also makes it easy to implement new archives in the future.
+This process is completed intermittently through the `sync` method and represented in Figure 1. Each archive has a "pluggable" module designed to query its particular database with its `fetch` method. Each has a running cursor that keeps track of what data has been accessed and checks for new public data whenever `sync` is called. This design allows a user to easily sync many databases in one command, but also makes it easy to implement new archives in the future.
 
 Prioritizing the archive’s named target allows the database to be based off of the Gaia archive[^2] while still balancing issues with coordinates that arise during observations. For example, some telescopes, especially older ones, only had pointing accuracy within an arcminute and named targets are still able to be matched (the furthest named match to Gamma Cas is 19.4" away). After matching all spectroscopy holdings, the database is less than a few GB large.
 
