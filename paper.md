@@ -47,9 +47,9 @@ The cross match process works as follows:
    - An easy, proper motion-propagated coordinate match out to 1 arcsecond radius. This is constrained enough to limit false-positives (although they do exist)
    - A lower quality, 1 arcminute search with underlying match logic (e.g. which source is brightest) 
    - If all of the above fail, the holdings is stored as “skipped”
- - Once the holding is tied to a `source_id`, the table `stars` is checked to see if a star already exists. If not, the row is created. If it does exists, `star_id` is updated for the holding.
+ - Once the holding is tied to a `source_id`, the table `stars` is checked to see if a star already exists. If not, the row is created. If it does exists, `star_id` is updated for the holding and the match method is tracked.
 
-This process is completed intermittently through the `sync` method. Each archive has a running cursor which keeps track of how far the sync has reached. When the sync is run, each archive is matched and added into the database.
+This process is completed intermittently through the `sync` method. Each archive has a "pluggable" module designed to query its particular database with its `fetch` method. Each has a running cursor that keeps track of what data has been accessed and checks for new public data whenever `sync` is called. This design allows a user to easily sync many databases in one command, but also makes it easy to implmeent new archives in the future.
 
 Prioritizing the archive’s named target allows the database to be based off of the Gaia archive[^1] while still balancing issues with coordinates that arise during observations. After matching all spectroscopy holdings, the database is less than a few GB large.
 
@@ -58,6 +58,8 @@ Prioritizing the archive’s named target allows the database to be based off of
 ## The Spectra Pointer Webapp
 
 The Spectra Pointer webapp design is designed to be as accesible as possible while limiting the total cost on cloud services and accesing the data through Georgia State University's Physics and Astronomy Department web server. The webapp is built using Flask and consists of a simple search page with some other interesting plots and features. In order to limit API calls, the Postgres database is periodically exported to static `parquet` files. The Spectra Pointer accesses these files using DuckDB's httpfs extension. This architecture, while admittedly convoluted, allows the data to be hosted on Georgia State’s public server and queried by Google Cloud’s web services. For those wishing to access the data directly without the webapp, it may be accessed at https://astro.gsu.edu/~way/spectra_data/.
+
+A search in The Spectra Pointer can be done in several ways. A query by the name of a star or Gaia `source_id` will attempt to find a star in the `stars` table and display the related holdings. Since our match qualtiy can never be guaranteed, the user is allowed to query unmatched records with a radial query, often revealing spectroscopic records with ill-defined coordinates or issues in the reported target name (e.g. "GAMMA_CAS_/_HD_539" or "Name_of_Object"). Searches may also be completed in batch queries and downloaded in a CSV export, allowing for quick cross checks with astronomers' target lists.
 
 # Research Impact Statement
 
