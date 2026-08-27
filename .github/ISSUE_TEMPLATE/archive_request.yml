@@ -1,0 +1,39 @@
+name: Request a new archive
+description: Ask for a spectroscopic archive to be added to sync/archives/
+labels: ["new-archive"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is the most common and most welcome kind of contribution — see
+        "Adding support for a new archive" in CONTRIBUTING.md if you'd like
+        to implement it yourself.
+  - type: input
+    id: archive-name
+    attributes:
+      label: Archive name
+      placeholder: e.g. WIYN/HYDRA Archive
+    validations:
+      required: true
+  - type: input
+    id: archive-url
+    attributes:
+      label: Public archive URL
+    validations:
+      required: true
+  - type: dropdown
+    id: access-mechanism
+    attributes:
+      label: How is the data queryable?
+      options:
+        - TAP / VO (SSA, ObsCore, ...)
+        - REST / JSON API
+        - HTML form / bulk file listing
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this archive
+      description: What spectroscopic data does it hold that isn't covered yet?
