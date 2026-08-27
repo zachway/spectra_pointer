@@ -13,7 +13,7 @@ authors:
 affiliations:
   - name: Department of Physics and Astronomy, Georgia State University, Atlanta, GA 30303, USA
     index: 1
-date: <TODO: submission date>
+date: 1 September 2026
 bibliography: paper.bib
 ---
 
