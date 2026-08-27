@@ -353,11 +353,25 @@ def upsert_holding_row(
     )
 
 
-# Rows per multi-row INSERT statement in _upsert_holdings_batch -- bounds any
-# single statement's parameter count/text size for a cell with an extreme
-# number of records, while still cutting round trips by ~4 orders of
-# magnitude versus one execute() per row.
-UPSERT_HOLDINGS_BATCH_CHUNK_SIZE = 5000
+# Bound parameters per row in upsert_holdings_batch's INSERT (one %s per
+# spectroscopy_holdings column written, "now()" for updated_at is a literal,
+# not a param).
+_UPSERT_HOLDINGS_ROW_PARAM_COUNT = 14
+
+# PostgreSQL's wire protocol hard-caps a single query at 65535 bound
+# parameters total.
+_POSTGRES_MAX_QUERY_PARAMS = 65535
+
+# Rows per multi-row INSERT statement in upsert_holdings_batch -- 5000 rows
+# (70000 params) crashed a live morgan run with "number of parameters must be
+# between 0 and 65535" once a cell's pending_rows finally got large enough to
+# hit it. Kept well under the limit while still cutting round trips by ~3-4
+# orders of magnitude versus one execute() per row; the assert below fails
+# fast at import time if this or the row width ever changes without the
+# other being checked.
+UPSERT_HOLDINGS_BATCH_CHUNK_SIZE = 4000
+
+assert UPSERT_HOLDINGS_BATCH_CHUNK_SIZE * _UPSERT_HOLDINGS_ROW_PARAM_COUNT <= _POSTGRES_MAX_QUERY_PARAMS
 
 
 def upsert_holdings_batch(cur: psycopg.Cursor, rows: list[tuple]) -> None:
