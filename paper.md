@@ -36,7 +36,11 @@ CDS’ VizieR [@ochsenbein2000vizier] tool allows a user to search through assoc
 
 The software can be cleanly split into two sections, the cross-match database and The Spectra Pointer webapp.
 
-<img width="772" height="262" alt="The Spectra Pointer ingestion flow chart" src="https://github.com/zachway/spectra_pointer/blob/main/webapp/static/the_spectra_pointer_flow.png" />
+<figure align="center">
+  <img width="772" height="262" alt="The Spectra Pointer ingestion flow chart" src="https://github.com/zachway/spectra_pointer/blob/main/webapp/static/the_spectra_pointer_flow.png" />
+  <figcaption>Figure 1: The Spectra Pointer ingestion flow.</figcaption>
+</figure>
+
 
 ## The Cross-Match Database
 
@@ -47,15 +51,17 @@ The cross match process works as follows:
  - Each holding is attempted to be resolved in the following order and added to the `spectroscopy_holdings` table
    - A name match to the SIMBAD database which already has a mapped Gaia DR3 `source_id`
    - A fast coordinate match out to 1 arcsecond radius (proper motions from Gaia DR3 are propagated). This is constrained enough to limit false-positives (although they do exist)
-   - A lower quality, 1 arcminute search with underlying match logic (e.g. which source is brightest) 
+   - A lower quality, 1 arcminute search with underlying match logic[^1]
    - If all of the above fail, the holdings is stored as “skipped”
  - Once the holding is tied to a `source_id`, the table `stars` is checked to see if a star already exists. If not, the row is created. If it does exist, `star_id` is updated for the holding and the match method is tracked.
 
 This process is completed intermittently through the `sync` method. Each archive has a "pluggable" module designed to query its particular database with its `fetch` method. Each has a running cursor that keeps track of what data has been accessed and checks for new public data whenever `sync` is called. This design allows a user to easily sync many databases in one command, but also makes it easy to implement new archives in the future.
 
-Prioritizing the archive’s named target allows the database to be based off of the Gaia archive[^1] while still balancing issues with coordinates that arise during observations. For example, some telescopes, especially older ones, only had pointing accuracy within an arcminute and named targets are still able to be matched (the furthest named match to Gamma Cas is 19.4" away). After matching all spectroscopy holdings, the database is less than a few GB large.
+Prioritizing the archive’s named target allows the database to be based off of the Gaia archive[^2] while still balancing issues with coordinates that arise during observations. For example, some telescopes, especially older ones, only had pointing accuracy within an arcminute and named targets are still able to be matched (the furthest named match to Gamma Cas is 19.4" away). After matching all spectroscopy holdings, the database is less than a few GB large.
 
-[^1]: About 3,000 stars are too bright for Gaia, in these cases the Bright Star Catalog (BSC) is used as a base. This catalog fully covers the missing stars.
+[^1]: If a star is 2 magnitudes brighter than other stars within 1' it is considered the target. If there are multiple stars of similar magnitude it is left as "needs_review".
+
+[^2]: About 3,000 stars are too bright for Gaia, in these cases the Bright Star Catalog (BSC) is used as a base. This catalog fully covers the missing stars.
 
 ## The Spectra Pointer Webapp
 
