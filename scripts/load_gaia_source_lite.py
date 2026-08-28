@@ -246,9 +246,25 @@ def run(conn: psycopg.Connection, limit_rate: str) -> None:
         len(remote_files), len(done), len(pending),
     )
 
+    skipped: list[str] = []
     for i, key in enumerate(pending, start=1):
-        row_count = _load_one_file_with_retry(conn, key, limit_rate)
-        logger.info("load_gaia_source_lite: [%d/%d] %s -> %d rows", i, len(pending), key, row_count)
+        try:
+            row_count = _load_one_file_with_retry(conn, key, limit_rate)
+            logger.info("load_gaia_source_lite: [%d/%d] %s -> %d rows", i, len(pending), key, row_count)
+        except Exception as exc:
+            # A file that exhausts every retry is left for a later run
+            # (still absent from gaia_source_lite_mirror_load_log, so a
+            # rerun retries it) instead of taking down the whole ~757GB
+            # load over one persistently uncooperative file -- observed
+            # live (2026-08-27/28) that a single file can stall 4+
+            # consecutive full retry cycles while the rest of the CDN is
+            # healthy, which used to mean losing all overnight progress on
+            # every other file too.
+            skipped.append(key)
+            logger.error("load_gaia_source_lite: [%d/%d] %s exhausted all retries, skipping: %s", i, len(pending), key, exc)
+
+    if skipped:
+        logger.warning("load_gaia_source_lite: %d file(s) skipped after exhausting retries (will retry on next run): %s", len(skipped), skipped)
 
 
 def main() -> None:
