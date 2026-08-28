@@ -101,6 +101,7 @@ most one cell's worth of (re-runnable) work.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections import defaultdict
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -203,9 +204,16 @@ _HEALPIX = ah.HEALPix(nside=2**GAIA_HEALPIX_LEVEL, order="nested", frame="icrs")
 # SHITTY_MATCH_RADIUS_ARCSEC (60", before PM padding); source_id range
 # scanning sidesteps that limitation entirely since it isn't a radius search
 # at all.
-GAIA_HEALPIX_POOL_QUERY = """
+# Queried against the local mirror (see db/migrations/0011_gaia_source_lite_mirror.sql
+# and scripts/load_gaia_source_lite.py), not live against Gaia's TAP+ service --
+# same source_id-range-scan shape as the original design (see module
+# docstring for why that beats an uploaded-table CONTAINS join), just run
+# locally now that Gaia's own server-side throttling (see GAIA_FETCH_CONCURRENCY's
+# history below) turned out to be the real remaining throughput ceiling
+# once this project's own per-cell CPU/memory bottlenecks were fixed.
+GAIA_SOURCE_LITE_MIRROR_QUERY = """
 SELECT source_id, ra, dec, pmra, pmdec, phot_g_mean_mag
-FROM gaiadr3.gaia_source_lite
+FROM gaia_source_lite_mirror
 WHERE {ranges_clause}
 """
 
@@ -412,25 +420,27 @@ def _load_tracked_candidates(conn: psycopg.Connection, target_ra: list[float], t
 
 def _gaia_healpix_pool(pixels: list[int]) -> list[tuple]:
     """Every Gaia source in the given set of HEALPix pixels, via a plain
-    source_id range scan (see module docstring) -- raw 2016.0-epoch
-    astrometry, not yet propagated to any particular observation epoch.
+    source_id range scan (see module docstring) against the local
+    gaia_source_lite_mirror table -- raw 2016.0-epoch astrometry, not yet
+    propagated to any particular observation epoch.
+
+    Opens its own short-lived connection rather than sharing the caller's:
+    this runs concurrently across up to GAIA_FETCH_CONCURRENCY worker
+    threads (see run_shitty_positional_match), and a single psycopg
+    connection isn't safe to use from more than one thread at a time.
     """
     ranges_clause = " OR ".join(
         f"source_id BETWEEN {lo} AND {hi}"
         for lo, hi in (_healpix_source_id_range(p) for p in pixels)
     )
-    query = GAIA_HEALPIX_POOL_QUERY.format(ranges_clause=ranges_clause)
-    job = _launch_gaia_job(query)
-    table = job.get_results()
-    return [
-        (
-            int(row["source_id"]),
-            float(row["ra"]), float(row["dec"]),
-            clean_float(row["pmra"]), clean_float(row["pmdec"]),
-            clean_float(row["phot_g_mean_mag"]),
-        )
-        for row in table
-    ]
+    query = GAIA_SOURCE_LITE_MIRROR_QUERY.format(ranges_clause=ranges_clause)
+    with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query)
+            return [
+                (int(source_id), float(ra), float(dec), clean_float(pmra), clean_float(pmdec), clean_float(mag))
+                for source_id, ra, dec, pmra, pmdec, mag in cur.fetchall()
+            ]
 
 
 def _search_around(targets: SkyCoord, propagated: SkyCoord, ids: list, radius_arcsec: float) -> dict[int, list[tuple]]:

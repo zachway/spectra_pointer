@@ -141,26 +141,17 @@ def test_healpix_cell_is_stable_for_nearby_points():
 # -- Integration test: exercises the one path the pure pick_best_candidate
 # unit tests above can't reach -- a live-Gaia hit with no existing `stars`
 # row at all gets registered as a new star (via ingest.add_star.
-# add_stars_batch) before the holding is upserted. Both live Gaia calls
-# involved (the HEALPix pool fetch here, and add_stars_batch's own batch
-# astrometry lookup) are mocked, following the same
-# monkeypatch.setattr(...Gaia, "launch_job", ...) pattern test_add_star.py
-# already uses.
+# add_stars_batch) before the holding is upserted. The HEALPix pool fetch
+# is mocked at the _gaia_healpix_pool boundary (same seam every other test
+# in this file uses -- see test_nearby_records_share_one_healpix_pool_query
+# etc.), regardless of whether that boundary's own implementation queries
+# the local gaia_source_lite_mirror or (historically) live Gaia TAP.
+# add_stars_batch's own separate astrometry lookup is still a live Gaia
+# call (see sync/positional_fallback.py's docstring on why that path is
+# out of scope for the local-mirror migration) and is mocked the same way
+# test_add_star.py does, via monkeypatch.setattr(...Gaia, "launch_job", ...).
 
 NEW_TEST_GAIA_ID = 900000000000500001
-
-
-class _FakeHealpixPoolJob:
-    def get_results(self):
-        # ra/dec placed exactly 5" north of the test record's (50.0, 20.0)
-        # position, zero proper motion -- separation stays 5" regardless of
-        # which epoch it gets propagated to.
-        return Table({
-            "source_id": [NEW_TEST_GAIA_ID],
-            "ra": [50.0], "dec": [20.0 + 5.0 / 3600.0],
-            "pmra": [0.0], "pmdec": [0.0],
-            "phot_g_mean_mag": [10.0],
-        })
 
 
 class _FakeAstrometryJob:
@@ -175,10 +166,13 @@ class _FakeAstrometryJob:
 
 
 def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeypatch):
-    monkeypatch.setattr(
-        positional_fallback, "_launch_gaia_job",
-        lambda query: _FakeHealpixPoolJob(),
-    )
+    def fake_pool(pixels):
+        # ra/dec placed exactly 5" north of the test record's (50.0, 20.0)
+        # position, zero proper motion -- separation stays 5" regardless of
+        # which epoch it gets propagated to.
+        return [(NEW_TEST_GAIA_ID, 50.0, 20.0 + 5.0 / 3600.0, 0.0, 0.0, 10.0)]
+
+    monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
     from ingest import add_star as add_star_module
     monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
 
@@ -249,6 +243,33 @@ def test_launch_gaia_job_raises_on_error_phase(monkeypatch):
 
     with pytest.raises(RuntimeError, match="ERROR"):
         positional_fallback._launch_gaia_job("SELECT 1")
+
+
+def test_gaia_healpix_pool_queries_local_mirror(conn):
+    """_gaia_healpix_pool now reads gaia_source_lite_mirror (see
+    db/migrations/0011) directly rather than launching a live Gaia TAP job
+    -- this is the one test that exercises its real implementation instead
+    of mocking it at this boundary, since every other test needs to mock it
+    away (no local mirror data available in a unit-test environment)."""
+    pix = positional_fallback._healpix_cell(50.0, 20.0)
+    lo, hi = positional_fallback._healpix_source_id_range(pix)
+    inside_id = lo + 1
+    outside_id = hi + 1000  # guaranteed outside this pixel's source_id range
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO gaia_source_lite_mirror (source_id, ra, dec, pmra, pmdec, phot_g_mean_mag) "
+            "VALUES (%s, 50.0, 20.0, 1.0, -1.0, 12.5), (%s, 200.0, -60.0, NULL, NULL, NULL)",
+            (inside_id, outside_id),
+        )
+    conn.commit()
+    try:
+        rows = positional_fallback._gaia_healpix_pool([pix])
+        assert rows == [(inside_id, 50.0, 20.0, 1.0, -1.0, 12.5)]
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM gaia_source_lite_mirror WHERE source_id IN (%s, %s)", (inside_id, outside_id))
+        conn.commit()
 
 
 # -- Cell-batching behavior -----------------------------------------------
