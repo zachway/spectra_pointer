@@ -35,7 +35,6 @@ import io
 import logging
 import os
 import subprocess
-import threading
 import time
 import xml.etree.ElementTree as ET
 from urllib.request import urlopen
@@ -80,12 +79,13 @@ CURL_MAX_TIME_SECONDS = 900
 CURL_STALL_SPEED_LIMIT_BYTES = 50_000
 CURL_STALL_SPEED_TIME_SECONDS = 30
 
-# Extra margin (beyond CURL_MAX_TIME_SECONDS) before the hard Python-level
-# watchdog force-kills curl -- see _open_remote_csv_stream's docstring for
-# why this backstop exists at all: curl's own --max-time was verified live
-# NOT to reliably fire for a real stall on morgan's curl 7.61.1. Not zero,
-# so a transfer that's merely slow-but-progressing near the --max-time
-# boundary isn't cut off by a race between the two timers.
+# Extra margin (beyond CURL_MAX_TIME_SECONDS) before the external `timeout`
+# wrapper sends SIGTERM, and again before its --kill-after escalates to
+# SIGKILL -- see _open_remote_csv_stream's docstring for why an external
+# process, not curl's own flags or an in-process Python thread, is what
+# actually enforces this. Not zero, so a transfer that's merely
+# slow-but-progressing near the --max-time boundary isn't cut off by a
+# race between curl's own timeout and the outer one.
 CURL_WATCHDOG_GRACE_SECONDS = 60
 
 # Retries a stalled/failed file this many times (exponential backoff)
@@ -123,24 +123,29 @@ def _already_loaded(conn: psycopg.Connection) -> set[str]:
         return {row[0] for row in cur.fetchall()}
 
 
-def _open_remote_csv_stream(key: str, limit_rate: str) -> tuple[subprocess.Popen, io.TextIOWrapper, threading.Timer]:
+def _open_remote_csv_stream(key: str, limit_rate: str) -> tuple[subprocess.Popen, io.TextIOWrapper]:
     """Streams one remote file: curl (rate-limited) -> in-process gzip
     decompression -> text lines. Never writes the compressed file to disk.
 
-    Also arms a hard watchdog timer that force-kills curl regardless of
-    its own --max-time: verified live (2026-08-27) against morgan's curl
-    7.61.1 that --max-time does NOT reliably abort a real stalled transfer
-    through this URL's redirect (confirmed stuck 17+ minutes past the
-    configured 900s, despite --max-time working correctly in isolated
-    tests against both a synthetic slow endpoint and a newer curl version)
-    -- don't trust curl's self-reported timeout alone for something this
-    script needs to run unattended overnight. The caller must cancel this
-    timer once the transfer finishes (success or not) via
-    _load_one_file's finally block.
+    The whole curl invocation is wrapped in the external `timeout` command
+    (GNU coreutils), not just curl's own --max-time/--speed-limit flags.
+    Verified live (2026-08-27) against morgan's curl 7.61.1 that a Python
+    threading.Timer calling proc.kill() -- the first approach tried here --
+    does NOT reliably fire for THIS specific call path: it passed every
+    isolated reproduction (a standalone script, an instrumented inline
+    version, calling _open_remote_csv_stream directly) but never once
+    fired for the real stalled download inside the real run() loop, for
+    reasons that were never root-caused despite extensive live debugging.
+    `timeout` runs entirely outside the Python process/interpreter, so it
+    can't be affected by whatever that was. --kill-after is a second
+    escalation (SIGKILL) in case the process doesn't respond to timeout's
+    initial SIGTERM.
     """
     url = FILE_BASE_URL + key
     proc = subprocess.Popen(
         [
+            "timeout", f"--kill-after={CURL_WATCHDOG_GRACE_SECONDS}",
+            str(CURL_MAX_TIME_SECONDS + CURL_WATCHDOG_GRACE_SECONDS),
             "curl", "-sL", "--limit-rate", limit_rate, "--fail",
             "--connect-timeout", str(CURL_CONNECT_TIMEOUT_SECONDS),
             "--max-time", str(CURL_MAX_TIME_SECONDS),
@@ -150,11 +155,8 @@ def _open_remote_csv_stream(key: str, limit_rate: str) -> tuple[subprocess.Popen
         ],
         stdout=subprocess.PIPE,
     )
-    watchdog = threading.Timer(CURL_MAX_TIME_SECONDS + CURL_WATCHDOG_GRACE_SECONDS, proc.kill)
-    watchdog.daemon = True
-    watchdog.start()
     text_stream = io.TextIOWrapper(gzip.GzipFile(fileobj=proc.stdout), encoding="utf-8")
-    return proc, text_stream, watchdog
+    return proc, text_stream
 
 
 def _find_header_and_column_indices(text_stream: io.TextIOWrapper) -> dict[str, int]:
@@ -177,7 +179,7 @@ def _parse_value(raw: str) -> float | None:
 
 
 def _load_one_file(conn: psycopg.Connection, key: str, limit_rate: str) -> int:
-    proc, text_stream, watchdog = _open_remote_csv_stream(key, limit_rate)
+    proc, text_stream = _open_remote_csv_stream(key, limit_rate)
     try:
         indices = _find_header_and_column_indices(text_stream)
         row_count = 0
@@ -204,7 +206,6 @@ def _load_one_file(conn: psycopg.Connection, key: str, limit_rate: str) -> int:
         conn.commit()
         return row_count
     finally:
-        watchdog.cancel()
         text_stream.close()
         proc.wait()
         if proc.returncode != 0:
