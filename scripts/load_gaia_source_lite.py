@@ -35,6 +35,7 @@ import io
 import logging
 import os
 import subprocess
+import sys
 import time
 import xml.etree.ElementTree as ET
 from urllib.request import urlopen
@@ -175,7 +176,13 @@ def _find_header_and_column_indices(text_stream: io.TextIOWrapper) -> dict[str, 
 
 
 def _parse_value(raw: str) -> float | None:
-    return float(raw) if raw else None
+    # Live 2026-08-28: a genuinely missing pmra value in one of ESA's real
+    # CSV.gz files showed up as the literal text "null", not just an empty
+    # field -- crashed a load attempt with ValueError deep into a transfer,
+    # which (see _load_one_file's finally block) used to look identical to
+    # a full network stall in the logs, since nothing killed the
+    # still-running subprocess early.
+    return float(raw) if raw and raw != "null" else None
 
 
 def _load_one_file(conn: psycopg.Connection, key: str, limit_rate: str) -> int:
@@ -207,8 +214,26 @@ def _load_one_file(conn: psycopg.Connection, key: str, limit_rate: str) -> int:
         return row_count
     finally:
         text_stream.close()
+        # Proactively terminate rather than only closing our end of the
+        # pipe: on ANY exception here (a data-parsing bug, a DB error, or
+        # a genuine network stall) we must not fall through to proc.wait()
+        # below while timeout/curl might still be running for real -- that
+        # blocks for up to the full external timeout window regardless of
+        # why we're actually here. proc.poll() first so a process that
+        # already exited naturally (the normal success path) isn't
+        # reported as killed. Live 2026-08-28: without this, a data-parsing
+        # ValueError partway through a transfer looked identical in the
+        # logs to a full 960s+ network stall, since nothing killed the
+        # still-running subprocess early.
+        if proc.poll() is None:
+            proc.kill()
         proc.wait()
-        if proc.returncode != 0:
+        # Only surface curl/timeout's own exit code as the failure reason
+        # when the try block didn't already fail with something more
+        # specific (e.g. the ValueError case above) -- that's the more
+        # useful exception to propagate, not a generic "exited nonzero"
+        # that's often just this block's own proc.kill() above.
+        if proc.returncode != 0 and sys.exc_info()[0] is None:
             raise RuntimeError(f"curl exited {proc.returncode} fetching {key}")
 
 
