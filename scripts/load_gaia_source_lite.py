@@ -222,6 +222,7 @@ def _load_one_file_with_retry(conn: psycopg.Connection, key: str, limit_rate: st
     last_exc: Exception | None = None
     for attempt in range(LOAD_FILE_ATTEMPTS):
         try:
+            logger.info("load_gaia_source_lite: %s starting (attempt %d/%d)", key, attempt + 1, LOAD_FILE_ATTEMPTS)
             return _load_one_file(conn, key, limit_rate)
         except Exception as exc:
             last_exc = exc
