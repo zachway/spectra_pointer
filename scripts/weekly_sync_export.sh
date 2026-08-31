@@ -34,8 +34,23 @@ if [ "$sync_status" -ne 0 ]; then
     echo "$(date): sync.main exited $sync_status (one or more archives failed -- see above)"
 fi
 
+# Fills in parallax/phot_bp_mean_mag/phot_rp_mean_mag/has_gaia_rvs/
+# has_xp_continuous for any star the run above just added via the
+# automatic offline fallback (a Gaia TAP timeout mid-sync -- see
+# sync.main.sync_archive and ingest.add_star.AddStarsResult.gaia_degraded).
+# Runs even if sync.main above failed for some archives: this only touches
+# stars already in the table, independent of which archives succeeded, and
+# is a no-op (fast) if nothing needs it. Before the export below, so a
+# star backfilled this run shows up complete in this week's snapshot
+# instead of a week late.
+python3 -m scripts.backfill_gaia_astrometry
+backfill_status=$?
+if [ "$backfill_status" -ne 0 ]; then
+    echo "$(date): scripts.backfill_gaia_astrometry exited $backfill_status"
+fi
+
 python3 -m scripts.export_to_parquet --out-dir ~/public_html/spectra_data
 export_status=$?
 
-echo "=== $(date): weekly sync+export finished (sync=$sync_status export=$export_status) ==="
+echo "=== $(date): weekly sync+export finished (sync=$sync_status backfill=$backfill_status export=$export_status) ==="
 exit "$export_status"

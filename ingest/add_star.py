@@ -15,6 +15,7 @@ import logging
 import os
 import socket
 import time
+from typing import NamedTuple
 
 import psycopg
 from astroquery.gaia import Gaia
@@ -22,6 +23,7 @@ from astroquery.simbad import Simbad
 from astroquery.simbad import conf as simbad_conf
 
 from sync.base import RawObservation, clean_float
+from sync.matcher import GAIA_DR3_REF_EPOCH
 
 logger = logging.getLogger(__name__)
 
@@ -357,11 +359,81 @@ def add_bsc_star(conn: psycopg.Connection, hr_number: int, input_name: str | Non
 BATCH_CHUNK_SIZE = 5000
 
 
+def _fetch_astrometry_offline(conn: psycopg.Connection, chunk: list[int]) -> list[dict]:
+    """offline=True's replacement for a live Gaia TAP batch query: pulls
+    core astrometry straight from the local gaia_source_lite_mirror (see
+    db/migrations/0011_gaia_source_lite_mirror.sql) instead. Covers every
+    valid Gaia DR3 source_id, since that table mirrors the whole catalog --
+    but only the 6 columns shitty_positional_match needs. parallax,
+    phot_bp_mean_mag, phot_rp_mean_mag, has_rvs, and has_xp_continuous
+    aren't in it, so a star added this way gets those left NULL/False
+    (still fully trackable/matchable in the meantime) rather than blocking
+    on the same live call that's hung syncs for 10+ minutes when Gaia's
+    TAP+ service is degraded -- see _launch_gaia_job's docstring. A later
+    run of scripts.backfill_gaia_astrometry fills these in, the same way it
+    already does for stars added before these columns existed at all.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT source_id, ra, dec, pmra, pmdec, phot_g_mean_mag "
+            "FROM gaia_source_lite_mirror WHERE source_id = ANY(%s)",
+            (chunk,),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "gaia_source_id": source_id,
+            "ra": ra,
+            "dec": dec,
+            "ref_epoch": GAIA_DR3_REF_EPOCH,
+            "pmra": pmra,
+            "pmdec": pmdec,
+            "parallax": None,
+            "phot_g_mean_mag": phot_g_mean_mag,
+            "phot_bp_mean_mag": None,
+            "phot_rp_mean_mag": None,
+            "has_rvs": False,
+            "has_xp_continuous": False,
+        }
+        for source_id, ra, dec, pmra, pmdec, phot_g_mean_mag in rows
+    ]
+
+
+def _fetch_astrometry_online(chunk: list[int]) -> list[dict]:
+    """The original path: one live Gaia TAP batch query for full astrometry."""
+    id_list = ",".join(str(sid) for sid in chunk)
+    job = _launch_gaia_job(GAIA_BATCH_QUERY.format(top=len(chunk), id_list=id_list))
+    table = job.get_results()
+    return [
+        {
+            "gaia_source_id": int(row["source_id"]),
+            "ra": float(row["ra"]),
+            "dec": float(row["dec"]),
+            "ref_epoch": float(row["ref_epoch"]),
+            "pmra": clean_float(row["pmra"]),
+            "pmdec": clean_float(row["pmdec"]),
+            "parallax": clean_float(row["parallax"]),
+            "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
+            "phot_bp_mean_mag": clean_float(row["phot_bp_mean_mag"]),
+            "phot_rp_mean_mag": clean_float(row["phot_rp_mean_mag"]),
+            "has_rvs": bool(row["has_rvs"]),
+            "has_xp_continuous": bool(row["has_xp_continuous"]),
+        }
+        for row in table
+    ]
+
+
+class AddStarsResult(NamedTuple):
+    added: int
+    gaia_degraded: bool
+
+
 def add_stars_batch(
     conn: psycopg.Connection,
     gaia_source_ids: list[int],
     known_aliases: dict[int, list[str]] | None = None,
-) -> int:
+    offline: bool = False,
+) -> AddStarsResult:
     """Add many stars in a handful of batched Gaia TAP queries instead of one
     call per star — add_star() itself is a live TAP round trip each time,
     which doesn't scale past a few dozen stars. Used for bulk-seeding a local
@@ -387,10 +459,24 @@ def add_stars_batch(
     plates/nights) would otherwise re-fetch astrometry that can't have
     changed. They still get any new alias from this batch merged in
     directly, without spending a Gaia round trip on it.
+
+    offline: see _fetch_astrometry_offline -- skips the live Gaia call
+    entirely in favor of the local gaia_source_lite_mirror, at the cost of
+    leaving 5 photometry/flag columns unset until a later online backfill.
+
+    Even with offline=False, a chunk that exhausts _launch_gaia_job's
+    retries (Gaia TAP+ genuinely down or stalling, not just one blip) falls
+    back to the local mirror for that chunk and every remaining chunk in
+    this same call, rather than raising and losing the whole page -- one
+    degraded archive shouldn't cost every chunk after it a multi-minute
+    retry-then-fail round trip. AddStarsResult.gaia_degraded reports whether
+    this happened, so a caller (sync.runner/sync.main) can make later pages
+    of the same archive start offline too instead of re-discovering the
+    outage from scratch each page.
     """
     unique_ids = sorted(set(gaia_source_ids))
     if not unique_ids:
-        return 0
+        return AddStarsResult(0, False)
     known_aliases = known_aliases or {}
 
     with conn.cursor() as cur:
@@ -419,31 +505,30 @@ def add_stars_batch(
     new_ids = [sid for sid in unique_ids if sid not in already_known]
 
     total = 0
+    gaia_degraded = False
     for i in range(0, len(new_ids), BATCH_CHUNK_SIZE):
         chunk = new_ids[i : i + BATCH_CHUNK_SIZE]
-        id_list = ",".join(str(sid) for sid in chunk)
-        job = _launch_gaia_job(GAIA_BATCH_QUERY.format(top=len(chunk), id_list=id_list))
-        table = job.get_results()
+        if offline or gaia_degraded:
+            stars = _fetch_astrometry_offline(conn, chunk)
+        else:
+            try:
+                stars = _fetch_astrometry_online(chunk)
+            except Exception:
+                logger.warning(
+                    "Gaia TAP exhausted retries fetching astrometry for %d star(s) -- "
+                    "falling back to the local gaia_source_lite_mirror for the rest of "
+                    "this batch",
+                    len(chunk),
+                    exc_info=True,
+                )
+                gaia_degraded = True
+                stars = _fetch_astrometry_offline(conn, chunk)
 
         with conn.cursor() as cur:
-            for row in table:
-                gaia_source_id = int(row["source_id"])
-                star = {
-                    "gaia_source_id": gaia_source_id,
-                    "ra": float(row["ra"]),
-                    "dec": float(row["dec"]),
-                    "ref_epoch": float(row["ref_epoch"]),
-                    "pmra": clean_float(row["pmra"]),
-                    "pmdec": clean_float(row["pmdec"]),
-                    "parallax": clean_float(row["parallax"]),
-                    "phot_g_mean_mag": clean_float(row["phot_g_mean_mag"]),
-                    "phot_bp_mean_mag": clean_float(row["phot_bp_mean_mag"]),
-                    "phot_rp_mean_mag": clean_float(row["phot_rp_mean_mag"]),
-                    "has_rvs": bool(row["has_rvs"]),
-                    "has_xp_continuous": bool(row["has_xp_continuous"]),
-                    "input_name": None,
-                    "name_aliases": known_aliases.get(gaia_source_id) or None,
-                }
+            for star in stars:
+                gaia_source_id = star["gaia_source_id"]
+                star["input_name"] = None
+                star["name_aliases"] = known_aliases.get(gaia_source_id) or None
                 cur.execute(
                     """
                     INSERT INTO stars (gaia_source_id, ra, dec, ref_epoch, pmra, pmdec,
@@ -465,7 +550,7 @@ def add_stars_batch(
                 total += 1
         conn.commit()
 
-    return total
+    return AddStarsResult(total, gaia_degraded)
 
 
 SIMBAD_BATCH_CHUNK_SIZE = 300
@@ -510,7 +595,7 @@ def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
     return resolved
 
 
-def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[RawObservation]) -> dict:
+def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[RawObservation], offline: bool = False) -> dict:
     """Track any new stars a batch of archive records reveals, before matching.
 
     Same discovery rule for every archive: a record with its own Gaia
@@ -531,6 +616,18 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
     not real data from this shared function every archive actually goes
     through. Now every archive's real resolution rate gets recorded in
     archive_sync_state.last_run_notes each run.
+
+    offline: threaded through to add_stars_batch -- see there. Doesn't
+    affect the SIMBAD name-resolution call above, which already degrades
+    gracefully on its own (SIMBAD outages happen); this is specifically
+    for Gaia TAP+ being the one that's degraded.
+
+    The returned gaia_degraded flag mirrors AddStarsResult.gaia_degraded --
+    set when this call's own Gaia TAP fetch (not a prior page's) exhausted
+    its retries and fell back to the local mirror. A caller looping over
+    pages of one archive (sync.main.sync_archive) can use it to start
+    subsequent pages with offline=True instead of retrying a TAP that just
+    proved itself unreachable, page after page.
     """
     known_aliases: dict[int, list[str]] = {}
 
@@ -556,8 +653,13 @@ def discover_stars(conn: psycopg.Connection, archive_code: str, records: list[Ra
         known_aliases.setdefault(gaia_id, []).append(name)
 
     all_ids = [r.gaia_source_id for r in direct] + list(name_to_gaia.values())
-    stars_added = add_stars_batch(conn, all_ids, known_aliases=known_aliases)
-    return {"stars_added": stars_added, "names_attempted": unique_names, "names_resolved": len(name_to_gaia)}
+    result = add_stars_batch(conn, all_ids, known_aliases=known_aliases, offline=offline)
+    return {
+        "stars_added": result.added,
+        "names_attempted": unique_names,
+        "names_resolved": len(name_to_gaia),
+        "gaia_degraded": result.gaia_degraded,
+    }
 
 
 def main() -> None:
