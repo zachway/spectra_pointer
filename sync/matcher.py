@@ -237,6 +237,47 @@ def _propagate(star_rows: list[tuple], obs_jyear: float) -> tuple[list[int], Sky
     return list(ids), propagated
 
 
+def propagate_many_epochs(star_rows: list[tuple], obs_jyears: list[float]) -> tuple[list[int], np.ndarray, np.ndarray]:
+    """Broadcast form of _propagate: propagates every star_row to every
+    epoch in obs_jyears with one apply_space_motion call, instead of
+    building a fresh Time/SkyCoord (measurably expensive per call -- Time's
+    own parsing/validation overhead dominates for a small array) once per
+    epoch. Returns (ids, ra_deg, dec_deg) where ra_deg/dec_deg are plain
+    numpy arrays of shape (len(star_rows), len(obs_jyears));
+    ra_deg[:, j]/dec_deg[:, j] is every star propagated to obs_jyears[j].
+
+    Deliberately returns plain ndarrays, not the broadcast SkyCoord itself:
+    reproduced live (2026-08-27) that slicing a shape-(S, E) SkyCoord
+    returned by apply_space_motion(new_obstime=<shape (1, E) Time>) --
+    e.g. `propagated[:, j]` -- produces a SkyCoord whose ra/dec correctly
+    reduce to shape (S,), but whose internal obstime Time array does NOT
+    (it stays at whatever shape the broadcast new_obstime originally had,
+    since SkyCoord/Time's __getitem__ slices each internal component by its
+    own stored shape rather than the coordinate's logical broadcast shape).
+    A later `coords[idxs]` fancy-index against that mismatched obstime (as
+    search_around_sky does internally) then raises a raw astropy IndexError
+    ("index N is out of bounds for axis 0 with size 1") -- crashed a live
+    morgan run. Extracting .ra.deg/.dec.deg forces full materialization via
+    plain numpy, sidestepping the lazy/broadcast Time entirely; callers
+    build a fresh ordinary SkyCoord from the sliced ndarrays per epoch.
+    """
+    ids, ra, dec, ref_epoch, pmra, pmdec = zip(*star_rows)
+    coords = SkyCoord(
+        ra=np.array(ra)[:, None] * u.deg,
+        dec=np.array(dec)[:, None] * u.deg,
+        pm_ra_cosdec=np.nan_to_num(np.array(pmra, dtype=float))[:, None] * u.mas / u.yr,
+        pm_dec=np.nan_to_num(np.array(pmdec, dtype=float))[:, None] * u.mas / u.yr,
+        obstime=Time(np.array(ref_epoch, dtype=float)[:, None], format="jyear"),
+        frame="icrs",
+    )
+    new_obstime = Time(np.array(obs_jyears, dtype=float)[None, :], format="jyear")
+    with warnings.catch_warnings():
+        # Same ERFA distance-override note as _propagate.
+        warnings.filterwarnings("ignore", category=ErfaWarning, message=".*distance overridden.*")
+        propagated = coords.apply_space_motion(new_obstime=new_obstime)
+    return list(ids), np.asarray(propagated.ra.deg), np.asarray(propagated.dec.deg)
+
+
 def _to_jyear(obs_date) -> float:
     return Time(obs_date.isoformat()).jyear
 
@@ -316,11 +357,25 @@ def upsert_holding_row(
     )
 
 
-# Rows per multi-row INSERT statement in _upsert_holdings_batch -- bounds any
-# single statement's parameter count/text size for a cell with an extreme
-# number of records, while still cutting round trips by ~4 orders of
-# magnitude versus one execute() per row.
-UPSERT_HOLDINGS_BATCH_CHUNK_SIZE = 5000
+# Bound parameters per row in upsert_holdings_batch's INSERT (one %s per
+# spectroscopy_holdings column written, "now()" for updated_at is a literal,
+# not a param).
+_UPSERT_HOLDINGS_ROW_PARAM_COUNT = 14
+
+# PostgreSQL's wire protocol hard-caps a single query at 65535 bound
+# parameters total.
+_POSTGRES_MAX_QUERY_PARAMS = 65535
+
+# Rows per multi-row INSERT statement in upsert_holdings_batch -- 5000 rows
+# (70000 params) crashed a live morgan run with "number of parameters must be
+# between 0 and 65535" once a cell's pending_rows finally got large enough to
+# hit it. Kept well under the limit while still cutting round trips by ~3-4
+# orders of magnitude versus one execute() per row; the assert below fails
+# fast at import time if this or the row width ever changes without the
+# other being checked.
+UPSERT_HOLDINGS_BATCH_CHUNK_SIZE = 4000
+
+assert UPSERT_HOLDINGS_BATCH_CHUNK_SIZE * _UPSERT_HOLDINGS_ROW_PARAM_COUNT <= _POSTGRES_MAX_QUERY_PARAMS
 
 
 def upsert_holdings_batch(cur: psycopg.Cursor, rows: list[tuple]) -> None:
