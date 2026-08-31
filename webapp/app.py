@@ -969,6 +969,7 @@ PAGE_TEMPLATE = """
       <dt>Gaia source_id</dt><dd>— (no credible Gaia counterpart; tracked via Bright Star Catalogue HR {{ star.bsc_hr_number }})</dd>
       <dt>SIMBAD</dt><dd><a href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=HR+{{ star.bsc_hr_number }}" target="_blank" rel="noopener">open</a></dd>
       {% endif %}
+      <dt>ESASky</dt><dd><a href="https://sky.esa.int/esasky/?target={{ "%.6f"|format(star.ra) }}%20{{ "%.6f"|format(star.dec) }}&amp;fov=0.2&amp;hips=DSS2+color&amp;cooframe=J2000&amp;sci=true&amp;lang=en" target="_blank" rel="noopener">open</a></dd>
       <dt>RA, Dec</dt><dd>{{ "%.6f"|format(star.ra) }}, {{ "%.6f"|format(star.dec) }}</dd>
       <dt>G mag</dt><dd>{{ star.phot_g_mean_mag if star.phot_g_mean_mag is not none else "—" }}</dd>
       <dt>Gaia XP continuous</dt><dd>{{ "yes" if star.has_xp_continuous else "no" }}</dd>
