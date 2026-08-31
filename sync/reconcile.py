@@ -100,8 +100,18 @@ def reconcile_archive(conn: psycopg.Connection, archive_code: str, fetch_fn, max
     totals: dict[str, int] = {}
     pages = 0
     converged = False
+    offline = False
     while max_pages is None or pages < max_pages:
-        counts = run_sync(conn, archive_code, fetch_fn, "reconcile")
+        counts, gaia_degraded = run_sync(conn, archive_code, fetch_fn, "reconcile", offline=offline)
+        if gaia_degraded and not offline:
+            # Same sticky per-archive fallback as sync.main.sync_archive --
+            # see there for why.
+            logger.warning(
+                "%s: Gaia TAP exhausted retries -- switching to the local "
+                "gaia_source_lite_mirror (offline) for the rest of this archive's reconcile",
+                archive_code,
+            )
+            offline = True
         pages += 1
         for key, value in counts.items():
             totals[key] = totals.get(key, 0) + value

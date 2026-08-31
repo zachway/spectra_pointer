@@ -159,11 +159,33 @@ ARCHIVES = {
 }
 
 
-def sync_archive(conn: psycopg.Connection, archive_code: str, fetch_fn, max_pages: int | None = None) -> dict:
+def sync_archive(
+    conn: psycopg.Connection,
+    archive_code: str,
+    fetch_fn,
+    max_pages: int | None = None,
+    offline: bool = False,
+) -> dict:
     totals: dict[str, int] = {}
     pages = 0
     while max_pages is None or pages < max_pages:
-        counts = run_sync(conn, archive_code, fetch_fn)
+        counts, gaia_degraded = run_sync(conn, archive_code, fetch_fn, offline=offline)
+        if gaia_degraded and not offline:
+            # A live Gaia TAP call for this page just exhausted its retries
+            # and fell back to the local mirror once (see
+            # ingest.add_star.add_stars_batch) -- a TAP that's degraded
+            # right now is very unlikely to recover a page or two later, so
+            # go offline for the rest of this archive's pages instead of
+            # paying a multi-minute retry-then-fail cost on every one of
+            # them. Per-archive, not global or persisted: the next archive
+            # (or the next `sync.main` run) starts back online and gets its
+            # own chance to prove Gaia is actually reachable.
+            logger.warning(
+                "%s: Gaia TAP exhausted retries -- switching to the local "
+                "gaia_source_lite_mirror (offline) for the rest of this archive's sync",
+                archive_code,
+            )
+            offline = True
         pages += 1
         for key, value in counts.items():
             totals[key] = totals.get(key, 0) + value
@@ -178,6 +200,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", nargs="+", choices=sorted(ARCHIVES), help="run only these archives")
     parser.add_argument("--max-pages-per-archive", type=int, default=None, help="cap pages per archive (debugging)")
+    parser.add_argument(
+        "--offline",
+        action="store_true",
+        help="skip live Gaia TAP astrometry lookups for new stars, using the local "
+        "gaia_source_lite_mirror instead (see ingest.add_star._fetch_astrometry_offline). "
+        "Every archive already does this automatically for the rest of its own run once "
+        "its Gaia TAP calls start exhausting retries -- pass this to start every archive "
+        "that way from the first page, e.g. when Gaia's TAP+ service is known to already "
+        "be down.",
+    )
     args = parser.parse_args()
 
     archive_codes = args.only or sorted(ARCHIVES)
@@ -187,7 +219,7 @@ def main() -> None:
         for archive_code in archive_codes:
             logger.info("%s: starting", archive_code)
             try:
-                sync_archive(conn, archive_code, ARCHIVES[archive_code], args.max_pages_per_archive)
+                sync_archive(conn, archive_code, ARCHIVES[archive_code], args.max_pages_per_archive, offline=args.offline)
             except Exception:
                 logger.exception("%s: failed", archive_code)
                 conn.rollback()

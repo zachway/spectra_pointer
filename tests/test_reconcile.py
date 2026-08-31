@@ -1,5 +1,6 @@
 from datetime import date
 
+import sync.reconcile as reconcile_module
 from sync import state
 from sync.base import RawObservation
 from sync.reconcile import reconcile_archive
@@ -79,3 +80,25 @@ def test_reconcile_archive_stops_at_page_cap_without_wrapping(conn):
     assert state.get_reconcile_cursor(conn, "unit_test") == {"last_id": 2}, (
         "hitting the page cap mid-walk must leave the cursor where it stopped, not wrap early"
     )
+
+
+def test_reconcile_archive_goes_sticky_offline_after_gaia_degraded(conn, monkeypatch):
+    """Same sticky per-archive fallback as sync.main.sync_archive -- see
+    there. A reconcile walk can hit a degraded Gaia TAP+ just as easily as a
+    live sync can."""
+    _clear_sync_state(conn, "unit_test")
+
+    pages = [{"skipped": 1}, {"skipped": 1}, {"skipped": 0}]
+    run_sync_calls = []
+
+    def fake_run_sync(conn_, archive_code, fetch_fn, cursor_kind="sync", offline=False):
+        run_sync_calls.append(offline)
+        counts = pages[len(run_sync_calls) - 1]
+        gaia_degraded = len(run_sync_calls) == 1
+        return counts, gaia_degraded
+
+    monkeypatch.setattr(reconcile_module, "run_sync", fake_run_sync)
+
+    reconcile_archive(conn, "unit_test", lambda cursor: (None, None), max_pages=10)
+
+    assert run_sync_calls == [False, True, True]

@@ -179,7 +179,7 @@ def seed(conn: psycopg.Connection) -> dict:
             aliases.append(name)
         known_aliases.setdefault(gaia_id, []).extend(aliases)
 
-    gaia_added = add_stars_batch(conn, gaia_ids, known_aliases=known_aliases)
+    gaia_added = add_stars_batch(conn, gaia_ids, known_aliases=known_aliases).added
     logger.info("add_stars_batch: %d/%d newly inserted (rest already tracked)", gaia_added, len(gaia_ids))
 
     bsc5_added = 0
