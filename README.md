@@ -69,6 +69,29 @@ createdb spectra
 psql spectra -f db/schema.sql
 
 export DATABASE_URL=postgresql:///spectra
+
+# seed the ~70 naked-eye stars Gaia itself can't see (it saturates around
+# G~3) -- a few seconds, no external data to fetch beyond a live SIMBAD/Gaia
+# cross-match already baked into the script
+python3 -m scripts.seed_bsc5_bright_stars
+
+# mirror the Gaia DR3 astrometry sync.positional_fallback's
+# shitty_positional_match needs (source_id, ra, dec, pmra, pmdec,
+# phot_g_mean_mag) into a local table, so it queries local disk instead of
+# Gaia's own (rate-limited) TAP+ service -- see
+# db/migrations/0011_gaia_source_lite_mirror.sql for why. This is a genuine
+# one-time bulk load: ~757GB streamed (never written to disk as such -- only
+# the ~124GB pruned local table is), on the order of a day even rate-limited
+# at the script's default 10MB/s. Safe to interrupt and rerun -- it resumes
+# from the last completed file instead of starting over.
+python3 -m scripts.load_gaia_source_lite
+
+# without the mirror above, shitty_positional_match still runs and still
+# finds matches among already-tracked stars (BSC5 seed stars, and any Gaia
+# stars already in `stars` via ingest.add_star/sync.matcher), but every
+# not-yet-tracked Gaia source is invisible to it -- an unpopulated
+# gaia_source_lite_mirror answers every query with zero rows, not an error,
+# so this fails silently rather than loudly.
 ```
 
 ## Usage
