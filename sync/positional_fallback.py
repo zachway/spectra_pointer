@@ -278,6 +278,48 @@ def _epoch_chunk_size(candidate_count: int) -> int:
     return max(1, min(EPOCH_PROPAGATION_CHUNK_SIZE, PROPAGATION_ARRAY_ELEMENT_BUDGET // max(candidate_count, 1)))
 
 
+# Observation dates are bucketed to the nearest EPOCH_BUCKET_YEARS before
+# grouping (see _epoch_bucket/_process_cell), instead of using each record's
+# own exact date as its propagation epoch. Live-profiled (py-spy, 2026-08-31)
+# against a real dense field (an SMC/LMC cell, ~132378, with a Gaia candidate
+# pool in the 250k-500k range): _epoch_chunk_size collapses to 1 for a pool
+# that large, and the cell's tens of thousands of records span enough
+# distinct exact dates that the run was paying a full apply_space_motion
+# setup (Time/TDB-scale conversion, coordinate representation) once per
+# epoch, over the whole huge candidate array, for every single one of those
+# dates -- exactly the "near-zero record rate" failure mode
+# EPOCH_PROPAGATION_CHUNK_SIZE/PROPAGATION_ARRAY_ELEMENT_BUDGET were already
+# built to guard against, just at a scale those two alone don't fully cover.
+#
+# Safe to round: matcher.MAX_PM_ARCSEC_PER_YEAR (10.3"/yr) is itself
+# Barnard's Star's real proper motion -- the fastest-moving star known, and
+# already this codebase's standing worst-case baseline (see its own
+# docstring and this module's GAIA_HEALPIX_LEVEL comment). Rounding a
+# record's observation epoch to the nearest bucket center introduces at most
+# half a bucket's width of extra/missing PM drift: 0.5 * 0.1yr * 10.3"/yr =
+# 0.515" worst case, ~0.86% of SHITTY_MATCH_RADIUS_ARCSEC (60") -- and that's
+# for a star as fast as Barnard's Star specifically; every slower star (the
+# overwhelming majority) sees proportionally less. This has nothing to do
+# with Gaia's own reference epoch (GAIA_DR3_REF_EPOCH, 2016.0, often decades
+# from a record's real obs_date) -- that gap is exactly what
+# apply_space_motion already exists to bridge; this only rounds *which*
+# nearby target epoch a record gets propagated to, not whether propagation
+# happens at all.
+#
+# Collapses "thousands of near-unique dates in one cell" down to at most
+# (date range in years) / EPOCH_BUCKET_YEARS distinct buckets regardless of
+# how many exact distinct dates exist -- e.g. a cell spanning 46 years (this
+# project's real backlog: obs_date 1978-02-25 to 2026-08-17, see
+# GAIA_HEALPIX_LEVEL's own comment) tops out at 460 buckets even in the
+# worst case, and real observation dates cluster in campaigns/nights far
+# more than that bound suggests.
+EPOCH_BUCKET_YEARS = 0.1
+
+
+def _epoch_bucket(jyear: float) -> float:
+    return round(jyear / EPOCH_BUCKET_YEARS) * EPOCH_BUCKET_YEARS
+
+
 def _launch_gaia_job(query: str):
     """Gaia.launch_job_async, retried on transient TAP failures -- same
     reasoning as ingest.add_star._launch_gaia_job (a different module's
@@ -483,10 +525,14 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     # decades), and propagating every candidate to only one record's epoch
     # while reusing that for every other record would silently misplace any
     # fast-mover proportional to how far its actual epoch is from the one
-    # used.
+    # used. Bucketed to the nearest EPOCH_BUCKET_YEARS rather than each
+    # record's own exact date -- see EPOCH_BUCKET_YEARS/_epoch_bucket for why
+    # that's safe (negligible added error even for Barnard's Star) and why
+    # it matters (collapses "thousands of near-unique dates in one cell"
+    # down to a bounded number of propagate_many_epochs calls).
     by_epoch: dict[float, list[int]] = defaultdict(list)
     for local_i, r in enumerate(cell_records):
-        by_epoch[matcher._to_jyear(r.obs_date)].append(local_i)
+        by_epoch[_epoch_bucket(matcher._to_jyear(r.obs_date))].append(local_i)
     epochs = list(by_epoch.keys())
 
     star_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]

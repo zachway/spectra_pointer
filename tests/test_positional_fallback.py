@@ -7,10 +7,12 @@ from sync import positional_fallback
 from sync.base import RawObservation
 from sync.positional_fallback import (
     Candidate,
+    EPOCH_BUCKET_YEARS,
     EPOCH_PROPAGATION_CHUNK_SIZE,
     GAIA_HEALPIX_LEVEL,
     MAG_CONTRAST_THRESHOLD_MAG,
     PROPAGATION_ARRAY_ELEMENT_BUDGET,
+    _epoch_bucket,
     _epoch_chunk_size,
     _healpix_cell,
     _healpix_cell_and_ring,
@@ -465,6 +467,89 @@ def test_epoch_chunk_boundary_preserves_per_record_proper_motion(conn, monkeypat
 
     assert rows["chunk-epoch-a"] == source_id
     assert rows["chunk-epoch-b"] == source_id
+
+
+def test_epoch_bucket_rounds_to_nearest_grid_point():
+    """See EPOCH_BUCKET_YEARS's own docstring for the Barnard's-Star-based
+    (matcher.MAX_PM_ARCSEC_PER_YEAR = 10.3"/yr, the fastest known real star)
+    safety margin justifying this rounding."""
+    assert _epoch_bucket(2020.0) == pytest.approx(2020.0)
+    assert _epoch_bucket(2020.0 + EPOCH_BUCKET_YEARS) == pytest.approx(2020.0 + EPOCH_BUCKET_YEARS)
+    # A few days off the grid still rounds to the same bucket as the exact
+    # grid point -- this is the whole point (collapsing near-unique dates).
+    assert _epoch_bucket(2020.03) == pytest.approx(2020.0)
+    assert _epoch_bucket(2020.07) == pytest.approx(2020.1)
+
+
+def test_nearby_observation_dates_collapse_into_one_epoch_bucket(conn, monkeypatch):
+    """With _epoch_chunk_size forced to 1 (same externally-observable shape
+    as the real incident: an unusually large candidate pool collapses
+    chunk_size to 1 on its own -- see EPOCH_BUCKET_YEARS's docstring),
+    records observed a few days apart used to each need their own
+    exact-jyear chunk, i.e. a separate matcher.propagate_many_epochs call
+    per date. Bucketed to the nearest EPOCH_BUCKET_YEARS, dates this close
+    now share one bucket, so the candidate pool both records fall in is only
+    ever propagated once instead of twice."""
+    monkeypatch.setattr(positional_fallback, "EPOCH_PROPAGATION_CHUNK_SIZE", 1)
+
+    source_id = 900000000000000094
+    monkeypatch.setattr(
+        positional_fallback, "_gaia_healpix_pool",
+        lambda pixels: [(source_id, 10.0, 10.0, 0.0, 0.0, 12.0)],
+    )
+
+    # This is a live-Gaia-only (not yet tracked) match, so _process_cell also
+    # calls ingest.add_star.add_stars_batch to register the star -- that does
+    # its own separate (real, un-mocked by default) Gaia astrometry lookup,
+    # same as test_epoch_chunk_boundary_preserves_per_record_proper_motion
+    # above.
+    class _FakeAstrometryJob:
+        def get_results(self):
+            return Table({
+                "source_id": [source_id],
+                "ra": [10.0], "dec": [10.0], "ref_epoch": [2016.0],
+                "pmra": [0.0], "pmdec": [0.0], "parallax": [10.0],
+                "phot_g_mean_mag": [12.0], "phot_bp_mean_mag": [12.5], "phot_rp_mean_mag": [11.5],
+                "has_rvs": [False], "has_xp_continuous": [False],
+            })
+
+    from ingest import add_star as add_star_module
+
+    monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
+
+    from sync import matcher as matcher_module
+
+    calls = []
+    real_propagate_many_epochs = matcher_module.propagate_many_epochs
+
+    def counting_propagate_many_epochs(star_rows, obs_jyears):
+        calls.append(list(obs_jyears))
+        return real_propagate_many_epochs(star_rows, obs_jyears)
+
+    monkeypatch.setattr(matcher_module, "propagate_many_epochs", counting_propagate_many_epochs)
+
+    # 3 days apart -- well inside one EPOCH_BUCKET_YEARS (0.1yr ~ 36.5 days)
+    # bucket, but different exact jyear values, so the pre-bucketing code
+    # would have needed two separate size-1 chunks/calls here.
+    rec_a = RawObservation(
+        archive_obs_id="epoch-bucket-a", archive_url="http://example.test/epoch-bucket-a",
+        ra=10.0, dec=10.0, obs_date=date(2020, 6, 1),
+    )
+    rec_b = RawObservation(
+        archive_obs_id="epoch-bucket-b", archive_url="http://example.test/epoch-bucket-b",
+        ra=10.0, dec=10.0, obs_date=date(2020, 6, 4),
+    )
+
+    counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    assert counts["shitty_matched"] == 2
+
+    # No tracked stars are pre-inserted for this fresh source_id, so every
+    # call here is the live (mirror-pool) propagation -- one candidate, one
+    # call per distinct epoch bucket.
+    live_pool_calls = [c for c in calls if len(c) == 1]
+    assert len(live_pool_calls) == 1, (
+        f"expected the two nearby dates to share one bucketed propagation call, got {calls}"
+    )
 
 
 def test_multiple_tracked_candidates_across_epochs_does_not_crash(conn, monkeypatch):
