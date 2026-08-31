@@ -376,3 +376,36 @@ CREATE INDEX idx_skip_classifications_holding
 -- (see open design questions).
 CREATE UNIQUE INDEX idx_skip_classifications_one_vote_per_submitter
     ON skip_classifications (archive_code, archive_obs_id, submitter);
+
+-- Local mirror of gaiadr3.gaia_source_lite's astrometry/photometry columns
+-- (see db/migrations/0011_gaia_source_lite_mirror.sql for the full
+-- rationale and scripts/load_gaia_source_lite.py for how it's populated) --
+-- replaces sync.positional_fallback's live Gaia TAP+ queries with local
+-- disk reads. Deliberately no primary key / btree index on source_id: a
+-- btree over ~1.8 billion rows would cost ~40GB for no real benefit here,
+-- since source_id's high bits already encode HEALPix pixel (see
+-- _healpix_source_id_range in sync/positional_fallback.py) and the loader
+-- ingests files in that same natural order, leaving the table physically
+-- near-sorted -- exactly what BRIN is built for.
+CREATE TABLE gaia_source_lite_mirror (
+    source_id           BIGINT NOT NULL,
+    ra                   DOUBLE PRECISION NOT NULL,   -- deg, ICRS, ref_epoch 2016.0 (Gaia DR3)
+    dec                  DOUBLE PRECISION NOT NULL,   -- deg, ICRS, ref_epoch 2016.0 (Gaia DR3)
+    pmra                 DOUBLE PRECISION,            -- mas/yr
+    pmdec                DOUBLE PRECISION,            -- mas/yr
+    phot_g_mean_mag      REAL
+);
+
+CREATE INDEX gaia_source_lite_mirror_source_id_brin
+    ON gaia_source_lite_mirror USING BRIN (source_id);
+
+-- Tracks which of ESA's remote gaia_source bulk CSV.gz files the loader has
+-- already ingested, making the ~757GB, many-hour load resumable after an
+-- interruption -- there's no uniqueness constraint on source_id itself to
+-- prevent duplicate rows if a file were re-loaded, so this log is what
+-- prevents double-loading a file.
+CREATE TABLE gaia_source_lite_mirror_load_log (
+    filename    TEXT PRIMARY KEY,
+    row_count   BIGINT NOT NULL,
+    loaded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
