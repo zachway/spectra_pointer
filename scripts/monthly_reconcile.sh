@@ -14,6 +14,13 @@
 # wrapping around and starting again. sync.reconcile handles a failing
 # archive without stopping the others, same as sync.main.
 #
+# Also runs scripts.shitty_positional_match's cheap incremental pass
+# (skipped_only=True -- see sync/reconcile.py's own docstring) every time,
+# after the per-archive walk above. A full shitty_positional_match backlog
+# pass is NOT run here -- that's a separate, occasional/manual operation
+# (see scripts/shitty_positional_match.py), too slow (days, even with
+# sync/positional_fallback.py's optimizations) for a recurring schedule.
+#
 # Setup (not done by this script):
 #   (crontab -l 2>/dev/null; echo "0 22 1 * * $PWD/scripts/monthly_reconcile.sh >> $PWD/monthly_reconcile.log 2>&1") | crontab -
 

@@ -3,7 +3,7 @@ from datetime import date
 import sync.reconcile as reconcile_module
 from sync import state
 from sync.base import RawObservation
-from sync.reconcile import reconcile_archive
+from sync.reconcile import reconcile_archive, reconcile_shitty_positional_match
 
 
 def _clear_sync_state(conn, archive_code):
@@ -102,3 +102,20 @@ def test_reconcile_archive_goes_sticky_offline_after_gaia_degraded(conn, monkeyp
     reconcile_archive(conn, "unit_test", lambda cursor: (None, None), max_pages=10)
 
     assert run_sync_calls == [False, True, True]
+
+
+def test_reconcile_shitty_positional_match_calls_skipped_only_pass(conn, monkeypatch):
+    """sync.reconcile only ever runs scripts.shitty_positional_match's cheap
+    incremental (skipped_only=True) pass -- see reconcile_shitty_positional_match's
+    own docstring for why a full pass doesn't belong on this schedule."""
+    calls = []
+
+    def fake_run(conn_, only_archives=None, skipped_only=False):
+        calls.append({"only_archives": only_archives, "skipped_only": skipped_only})
+        return {"shitty_matched": 0, "no_confident_candidate": 0}
+
+    monkeypatch.setattr(reconcile_module.shitty_positional_match, "run", fake_run)
+
+    reconcile_shitty_positional_match(conn)
+
+    assert calls == [{"only_archives": None, "skipped_only": True}]
