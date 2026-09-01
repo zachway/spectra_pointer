@@ -9,10 +9,26 @@ stars; this one runs a distinct, intentionally-lower-confidence fallback
 (sync/positional_fallback.py) that always lands results in needs_review, so
 it's meant to be reviewed by a human afterward, not trusted as a source of
 truth the way a normal reprocess run is. Re-running is safe (already
-needs_review rows just get re-evaluated), but there's no reason to run this
-on a tight schedule -- unlike scripts.reprocess_against_new_stars, nothing
-about *this* fallback's inputs changes between runs except newly-tracked
-stars and whatever Gaia itself updates.
+needs_review rows just get re-evaluated), but there's no reason to run a
+*full* pass (skipped_only=False, the default) on a tight schedule -- unlike
+scripts.reprocess_against_new_stars, nothing about *this* fallback's inputs
+changes between full-pass runs except newly-tracked stars and whatever Gaia
+itself updates, and a full pass over the whole multi-million-row backlog
+takes on the order of days even with sync/positional_fallback.py's
+per-cell-batching and epoch-bucketing optimizations.
+
+skipped_only=True (--skipped-only) instead re-processes only match_status=
+'skipped' rows, never 'needs_review' ones -- this fallback always moves a
+row's status to 'needs_review' once it's touched it at all (win or lose, see
+_process_cell), so 'skipped' unambiguously means "never yet attempted by
+this fallback", not merely "still unmatched". That set only grows by
+whatever a regular sync run's own tight-radius match just gave up on, so
+it's naturally small and cheap -- safe to run on every sync.reconcile pass
+(see reconcile_shitty_positional_match there), unlike a full pass. The
+tradeoff: skipped_only=True alone will never revisit a 'needs_review' row
+that would now match thanks to a star some *other* archive tracked since --
+only an occasional full pass (still meant to be run manually/rarely, not on
+this module's own schedule) catches that drift.
 
 Candidates are paged by HEALPix cell (see _page_candidates_by_cell) instead
 of all being loaded as full RawObservation records up front. Loading the
@@ -58,19 +74,24 @@ logger = logging.getLogger(__name__)
 # entire backlog's full columns at once.
 CANDIDATE_PAGE_SIZE = 1_000_000
 
-_CANDIDATE_WHERE = """
-    match_status IN ('skipped', 'needs_review')
-    AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
-"""
+def _candidate_where(skipped_only: bool) -> str:
+    """See module docstring for skipped_only's meaning: 'skipped' alone
+    (never yet touched by this fallback) for a cheap incremental pass, or
+    'skipped' plus 'needs_review' (also re-check what this fallback already
+    tried before) for the full, multi-day backlog pass."""
+    match_statuses = "('skipped')" if skipped_only else "('skipped', 'needs_review')"
+    return f"match_status IN {match_statuses} AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL"
 
 
-def _index_candidates_by_cell(conn: psycopg.Connection, only_archives: list[str] | None) -> dict[int, list[tuple[str, str]]]:
+def _index_candidates_by_cell(
+    conn: psycopg.Connection, only_archives: list[str] | None, skipped_only: bool = False,
+) -> dict[int, list[tuple[str, str]]]:
     """Lightweight (archive_code, archive_obs_id, ra, dec) pass over the
     whole backlog, immediately reduced to just (archive_code, archive_obs_id)
     keys grouped by HEALPix cell -- never materializes a plain list of every
     candidate's full row, only this per-cell index, which is what decides
     page boundaries."""
-    query = f"SELECT archive_code, archive_obs_id, raw_ra, raw_dec FROM spectroscopy_holdings WHERE {_CANDIDATE_WHERE}"
+    query = f"SELECT archive_code, archive_obs_id, raw_ra, raw_dec FROM spectroscopy_holdings WHERE {_candidate_where(skipped_only)}"
     params: tuple = ()
     if only_archives:
         query += " AND archive_code = ANY(%s)"
@@ -102,7 +123,7 @@ def _page_candidates_by_cell(by_cell: dict[int, list[tuple[str, str]]], page_siz
         yield page
 
 
-def _load_candidate_page(conn: psycopg.Connection, page_keys: list[tuple[str, str]]) -> dict:
+def _load_candidate_page(conn: psycopg.Connection, page_keys: list[tuple[str, str]], skipped_only: bool = False) -> dict:
     by_archive_ids: dict[str, list[str]] = defaultdict(list)
     for archive_code, archive_obs_id in page_keys:
         by_archive_ids[archive_code].append(archive_obs_id)
@@ -111,7 +132,7 @@ def _load_candidate_page(conn: psycopg.Connection, page_keys: list[tuple[str, st
         SELECT archive_code, archive_obs_id, archive_url, instrument, obs_date, program_id,
                raw_target_name, raw_ra, raw_dec
         FROM spectroscopy_holdings
-        WHERE archive_code = %s AND archive_obs_id = ANY(%s) AND {_CANDIDATE_WHERE}
+        WHERE archive_code = %s AND archive_obs_id = ANY(%s) AND {_candidate_where(skipped_only)}
     """
     rows: list[tuple] = []
     with conn.cursor() as cur:
@@ -121,19 +142,20 @@ def _load_candidate_page(conn: psycopg.Connection, page_keys: list[tuple[str, st
     return _rows_to_records_by_archive(rows)
 
 
-def run(conn: psycopg.Connection, only_archives: list[str] | None = None) -> dict:
-    by_cell = _index_candidates_by_cell(conn, only_archives)
+def run(conn: psycopg.Connection, only_archives: list[str] | None = None, skipped_only: bool = False) -> dict:
+    by_cell = _index_candidates_by_cell(conn, only_archives, skipped_only=skipped_only)
     total_candidates = sum(len(keys) for keys in by_cell.values())
     logger.info(
-        "shitty_positional_match: %d candidates across %d HEALPix cells, paging by %d",
+        "shitty_positional_match: %d candidates across %d HEALPix cells, paging by %d (skipped_only=%s)",
         total_candidates,
         len(by_cell),
         CANDIDATE_PAGE_SIZE,
+        skipped_only,
     )
 
     totals: dict[str, int] = {}
     for page_num, page_keys in enumerate(_page_candidates_by_cell(by_cell, CANDIDATE_PAGE_SIZE), start=1):
-        by_archive = _load_candidate_page(conn, page_keys)
+        by_archive = _load_candidate_page(conn, page_keys, skipped_only=skipped_only)
         logger.info("shitty_positional_match: page %d, %d candidates across %d archives", page_num, len(page_keys), len(by_archive))
         page_totals = run_shitty_positional_match(conn, by_archive)
         for key, value in page_totals.items():
@@ -145,10 +167,17 @@ def run(conn: psycopg.Connection, only_archives: list[str] | None = None) -> dic
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", nargs="+", metavar="ARCHIVE_CODE", help="restrict to these archive_codes")
+    parser.add_argument(
+        "--skipped-only",
+        action="store_true",
+        help="only match_status='skipped' rows (never yet attempted by this fallback), not 'needs_review' ones "
+        "too -- a cheap incremental pass instead of the full multi-day backlog scan (see module docstring). "
+        "This is what sync.reconcile runs on every pass; pass this directly for a manual one-off incremental run.",
+    )
     args = parser.parse_args()
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
-        totals = run(conn, only_archives=args.only)
+        totals = run(conn, only_archives=args.only, skipped_only=args.skipped_only)
     logger.info("done: %s", totals)
 
 

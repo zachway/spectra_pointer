@@ -26,6 +26,15 @@ archive, so one cron run stays cheap and rate-limit-friendly; progress is
 saved after every page, so a big archive (e.g. eso) just takes several
 scheduled runs to complete one full cycle before wrapping around again.
 
+Also runs scripts.shitty_positional_match's cheap incremental pass
+(skipped_only=True) once per invocation, independent of the per-archive
+cursor walk above -- a different kind of "things a plain forward-only pass
+misses" problem (a positional-fallback candidate that was never attempted,
+not a backfilled record an old cursor skipped), but the same "periodic
+maintenance, not the live sync path" home. See
+scripts.shitty_positional_match's module docstring for why skipped_only
+specifically (not a full pass) is what belongs on this schedule.
+
 Usage:
     python -m sync.reconcile                           # all at-risk archives
     python -m sync.reconcile --only eso mast
@@ -41,6 +50,7 @@ import sys
 
 import psycopg
 
+from scripts import shitty_positional_match
 from sync import state
 from sync.main import ARCHIVES
 from sync.runner import run_sync
@@ -132,6 +142,17 @@ def reconcile_archive(conn: psycopg.Connection, archive_code: str, fetch_fn, max
     return totals
 
 
+def reconcile_shitty_positional_match(conn: psycopg.Connection) -> dict:
+    """The cheap side of scripts.shitty_positional_match: only match_status=
+    'skipped' rows (never yet attempted by that fallback -- see its module
+    docstring for why 'skipped' alone means that), so this stays fast enough
+    to run on every reconcile pass instead of the full multi-day backlog
+    scan."""
+    totals = shitty_positional_match.run(conn, skipped_only=True)
+    logger.info("shitty_positional_match (skipped_only): %s", totals)
+    return totals
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--only", nargs="+", choices=sorted(AT_RISK_ARCHIVES), help="run only these archives")
@@ -155,6 +176,13 @@ def main() -> None:
                 logger.exception("%s: reconcile failed", archive_code)
                 conn.rollback()
                 failed.append(archive_code)
+
+        try:
+            reconcile_shitty_positional_match(conn)
+        except Exception:
+            logger.exception("shitty_positional_match (skipped_only): reconcile failed")
+            conn.rollback()
+            failed.append("shitty_positional_match")
 
     if failed:
         logger.error("reconcile failed for: %s", ", ".join(failed))
