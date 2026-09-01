@@ -744,10 +744,9 @@ SHARED_STYLE = """
     .search-tab-panel[hidden] { display: none; }
     .instrument-search-controls { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
     .instrument-search-controls select { font-family: monospace; padding: 0.3rem; min-width: 280px; }
-    .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
+    .site-header { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.3rem; margin-bottom: 1.5rem; text-align: center; }
     .site-header h1 { margin: 0; }
-    .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
-                         border-radius: 4px; object-fit: cover; }
+    .logo-placeholder { flex-shrink: 0; height: 110px; width: auto; object-fit: contain; order: -1; }
     .radial-form { display: inline-block; margin: 0.3rem 0; }
     label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
     .caveat-tip { text-decoration: underline; cursor: help; }
