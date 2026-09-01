@@ -746,8 +746,7 @@ SHARED_STYLE = """
     .instrument-search-controls select { font-family: monospace; padding: 0.3rem; min-width: 280px; }
     .site-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
     .site-header h1 { margin: 0; }
-    .logo-placeholder { flex-shrink: 0; width: 48px; height: 48px; border: 1px solid #000;
-                         border-radius: 4px; object-fit: cover; }
+    .logo-placeholder { flex-shrink: 0; height: 84px; width: auto; object-fit: contain; }
     .radial-form { display: inline-block; margin: 0.3rem 0; }
     label.unmatched-toggle { margin-left: 0.6rem; font-size: 0.95rem; }
     .caveat-tip { text-decoration: underline; cursor: help; }
