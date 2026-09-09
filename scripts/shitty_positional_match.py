@@ -78,9 +78,23 @@ def _candidate_where(skipped_only: bool) -> str:
     """See module docstring for skipped_only's meaning: 'skipped' alone
     (never yet touched by this fallback) for a cheap incremental pass, or
     'skipped' plus 'needs_review' (also re-check what this fallback already
-    tried before) for the full, multi-day backlog pass."""
+    tried before) for the full, multi-day backlog pass.
+
+    Mirrors run_shitty_positional_match's own entry filter (obs_date not
+    null, raw_dec in [-90, 90]) at the SQL level. Without this, rows that
+    fail that filter still get HEALPix-indexed and their full columns
+    loaded here, only to be silently dropped inside run_shitty_positional_
+    match with no logging or counter -- for skipped_only=True in particular
+    (wired into sync.reconcile on every pass), any such row never leaves
+    'skipped' status, so it gets re-indexed and re-dropped, invisibly,
+    forever. Verified against prod on 2026-09-09: 13,679 rows with obs_date
+    IS NULL and 4,297 with raw_dec outside [-90, 90] among the ~13.1M
+    candidates otherwise matching this WHERE."""
     match_statuses = "('skipped')" if skipped_only else "('skipped', 'needs_review')"
-    return f"match_status IN {match_statuses} AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL"
+    return (
+        f"match_status IN {match_statuses} AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL "
+        "AND obs_date IS NOT NULL AND raw_dec BETWEEN -90 AND 90"
+    )
 
 
 def _index_candidates_by_cell(
