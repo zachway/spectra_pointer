@@ -27,13 +27,16 @@ saved after every page, so a big archive (e.g. eso) just takes several
 scheduled runs to complete one full cycle before wrapping around again.
 
 Also runs scripts.shitty_positional_match's cheap incremental pass
-(skipped_only=True) once per invocation, independent of the per-archive
-cursor walk above -- a different kind of "things a plain forward-only pass
-misses" problem (a positional-fallback candidate that was never attempted,
-not a backfilled record an old cursor skipped), but the same "periodic
-maintenance, not the live sync path" home. See
+(skipped_only=True) once per invocation -- a different kind of "things a
+plain forward-only pass misses" problem (a positional-fallback candidate
+that was never attempted, not a backfilled record an old cursor skipped),
+but the same "periodic maintenance, not the live sync path" home. See
 scripts.shitty_positional_match's module docstring for why skipped_only
-specifically (not a full pass) is what belongs on this schedule.
+specifically (not a full pass) is what belongs on this schedule. Unscoped
+by default (it isn't tied to AT_RISK_ARCHIVES -- any archive can have
+skipped positional-fallback candidates), but --only narrows it to the same
+archive_codes as the per-archive cursor walk, so a targeted run doesn't
+also pay for a full-database pass.
 
 Usage:
     python -m sync.reconcile                           # all at-risk archives
@@ -142,14 +145,16 @@ def reconcile_archive(conn: psycopg.Connection, archive_code: str, fetch_fn, max
     return totals
 
 
-def reconcile_shitty_positional_match(conn: psycopg.Connection) -> dict:
+def reconcile_shitty_positional_match(conn: psycopg.Connection, only_archives: list[str] | None = None) -> dict:
     """The cheap side of scripts.shitty_positional_match: only match_status=
     'skipped' rows (never yet attempted by that fallback -- see its module
     docstring for why 'skipped' alone means that), so this stays fast enough
     to run on every reconcile pass instead of the full multi-day backlog
-    scan."""
-    totals = shitty_positional_match.run(conn, skipped_only=True)
-    logger.info("shitty_positional_match (skipped_only): %s", totals)
+    scan. only_archives narrows the scan the same way --only narrows the
+    per-archive cursor walk; None (the default) scans every archive, since
+    shitty_positional_match isn't limited to AT_RISK_ARCHIVES."""
+    totals = shitty_positional_match.run(conn, only_archives=only_archives, skipped_only=True)
+    logger.info("shitty_positional_match (skipped_only, only_archives=%s): %s", only_archives, totals)
     return totals
 
 
@@ -178,7 +183,7 @@ def main() -> None:
                 failed.append(archive_code)
 
         try:
-            reconcile_shitty_positional_match(conn)
+            reconcile_shitty_positional_match(conn, only_archives=args.only)
         except Exception:
             logger.exception("shitty_positional_match (skipped_only): reconcile failed")
             conn.rollback()

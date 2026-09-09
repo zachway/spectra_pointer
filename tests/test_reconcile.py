@@ -107,7 +107,8 @@ def test_reconcile_archive_goes_sticky_offline_after_gaia_degraded(conn, monkeyp
 def test_reconcile_shitty_positional_match_calls_skipped_only_pass(conn, monkeypatch):
     """sync.reconcile only ever runs scripts.shitty_positional_match's cheap
     incremental (skipped_only=True) pass -- see reconcile_shitty_positional_match's
-    own docstring for why a full pass doesn't belong on this schedule."""
+    own docstring for why a full pass doesn't belong on this schedule. With no
+    only_archives given (the default, unscoped run), it scans every archive."""
     calls = []
 
     def fake_run(conn_, only_archives=None, skipped_only=False):
@@ -119,3 +120,20 @@ def test_reconcile_shitty_positional_match_calls_skipped_only_pass(conn, monkeyp
     reconcile_shitty_positional_match(conn)
 
     assert calls == [{"only_archives": None, "skipped_only": True}]
+
+
+def test_reconcile_shitty_positional_match_respects_only_archives(conn, monkeypatch):
+    """--only should narrow the shitty_positional_match pass to the same
+    archive_codes as the per-archive cursor walk, not silently scan every
+    archive regardless of what the caller asked to limit the run to."""
+    calls = []
+
+    def fake_run(conn_, only_archives=None, skipped_only=False):
+        calls.append({"only_archives": only_archives, "skipped_only": skipped_only})
+        return {"shitty_matched": 0, "no_confident_candidate": 0}
+
+    monkeypatch.setattr(reconcile_module.shitty_positional_match, "run", fake_run)
+
+    reconcile_shitty_positional_match(conn, only_archives=["eso", "mast"])
+
+    assert calls == [{"only_archives": ["eso", "mast"], "skipped_only": True}]
