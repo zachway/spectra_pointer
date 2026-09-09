@@ -23,7 +23,7 @@ from astroquery.simbad import Simbad
 from astroquery.simbad import conf as simbad_conf
 
 from sync.base import RawObservation, clean_float
-from sync.matcher import GAIA_DR3_REF_EPOCH
+from sync.matcher import BSC5_REF_EPOCH, GAIA_DR3_REF_EPOCH
 
 logger = logging.getLogger(__name__)
 
@@ -264,13 +264,15 @@ def add_star_by_name(conn: psycopg.Connection, name: str) -> dict:
 # fetch_name_aliases would give for a Gaia-sourced star.
 BSC5_SIMBAD_FIELDS = ("ids", "ra", "dec", "pmra", "pmdec", "plx_value")
 
-# For a bright star with no Gaia entry, SIMBAD's own cross-matched
+# BSC5_REF_EPOCH itself lives in sync.matcher (imported above) -- the
+# positional-match radius pre-filter there needs it too, and matcher.py
+# already had to be the shared home for GAIA_DR3_REF_EPOCH for the same
+# reason. For a bright star with no Gaia entry, SIMBAD's own cross-matched
 # astrometry is almost always sourced from the Hipparcos catalog (van
 # Leeuwen's 2007 re-reduction) -- observed for Arcturus
 # (coo_bibcode 2007A&A...474..653V). SIMBAD doesn't expose a clean
 # per-field epoch for pmra/pmdec/plx_value the way it does coo_bibcode for
 # position, so this is hardcoded rather than queried per star.
-BSC5_REF_EPOCH = 1991.25
 
 
 def resolve_bsc_hr_number(name: str) -> int:

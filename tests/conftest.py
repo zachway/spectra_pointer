@@ -8,6 +8,13 @@ import pytest
 TEST_ID_LOW = 900000000000000000
 TEST_ID_HIGH = 900000000000999999
 
+# Synthetic BSC5 HR numbers (source_catalog='bsc5' stars have no
+# gaia_source_id, so they fall outside the range cleanup above) -- real BSC5
+# HR numbers top out in the low 9000s (the catalog has ~9110 entries), so
+# this range can't collide with real data either.
+TEST_BSC_HR_LOW = 999000
+TEST_BSC_HR_HIGH = 999999
+
 
 @pytest.fixture
 def conn():
@@ -35,6 +42,10 @@ def conn():
         cur.execute(
             "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s",
             (TEST_ID_LOW, TEST_ID_HIGH),
+        )
+        cur.execute(
+            "DELETE FROM stars WHERE bsc_hr_number BETWEEN %s AND %s",
+            (TEST_BSC_HR_LOW, TEST_BSC_HR_HIGH),
         )
     connection.commit()
     yield connection
