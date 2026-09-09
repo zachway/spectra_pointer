@@ -16,6 +16,15 @@ jobs:
 
       - name: Install PostgreSQL and build q3c
         run: |
+          # GitHub's ubuntu-latest image preinstalls a google-chrome.list apt
+          # source for its bundled headless Chrome -- this workflow never
+          # installs or uses Chrome, but `apt-get update` still fails outright
+          # if that unrelated mirror serves a bad index (observed 2026-09-09:
+          # persistent Hash Sum mismatch on dl.google.com/linux/chrome-stable,
+          # unrelated to this repo, survived multiple reruns ~10min apart).
+          # Drop it before updating so a third-party repo we don't depend on
+          # can't block installing the packages we actually need.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update
           sudo apt-get install -y postgresql build-essential git
           # postgresql-server-dev-all pulls in a postgresql-common version
