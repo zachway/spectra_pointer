@@ -500,7 +500,7 @@ def _search_around(targets: SkyCoord, propagated: SkyCoord, ids: list, radius_ar
     return out
 
 
-def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[str, RawObservation]], pool: list[tuple], radius_deg: float) -> dict:
+def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[str, RawObservation]], pool: list[tuple]) -> dict:
     """The local (DB + matching) work for one already-fetched HEALPix cell --
     split out from the Gaia fetch (_gaia_healpix_pool) so the fetch
     (network-bound, minutes) and this (DB + vectorized matching, fast) can be
@@ -509,9 +509,23 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     """
     counts = {"shitty_matched": 0, "no_confident_candidate": 0}
     cell_records = [r for _, r in cell_entries]
+    obs_jyears = [matcher._to_jyear(r.obs_date) for r in cell_records]
+
+    # Same reasoning as matcher.py's positional_easy_match (matcher.py:456-457):
+    # a tracked star's stored position (at its own ref_epoch) can have drifted
+    # up to MAX_PM_ARCSEC_PER_YEAR per year by the time of an old record's
+    # observation epoch, so a flat SHITTY_MATCH_RADIUS_ARCSEC query against
+    # that stored position can miss a true candidate outright -- the
+    # PM-propagation done further down only ever narrows the pool this query
+    # already returned, it can't recover a candidate the query itself
+    # dropped. Padded once per cell, using the widest epoch gap among the
+    # cell's own records, rather than per epoch bucket, to keep this at one
+    # query per cell instead of one per distinct epoch.
+    max_years = max(abs(jyear - matcher.GAIA_DR3_REF_EPOCH) for jyear in obs_jyears)
+    tracked_radius_deg = (SHITTY_MATCH_RADIUS_ARCSEC + matcher.MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
 
     tracked_rows = _load_tracked_candidates(
-        conn, [r.ra for r in cell_records], [r.dec for r in cell_records], radius_deg,
+        conn, [r.ra for r in cell_records], [r.dec for r in cell_records], tracked_radius_deg,
     )
     star_positions = {row[0]: row for row in tracked_rows}  # star_id -> full row
 
@@ -531,8 +545,8 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
     # it matters (collapses "thousands of near-unique dates in one cell"
     # down to a bounded number of propagate_many_epochs calls).
     by_epoch: dict[float, list[int]] = defaultdict(list)
-    for local_i, r in enumerate(cell_records):
-        by_epoch[_epoch_bucket(matcher._to_jyear(r.obs_date))].append(local_i)
+    for local_i, jyear in enumerate(obs_jyears):
+        by_epoch[_epoch_bucket(jyear)].append(local_i)
     epochs = list(by_epoch.keys())
 
     star_rows = [(row[0], row[3], row[4], row[5], row[6], row[7]) for row in star_positions.values()]
@@ -690,7 +704,6 @@ def run_shitty_positional_match(conn: psycopg.Connection, records_by_archive: di
     for i, (_, r) in enumerate(entries):
         by_cell[_healpix_cell(r.ra, r.dec)].append(i)
 
-    radius_deg = SHITTY_MATCH_RADIUS_ARCSEC / 3600.0
     cells = list(by_cell.items())
 
     with ThreadPoolExecutor(max_workers=GAIA_FETCH_CONCURRENCY) as executor:
@@ -716,7 +729,7 @@ def run_shitty_positional_match(conn: psycopg.Connection, records_by_archive: di
                 submit_next()  # keep the pipeline full as soon as a slot frees up
 
                 cell_entries = [entries[i] for i in idxs]
-                cell_counts = _process_cell(conn, cell, cell_entries, pool, radius_deg)
+                cell_counts = _process_cell(conn, cell, cell_entries, pool)
                 for key, value in cell_counts.items():
                     counts[key] = counts.get(key, 0) + value
 
