@@ -10,10 +10,15 @@ authors:
   - name: Zachary Way
     orcid: 0000-0003-0179-9662
     affiliation: 1
+  - name: Ilija Medan
+    orcid:
+    affiliation: 2
 affiliations:
   - name: Department of Physics and Astronomy, Georgia State University, Atlanta, GA 30303, USA
     index: 1
-date: 1 September 2026
+  - name: University of Toronto
+    index: 2
+date: 11 September 2026
 bibliography: paper.bib
 ---
 
@@ -82,4 +87,4 @@ This research has made use of the SIMBAD database, operated at CDS, Strasbourg, 
 
 For their feedback during development, I would like to acknowledge Jamie Tayar, Kayvon Sharifi, Colin Kane, Akshat Chaturvedi, Mahir Patel, Doug Gies, Russel White, Thomas Rivinius, Dietrich Baade, and my PhD advisor Sébastien Lépine.
 
-Ilija Medan provided crucial feedback and editing for this paper. I would like to send my heartfelt gratitude to Chad Gottuso for designing the logo and his support over the years. Lastly, I would like to thank Gunner, the only dog in the Way family to ever point.
+I would like to send my heartfelt gratitude to Chad Gottuso for designing the logo and his support over the years. Lastly, I would like to thank Gunner, the only dog in the Way family to ever point.
