@@ -69,6 +69,17 @@ MAX_PM_ARCSEC_PER_YEAR = 10.3
 # below, since q3c needs it *before* it knows which stars it'll return.
 GAIA_DR3_REF_EPOCH = 2016.0
 
+# The other ref_epoch actually stored in `stars` (source_catalog='bsc5' --
+# see ingest/add_star.py's add_bsc_star, which imports this constant from
+# here). The radius pre-filter below has to bound against whichever of the
+# two epochs is farther from a given observation's epoch: BSC5's is earlier
+# than Gaia's, so for any observation epoch after roughly the midpoint of
+# the two (~2003.6) -- true of virtually every archive this project
+# matches -- a BSC5 star has drifted farther from its stored position than
+# a same-epoch Gaia star has, and sizing the query off GAIA_DR3_REF_EPOCH
+# alone would undershoot the radius needed to still catch it.
+BSC5_REF_EPOCH = 1991.25
+
 # How far a name-matched record's own reported position may sit from the
 # star it named before the name match is distrusted (see module docstring's
 # "Mira" case). Set well above any offset a legitimate identifier-over-
@@ -508,7 +519,7 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
         for (epoch, radius_arcsec), recs in by_epoch.items():
             targets = SkyCoord(ra=[r.ra for r in recs] * u.deg, dec=[r.dec for r in recs] * u.deg)
 
-            max_years = abs(epoch - GAIA_DR3_REF_EPOCH)
+            max_years = max(abs(epoch - GAIA_DR3_REF_EPOCH), abs(epoch - BSC5_REF_EPOCH))
             radius_deg = (radius_arcsec + MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
             candidate_rows = _load_candidate_stars(conn, [r.ra for r in recs], [r.dec for r in recs], radius_deg)
             if not candidate_rows:

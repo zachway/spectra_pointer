@@ -7,6 +7,7 @@ from astropy.time import Time
 
 from sync import matcher
 from sync.base import RawObservation
+from tests.conftest import TEST_BSC_HR_LOW
 
 
 def _offset(ra, dec, position_angle_deg, sep_arcsec):
@@ -350,6 +351,66 @@ def test_positional_match_survives_prefilter_for_fast_proper_motion(conn):
         )
         gaia_id = cur.fetchone()[0]
     assert gaia_id == 900000000000000060
+
+
+def test_positional_match_survives_prefilter_for_bsc5_ref_epoch(conn):
+    """BSC5-sourced stars (source_catalog='bsc5') carry ref_epoch=1991.25,
+    not Gaia's 2016.0 -- sizing the coarse pre-filter's PM-drift margin off
+    an observation's distance from GAIA_DR3_REF_EPOCH alone undershoots the
+    true drift from a BSC5 star's older ref_epoch for any observation this
+    side of ~2003.6, and could exclude it from the candidate pool before
+    propagation ever runs. Regression test for that gap: an observation
+    epoch close to GAIA_DR3_REF_EPOCH (so the old, buggy formula would size
+    the radius as if almost no drift were possible) but far from
+    BSC5_REF_EPOCH, against a star whose real drift over that longer span
+    lands well outside the un-propagated 1" radius.
+    """
+    ra0, dec0 = 200.0, -5.0
+    pm_ra_cosdec, pm_dec = 4000.0, 3000.0  # mas/yr -- 5"/yr total, plausible for a bright naked-eye star
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO stars (source_catalog, bsc_hr_number, ra, dec, ref_epoch, pmra, pmdec) "
+            "VALUES ('bsc5', %s, %s, %s, %s, %s, %s)",
+            (TEST_BSC_HR_LOW, ra0, dec0, matcher.BSC5_REF_EPOCH, pm_ra_cosdec, pm_dec),
+        )
+    conn.commit()
+
+    obs_date = date(2015, 6, 1)  # near GAIA_DR3_REF_EPOCH, far from BSC5_REF_EPOCH
+    obs_jyear = matcher._to_jyear(obs_date)
+
+    base = SkyCoord(
+        ra=ra0 * u.deg, dec=dec0 * u.deg,
+        pm_ra_cosdec=pm_ra_cosdec * u.mas / u.yr, pm_dec=pm_dec * u.mas / u.yr,
+        obstime=Time(matcher.BSC5_REF_EPOCH, format="jyear"), frame="icrs",
+    )
+    true_position = base.apply_space_motion(new_obstime=Time(obs_jyear, format="jyear"))
+
+    # Sanity check: real drift is well outside the tight match radius, and
+    # the old buggy formula (padding only for distance from 2016.0) would
+    # have undershot it -- confirms this scenario actually exercises the fix.
+    raw_sep = SkyCoord(ra=ra0 * u.deg, dec=dec0 * u.deg).separation(true_position).arcsec
+    assert raw_sep > matcher.EASY_MATCH_RADIUS_ARCSEC * 5
+    old_buggy_years = abs(obs_jyear - matcher.GAIA_DR3_REF_EPOCH)
+    old_buggy_radius = matcher.EASY_MATCH_RADIUS_ARCSEC + matcher.MAX_PM_ARCSEC_PER_YEAR * old_buggy_years
+    assert raw_sep > old_buggy_radius
+
+    rec = RawObservation(
+        archive_obs_id="bsc5-pm-1", archive_url="http://example.test/bsc5pm1",
+        ra=true_position.ra.deg, dec=true_position.dec.deg,
+        obs_date=obs_date,
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.bsc_hr_number FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='bsc5-pm-1'"
+        )
+        hr_number = cur.fetchone()[0]
+    assert hr_number == TEST_BSC_HR_LOW
 
 
 def test_instrument_radius_override_recovers_offset_beyond_default_radius(conn):

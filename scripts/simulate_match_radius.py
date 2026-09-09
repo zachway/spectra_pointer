@@ -61,7 +61,7 @@ def simulate(conn: psycopg.Connection, archive_code: str, instrument: str, radii
         decs = [r[1] for r in recs]
         targets = SkyCoord(ra=ras * u.deg, dec=decs * u.deg)
 
-        max_years = abs(epoch - matcher.GAIA_DR3_REF_EPOCH)
+        max_years = max(abs(epoch - matcher.GAIA_DR3_REF_EPOCH), abs(epoch - matcher.BSC5_REF_EPOCH))
         radius_deg = (max_radius + matcher.MAX_PM_ARCSEC_PER_YEAR * max_years) / 3600.0
         candidate_rows = matcher._load_candidate_stars(conn, ras, decs, radius_deg)
         if not candidate_rows:
