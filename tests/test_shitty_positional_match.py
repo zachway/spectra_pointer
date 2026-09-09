@@ -36,10 +36,10 @@ def test_run_pages_and_aggregates_totals_across_pages(conn, monkeypatch):
         cur.execute(
             """
             INSERT INTO spectroscopy_holdings
-                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, match_method, match_status)
+                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, obs_date, match_method, match_status)
             VALUES
-                ('unit_test', 'page-1', 'http://example.test/page-1', 10.0, 10.0, 'positional_easy_match', 'skipped'),
-                ('unit_test', 'page-2', 'http://example.test/page-2', 200.0, -60.0, 'positional_easy_match', 'skipped')
+                ('unit_test', 'page-1', 'http://example.test/page-1', 10.0, 10.0, '2020-01-01', 'positional_easy_match', 'skipped'),
+                ('unit_test', 'page-2', 'http://example.test/page-2', 200.0, -60.0, '2020-01-01', 'positional_easy_match', 'skipped')
             """
         )
     conn.commit()
@@ -74,11 +74,11 @@ def test_skipped_only_excludes_needs_review_rows(conn, monkeypatch):
         cur.execute(
             """
             INSERT INTO spectroscopy_holdings
-                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, match_method, match_status)
+                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, obs_date, match_method, match_status)
             VALUES
-                ('unit_test', 'never-attempted', 'http://example.test/never-attempted', 10.0, 10.0,
+                ('unit_test', 'never-attempted', 'http://example.test/never-attempted', 10.0, 10.0, '2020-01-01',
                  'positional_easy_match', 'skipped'),
-                ('unit_test', 'already-attempted', 'http://example.test/already-attempted', 200.0, -60.0,
+                ('unit_test', 'already-attempted', 'http://example.test/already-attempted', 200.0, -60.0, '2020-01-01',
                  'shitty_positional_match', 'needs_review')
             """
         )
@@ -107,11 +107,11 @@ def test_full_pass_includes_both_skipped_and_needs_review_rows(conn, monkeypatch
         cur.execute(
             """
             INSERT INTO spectroscopy_holdings
-                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, match_method, match_status)
+                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, obs_date, match_method, match_status)
             VALUES
-                ('unit_test', 'never-attempted-2', 'http://example.test/never-attempted-2', 10.0, 10.0,
+                ('unit_test', 'never-attempted-2', 'http://example.test/never-attempted-2', 10.0, 10.0, '2020-01-01',
                  'positional_easy_match', 'skipped'),
-                ('unit_test', 'already-attempted-2', 'http://example.test/already-attempted-2', 200.0, -60.0,
+                ('unit_test', 'already-attempted-2', 'http://example.test/already-attempted-2', 200.0, -60.0, '2020-01-01',
                  'shitty_positional_match', 'needs_review')
             """
         )
