@@ -97,6 +97,17 @@ def find_bsc5_proximate_candidates(conn: psycopg.Connection, centers: SkyCoord) 
                 FROM spectroscopy_holdings
                 WHERE archive_code = %(archive_code)s AND match_status IN ('skipped', 'needs_review')
                   AND raw_ra IS NOT NULL AND raw_dec IS NOT NULL
+                  -- A present-but-bogus raw_dec (not caught by the IS NOT NULL
+                  -- check above) crashes SkyCoord construction for the whole
+                  -- batch outright, same failure mode sync.matcher.match_records
+                  -- already guards against for MAST's -99.0 sentinel. Not
+                  -- isolated to one archive: observed live in koa (3314 rows),
+                  -- gtc (695, e.g. raw_dec=90.44/90.70/91.15 -- just past 90
+                  -- deg, a probable coordinate-parsing bug in that archive's
+                  -- own ingestion), mast (250), and noirlab (38) -- all out of
+                  -- scope to fix here, this filter just keeps them from
+                  -- crashing this script.
+                  AND raw_dec BETWEEN -90.0 AND 90.0
                 """,
                 {"archive_code": archive_code},
             )
