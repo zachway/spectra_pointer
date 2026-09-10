@@ -579,7 +579,14 @@ def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
         chunk = unique_names[i : i + SIMBAD_BATCH_CHUNK_SIZE]
         simbad = Simbad()
         simbad.add_votable_fields("ids", "otype")
-        result = simbad.query_objects(chunk)
+        try:
+            result = simbad.query_objects(chunk)
+        except Exception:
+            # SIMBAD outages/blips happen -- skip just this chunk instead of
+            # losing every chunk already resolved before it (a single 404
+            # or timeout mid-batch used to blow away the whole result).
+            logger.warning("SIMBAD batch resolution failed for a chunk of %d names, skipping it", len(chunk), exc_info=True)
+            continue
         if result is None:
             continue
         for row in result:
