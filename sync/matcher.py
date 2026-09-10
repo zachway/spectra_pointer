@@ -152,9 +152,13 @@ def _normalize_name(name: str) -> str:
     # add_bsc_star (ingest/add_star.py) stores those tokens verbatim into
     # name_aliases. Without stripping the prefix, an archive reporting the
     # bare name never matches the cached alias and silently falls through to
-    # position matching (e.g. IRTF Legacy's "Vega" record). See
-    # webapp/app.py's _normalize_star_name for the same fix on the manual
-    # search path.
+    # position matching (e.g. IRTF Legacy's "Vega" record). Keep this in
+    # lockstep with webapp/app.py's _normalize_star_name (manual search) and
+    # scripts/export_to_parquet.py's STAR_NAME_INDEX_NORMALIZE_SQL (builds
+    # the index that search queries) -- those two drifted from this one
+    # already, in the prefix set (PR #108 added "V*"/"Cl*" here but not
+    # there) and never had the "Gl" -> "GJ" fold below at all, so stars that
+    # cross-matched correctly at sync time were unfindable via manual search.
     name = _NAME_PREFIX_RE.sub("", name.strip())
     key = re.sub(r"\s+", "", name).upper()
     if key.startswith("GL"):

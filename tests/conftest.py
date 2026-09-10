@@ -61,8 +61,22 @@ def conn():
 # same derived-table SQL, same column shapes as production, just over a tiny
 # dataset. Session-scoped: the export itself takes real wall-clock time and
 # every route test can safely share one immutable snapshot.
-WEBAPP_TEST_STAR_1 = TEST_ID_LOW + 1
-WEBAPP_TEST_STAR_2 = TEST_ID_LOW + 2
+#
+# Own id range, disjoint from TEST_ID_LOW..TEST_ID_HIGH: this fixture's rows
+# stay alive -- with live spectroscopy_holdings referencing them -- for the
+# whole session, not just one test, since teardown only runs in the
+# `finally` below at session end. A session fixture activates lazily, on
+# first use, so if these ids sat inside TEST_ID_LOW..TEST_ID_HIGH, whichever
+# *other*, function-scoped `conn`-fixture test happens to run first afterward
+# would wipe that whole range as part of its own per-test cleanup and hit a
+# foreign key violation on a still-referenced webapp-test star. That's
+# exactly what happened once a test file that pulls in this fixture (see
+# webapp_module below) sorted alphabetically ahead of test_sync_main.py --
+# previously masked only by test_webapp_routes.py always sorting last.
+WEBAPP_TEST_ID_LOW = TEST_ID_HIGH + 1
+WEBAPP_TEST_ID_HIGH = TEST_ID_HIGH + 1000
+WEBAPP_TEST_STAR_1 = WEBAPP_TEST_ID_LOW + 1
+WEBAPP_TEST_STAR_2 = WEBAPP_TEST_ID_LOW + 2
 WEBAPP_TEST_ARCHIVE_CODE = "webapp_test"
 
 
@@ -85,9 +99,11 @@ def spectra_data_dir(tmp_path_factory):
         cur.execute(
             "DELETE FROM spectroscopy_holdings WHERE star_id IN "
             "(SELECT star_id FROM stars WHERE gaia_source_id BETWEEN %s AND %s)",
-            (TEST_ID_LOW, TEST_ID_HIGH),
+            (WEBAPP_TEST_ID_LOW, WEBAPP_TEST_ID_HIGH),
         )
-        cur.execute("DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s", (TEST_ID_LOW, TEST_ID_HIGH))
+        cur.execute(
+            "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s", (WEBAPP_TEST_ID_LOW, WEBAPP_TEST_ID_HIGH)
+        )
         cur.execute(
             "INSERT INTO stars (gaia_source_id, ra, dec, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, "
             "parallax, input_name, name_aliases) VALUES "
@@ -126,7 +142,10 @@ def spectra_data_dir(tmp_path_factory):
     finally:
         with connection.cursor() as cur:
             cur.execute("DELETE FROM spectroscopy_holdings WHERE archive_code = %s", (WEBAPP_TEST_ARCHIVE_CODE,))
-            cur.execute("DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s", (TEST_ID_LOW, TEST_ID_HIGH))
+            cur.execute(
+                "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s",
+                (WEBAPP_TEST_ID_LOW, WEBAPP_TEST_ID_HIGH),
+            )
             cur.execute("DELETE FROM archives WHERE archive_code = %s", (WEBAPP_TEST_ARCHIVE_CODE,))
         connection.commit()
         connection.close()
