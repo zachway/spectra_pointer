@@ -96,6 +96,7 @@ import logging
 from datetime import date, datetime
 
 import requests
+from scipy.stats import circmean
 
 from sync.base import RawObservation
 
@@ -143,7 +144,11 @@ def _centroid(area: dict | None) -> tuple[float, float] | None:
     points = coords[:-1] if coords[0] == coords[-1] else coords
     if not points:
         return None
-    lon = sum(p[0] for p in points) / len(points)
+    # lon (RA) wraps at 0/360 -- a footprint straddling the seam (e.g.
+    # corners at 359.9 and 0.1) averages to 180 with a plain arithmetic
+    # mean, the opposite side of the sky. lat (dec) doesn't wrap for these
+    # small footprints, so a plain mean is fine there.
+    lon = circmean([p[0] for p in points], low=0, high=360)
     lat = sum(p[1] for p in points) / len(points)
     return lon, lat
 
