@@ -1,3 +1,5 @@
+from astropy.table import Table
+
 from ingest import add_star
 from tests.conftest import TEST_ID_LOW
 
@@ -37,6 +39,39 @@ def test_launch_gaia_job_raises_after_exhausting_attempts(monkeypatch):
         assert False, "expected _launch_gaia_job to raise"
     except ValueError:
         pass
+
+
+def test_resolve_stellar_gaia_ids_batch_keeps_earlier_chunks_when_a_later_one_fails(monkeypatch):
+    """A SIMBAD hiccup (404/timeout/etc.) on one chunk of a multi-chunk batch
+    used to blow away every name resolved by chunks that already succeeded,
+    because the exception propagated out of the whole function instead of
+    just skipping the chunk that failed."""
+    monkeypatch.setattr(add_star, "SIMBAD_BATCH_CHUNK_SIZE", 1)
+
+    good_result = Table({
+        "user_specified_id": ["proxima centauri"],
+        "otype": ["PM*"],
+        "ids": ["Gaia DR3 5853498713190525696|NAME Proxima Centauri"],
+    })
+
+    query_calls = []
+
+    class FlakySimbad:
+        def add_votable_fields(self, *args, **kwargs):
+            pass
+
+        def query_objects(self, chunk):
+            query_calls.append(list(chunk))
+            if chunk == ["sirius b"]:
+                raise TimeoutError("SIMBAD read timed out")
+            return good_result
+
+    monkeypatch.setattr(add_star, "Simbad", FlakySimbad)
+
+    result = add_star.resolve_stellar_gaia_ids_batch(["proxima centauri", "sirius b"])
+
+    assert result == {"proxima centauri": 5853498713190525696}
+    assert len(query_calls) == 2
 
 
 def test_add_stars_batch_falls_back_to_offline_after_gaia_tap_exhausts_retries(conn, monkeypatch):
