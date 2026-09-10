@@ -11,12 +11,12 @@ authors:
     orcid: 0000-0003-0179-9662
     affiliation: 1
   - name: Ilija Medan
-    orcid:
+    orcid: 0000-0003-3410-5794
     affiliation: 2
 affiliations:
   - name: Department of Physics and Astronomy, Georgia State University, Atlanta, GA 30303, USA
     index: 1
-  - name: University of Toronto
+  - name: Canadian Institute for Theoretical Astrophysics, University of Toronto, Toronto, ON M5S-98H, Canada
     index: 2
 date: 11 September 2026
 bibliography: paper.bib
