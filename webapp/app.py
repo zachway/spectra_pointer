@@ -1496,19 +1496,36 @@ def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_acti
 
 # SIMBAD's own "ids" field -- what a source_catalog='bsc5' star added via
 # add_bsc_star gets its name_aliases from verbatim (see ingest.add_star) --
-# doesn't use bare common names: Arcturus shows up as "NAME Arcturus", and
-# its Bayer designation as "* alf Boo". It's also inconsistently spaced --
+# doesn't use bare common names: Arcturus shows up as "NAME Arcturus", its
+# Bayer designation as "* alf Boo", variable stars like RR Lyr as "V* RR
+# Lyr", cluster members as "Cl* ...". It's also inconsistently spaced --
 # "HR  5340", two spaces, not "HR 5340" -- unlike the Gaia-path seeding in
 # scripts/seed_bright_star_catalog.py, which does add an exact "HR <n>"
 # alias but only for stars resolved to a gaia_source_id. Observed:
 # without this normalization, searching "Arcturus" (a real production BSC5
 # star) fell through to external SIMBAD/Gaia resolution and 404'd, because
 # neither of its cached aliases match that string exactly.
-_NAME_PREFIX_RE = re.compile(r"^(NAME|\*)\s+", re.IGNORECASE)
+#
+# Must be kept equivalent to sync/matcher.py's _normalize_name (same prefix
+# set and Gl/GJ handling, on the archive-cross-match side) and to
+# scripts/export_to_parquet.py's STAR_NAME_INDEX_NORMALIZE_SQL (which builds
+# star_name_index -- what normalized_query is actually looked up against
+# below). These three drifted once already: PR #108 taught matcher.py to
+# strip "V*"/"Cl*" prefixes so variable stars and cluster members
+# cross-match archive records correctly during sync, but this function and
+# the export SQL were never updated, so those same stars stayed unfindable
+# by manual search (e.g. searching "RR Lyr" for a star whose only alias is
+# "V* RR Lyr") even after sync started matching them correctly. Same story
+# for "Gl 169.1A" vs SIMBAD's "GJ 169.1 A" -- handled in matcher.py, absent
+# here until now.
+_NAME_PREFIX_RE = re.compile(r"^(NAME|V\*|Cl\*|\*)\s+", re.IGNORECASE)
 
 
 def _normalize_star_name(s: str) -> str:
-    return re.sub(r"\s+", " ", _NAME_PREFIX_RE.sub("", s.strip())).lower()
+    name = re.sub(r"\s+", "", _NAME_PREFIX_RE.sub("", s.strip())).upper()
+    if name.startswith("GL"):
+        name = "GJ" + name[2:]
+    return name
 
 
 def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | None:

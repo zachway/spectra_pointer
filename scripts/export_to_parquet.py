@@ -231,8 +231,17 @@ SKY_SAMPLE_QUERY = f"""
 # export_to_parquet.py can't import webapp.app without triggering its
 # module-level _make_connection(), which needs SPECTRA_DATA_URL/DIR set)
 # -- otherwise a name normalized one way here and looked up another way in
-# the webapp would silently never match.
-STAR_NAME_INDEX_NORMALIZE_SQL = r"lower(regexp_replace(regexp_replace(trim({col}), '^(NAME|\*)\s+', '', 'i'), '\s+', ' ', 'g'))"
+# the webapp would silently never match. Also kept equivalent to
+# sync/matcher.py's _normalize_name (same prefix set incl. "V*"/"Cl*", and
+# the "Gl" -> "GJ" Gliese/Gliese-Jahreiss fold) -- see PR #108 and the
+# webapp.app docstring next to _normalize_star_name for the drift these two
+# functions and this SQL had before, which made some sync-matched stars
+# (e.g. "V* RR Lyr") unfindable by manual search.
+STAR_NAME_INDEX_NORMALIZE_SQL = (
+    r"regexp_replace("
+    r"upper(regexp_replace(regexp_replace(trim({col}), '^(NAME|V\*|Cl\*|\*)\s+', '', 'i'), '\s+', '', 'g')), "
+    r"'^GL', 'GJ')"
+)
 
 STAR_NAME_INDEX_QUERY = f"""
 SELECT DISTINCT
