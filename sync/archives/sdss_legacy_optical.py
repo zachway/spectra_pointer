@@ -80,6 +80,22 @@ SDSS spectro data product) is the pipeline-processed, flux/wavelength-
 calibrated 1D spectrum, never a raw CCD frame; SDSS has no public raw-frame
 distribution path at all.
 
+archive_obs_id is plate-mjd-fiberid, NOT specobjid -- live-confirmed on
+prod (duplicate rows for gaia_source_id 4280201993015929344, same
+plate/mjd/fiber under two different run2d values) that specobjid is minted
+per reduction (run2d) generation: the same physical plate-mjd-fiber
+observation gets a new specobjid every time it's reprocessed under a
+different run2d (scripts/backfill_sdss_legacy_pre_boss.py's
+RUN2D_CANDIDATES list documents multiple legitimate run2d values
+overlapping the same plate/mjd range), so the old specobjid-keyed row
+never collides
+with sync.matcher's ON CONFLICT (archive_code, archive_obs_id) upsert -- it
+just inserts a second row for the same spectrum. plate-mjd-fiberid is the
+version-independent identifier SDSS itself uses to build the file path
+(see SPECTRUM_URL, which only carries run2d as a separate directory
+component), so keying on it lets a later run2d's row upsert over an
+earlier one instead of duplicating it.
+
 archive_url previously pointed at cas_url, a SkyServer object-explorer
 *page*, not a spectrum file -- fine as a human deep link but useless for a
 viewer wanting the actual FITS. allspec also carries plate/fiberid columns
@@ -212,7 +228,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     while True:
         window_end = min(window_start + WINDOW_DAYS, LEGACY_MJD_CUTOFF)
         con.execute(
-            "SELECT mjd, specobjid, run2d, plate, fiberid, ra, dec FROM legacy WHERE mjd >= ? AND mjd < ?",
+            "SELECT mjd, run2d, plate, fiberid, ra, dec FROM legacy WHERE mjd >= ? AND mjd < ?",
             [window_start, window_end],
         )
         rows = con.fetchall()
@@ -223,7 +239,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
 
     records = [
         RawObservation(
-            archive_obs_id=specobjid,
+            archive_obs_id=f"{plate}-{mjd}-{fiberid}",
             archive_url=SPECTRUM_URL.format(run2d=run2d, plate=plate, mjd=int(mjd), fiberid=fiberid),
             instrument="SDSS/BOSS",
             obs_date=Time(int(mjd), format="mjd").to_datetime().date(),
@@ -232,7 +248,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             dec=clean_float(dec),
             reduction_status="reduced",
         )
-        for mjd, specobjid, run2d, plate, fiberid, ra, dec in rows
+        for mjd, run2d, plate, fiberid, ra, dec in rows
     ]
 
     if window_end >= LEGACY_MJD_CUTOFF:

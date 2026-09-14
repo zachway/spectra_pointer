@@ -43,6 +43,18 @@ reduction_status is hardcoded 'reduced' -- spAll-lite is the pipeline-
 reduced, flux/wavelength-calibrated per-visit spectrum (the whole point of
 the "reduction version" v6_2_1 tag above), never a raw CCD frame; SDSS has
 no public raw-frame distribution path at all.
+
+archive_obs_id is field-mjd-catalogid, NOT specobjid -- live-confirmed
+(prod duplicates for gaia_source_id 4280201993015929344) that SPECOBJID is
+minted per reduction (run2d) generation, so the same physical field-mjd
+visit gets a brand-new specobjid every time DR20 bumps its hardcoded
+reduction version above (v6_1_3 -> v6_2_1 already happened once), and the
+old specobjid-keyed row never collides with sync.matcher's
+ON CONFLICT (archive_code, archive_obs_id) upsert -- it just inserts a
+second row for the same spectrum. CATALOGID is the field's stable
+per-target design identifier (confirmed it's the same value already baked
+into SPEC_FILE's filename, independent of run2d), so field-mjd-catalogid
+survives a reduction bump and lets the upsert do its job.
 """
 
 import os
@@ -101,9 +113,10 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         field = int(row["FIELD"])
         field_group = f"{field:06d}"[:3]
         spec_file = row["SPEC_FILE"].strip()
+        catalogid = int(row["CATALOGID"])
         records.append(
             RawObservation(
-                archive_obs_id=row["SPECOBJID"].strip(),
+                archive_obs_id=f"{field}-{mjd}-{catalogid}",
                 archive_url=SPECTRUM_URL.format(field_group=field_group, field=field, mjd=mjd, spec_file=spec_file),
                 instrument="SDSS-V/BOSS",
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
