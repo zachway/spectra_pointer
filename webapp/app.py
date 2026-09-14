@@ -85,6 +85,30 @@ app = Flask(__name__)
 # Cloud Run deployment.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+# ProxyFix (above) only fixes up SCRIPT_NAME/url_for() -- but every nav
+# link, form action, and JS fetch() in this app's hand-written HTML is a
+# hardcoded absolute path (e.g. `href="/instruments"`), not url_for(), so
+# none of them pick up the subpath automatically. Rewrite them here
+# instead of touching every template. No-op when not mounted under a
+# prefix (e.g. Cloud Run), since request.script_root is only ever set by
+# ProxyFix's X-Forwarded-Prefix handling.
+_ABS_PATH_ATTR_RE = re.compile(rb'(href|src|action)=(["\'])/(?!/)')
+_ABS_PATH_FETCH_RE = re.compile(rb'fetch\((["\'])/(?!/)')
+
+
+@app.after_request
+def _rewrite_links_for_subpath_mount(response):
+    prefix = request.script_root
+    if not prefix or not response.content_type or "text/html" not in response.content_type:
+        return response
+    prefix_bytes = prefix.encode()
+    body = response.get_data()
+    body = _ABS_PATH_ATTR_RE.sub(lambda m: m.group(1) + b"=" + m.group(2) + prefix_bytes + b"/", body)
+    body = _ABS_PATH_FETCH_RE.sub(lambda m: b"fetch(" + m.group(1) + prefix_bytes + b"/", body)
+    response.set_data(body)
+    return response
+
+
 # Set on the old renamed-away service (e.g. the original spectra-database
 # Cloud Run URL) so every request there shows a moved notice with a link to
 # the current site, instead of just going dark or silently redirecting --
