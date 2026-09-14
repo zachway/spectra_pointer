@@ -656,6 +656,20 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
                         # A live-Gaia-only hit -- register it the same way
                         # ingest.add_star.discover_stars does, so future syncs
                         # (and future runs of this fallback) see it as tracked too.
+                        # This call's own live-TAP astrometry fetch can silently
+                        # fall back to gaia_source_lite_mirror (see add_stars_batch's
+                        # gaia_degraded path in ingest/add_star.py) if Gaia's TAP+
+                        # service is down/timing out at the moment this cell runs --
+                        # the mirror only carries source_id/ra/dec/pmra/pmdec/
+                        # phot_g_mean_mag, so a star added that way lands with
+                        # parallax/phot_bp_mean_mag/phot_rp_mean_mag/has_gaia_rvs/
+                        # has_xp_continuous left NULL/False until
+                        # scripts.backfill_gaia_astrometry (run weekly via
+                        # scripts/weekly_sync_export.sh) picks it up and fills them
+                        # in from a live Gaia query. Not tracked/surfaced here --
+                        # AddStarsResult.gaia_degraded is discarded at this call
+                        # site -- since the weekly backfill already covers it
+                        # regardless of which code path left a star incomplete.
                         add_stars_batch(conn, [winner.gaia_source_id])
                         with conn.cursor() as lookup_cur:
                             lookup_cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (winner.gaia_source_id,))
