@@ -57,6 +57,7 @@ import skyplothelper.plotly as sph_plotly
 from astropy.coordinates import SkyCoord
 from flask import Flask, Response, abort, redirect, render_template_string, request, stream_with_context
 from pyvo.dal.exceptions import DALServiceError
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ingest.add_star import (
     _launch_gaia_job,
@@ -76,6 +77,13 @@ from webapp.spectrum_viewer import (
 )
 
 app = Flask(__name__)
+# Lets the app run correctly behind a reverse proxy that mounts it under a
+# subpath (e.g. joy's Apache serving it at /~way/spectra_pointer/) -- reads
+# X-Forwarded-Prefix/-Proto/-Host/-For so url_for() and redirects produce
+# paths under that prefix instead of root-relative ones. A no-op when those
+# headers aren't sent, so it doesn't change anything for the direct-to-origin
+# Cloud Run deployment.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # Set on the old renamed-away service (e.g. the original spectra-database
 # Cloud Run URL) so every request there shows a moved notice with a link to
