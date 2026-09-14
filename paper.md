@@ -73,7 +73,7 @@ A search in The Spectra Pointer can be done in several ways. A query by the name
 
 # Research Impact Statement
 
-This work will provide stellar astronomers with a tool that is both broad and deep, tracking 16.8 million stars and 49.4 million spectra. An astronomer studying a particular star can now immediately determine whether archival spectra already exist for their source. This breadth of coverage is relevant for time-domain astronomy, where a source can be characterized without follow-up, as well as for inter-archival comparison and validation.
+This work provides stellar astronomers with a tool that is both broad and deep, tracking 16.8 million stars and 49.4 million spectra. An astronomer studying a particular star can now immediately determine whether archival spectra already exist for their source. This breadth of coverage is relevant for time-domain astronomy, where a source can be characterized without follow-up, as well as for inter-archival comparison and validation.
 
 The depth of the data is staggering. At the time of writing, Vega is the most observed star, with more than 35,000 spectra taken since 1978. AU Microscopii has the most wavelength coverage, with overlapping data taken from the x-ray all the way to the far infrared. The Spectra Pointer allows a user to, at a glance, see all the available spectra for a particular source and enrich the research on these sources.
 
