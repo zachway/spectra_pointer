@@ -656,21 +656,25 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
                         # A live-Gaia-only hit -- register it the same way
                         # ingest.add_star.discover_stars does, so future syncs
                         # (and future runs of this fallback) see it as tracked too.
-                        # This call's own live-TAP astrometry fetch can silently
-                        # fall back to gaia_source_lite_mirror (see add_stars_batch's
-                        # gaia_degraded path in ingest/add_star.py) if Gaia's TAP+
-                        # service is down/timing out at the moment this cell runs --
-                        # the mirror only carries source_id/ra/dec/pmra/pmdec/
-                        # phot_g_mean_mag, so a star added that way lands with
+                        # offline=True deliberately: this run already fetched the
+                        # cell's Gaia pool from the local gaia_source_lite_mirror
+                        # (see _gaia_healpix_pool), so paying for a live TAP+ round
+                        # trip here just to register one star is a needless
+                        # per-record network dependency in the middle of an
+                        # otherwise-local matching loop -- observed live (2026-09-15)
+                        # repeatedly stalling a --skipped-only resume for minutes at
+                        # a time on TAP+ retries/backoff, one star at a time. The
+                        # mirror only carries source_id/ra/dec/pmra/pmdec/
+                        # phot_g_mean_mag, so a star added this way lands with
                         # parallax/phot_bp_mean_mag/phot_rp_mean_mag/has_gaia_rvs/
-                        # has_xp_continuous left NULL/False until
-                        # scripts.backfill_gaia_astrometry (run weekly via
-                        # scripts/weekly_sync_export.sh) picks it up and fills them
-                        # in from a live Gaia query. Not tracked/surfaced here --
-                        # AddStarsResult.gaia_degraded is discarded at this call
-                        # site -- since the weekly backfill already covers it
-                        # regardless of which code path left a star incomplete.
-                        add_stars_batch(conn, [winner.gaia_source_id])
+                        # has_xp_continuous left NULL/False -- same gap as the old
+                        # gaia_degraded fallback used to leave, just unconditional
+                        # now instead of only-on-TAP-failure. scripts.
+                        # backfill_gaia_astrometry (run weekly via scripts/
+                        # weekly_sync_export.sh) fills those in afterward from a
+                        # live Gaia query, batched across every pending star at
+                        # once rather than one-by-one here.
+                        add_stars_batch(conn, [winner.gaia_source_id], offline=True)
                         with conn.cursor() as lookup_cur:
                             lookup_cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (winner.gaia_source_id,))
                             star_id = lookup_cur.fetchone()[0]

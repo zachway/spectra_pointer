@@ -148,23 +148,21 @@ def test_healpix_cell_is_stable_for_nearby_points():
 # in this file uses -- see test_nearby_records_share_one_healpix_pool_query
 # etc.), regardless of whether that boundary's own implementation queries
 # the local gaia_source_lite_mirror or (historically) live Gaia TAP.
-# add_stars_batch's own separate astrometry lookup is still a live Gaia
-# call (see sync/positional_fallback.py's docstring on why that path is
-# out of scope for the local-mirror migration) and is mocked the same way
-# test_add_star.py does, via monkeypatch.setattr(...Gaia, "launch_job", ...).
+# add_stars_batch's own astrometry lookup is now offline=True (see
+# sync/positional_fallback.py's _process_cell) -- reads gaia_source_lite_
+# mirror directly rather than a live Gaia call, so these tests seed that
+# table instead of mocking Gaia.launch_job the way test_add_star.py does
+# for add_stars_batch's own (still online-by-default) unit tests.
 
 NEW_TEST_GAIA_ID = 900000000000500001
 
 
-class _FakeAstrometryJob:
-    def get_results(self):
-        return Table({
-            "source_id": [NEW_TEST_GAIA_ID],
-            "ra": [50.001], "dec": [20.001], "ref_epoch": [2016.0],
-            "pmra": [0.0], "pmdec": [0.0], "parallax": [10.0],
-            "phot_g_mean_mag": [10.0], "phot_bp_mean_mag": [10.5], "phot_rp_mean_mag": [9.5],
-            "has_rvs": [False], "has_xp_continuous": [False],
-        })
+def _insert_mirror_star(cur, source_id, ra, dec, pmra=0.0, pmdec=0.0, mag=10.0):
+    cur.execute(
+        "INSERT INTO gaia_source_lite_mirror (source_id, ra, dec, pmra, pmdec, phot_g_mean_mag) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (source_id, ra, dec, pmra, pmdec, mag),
+    )
 
 
 def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeypatch):
@@ -175,14 +173,21 @@ def test_run_shitty_positional_match_discovers_untracked_gaia_star(conn, monkeyp
         return [(NEW_TEST_GAIA_ID, 50.0, 20.0 + 5.0 / 3600.0, 0.0, 0.0, 10.0)]
 
     monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
-    from ingest import add_star as add_star_module
-    monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
+
+    with conn.cursor() as cur:
+        _insert_mirror_star(cur, NEW_TEST_GAIA_ID, 50.001, 20.001)
+    conn.commit()
 
     rec = RawObservation(
         archive_obs_id="shitty-2", archive_url="http://example.test/shitty-2",
         ra=50.0, dec=20.0, obs_date=date(2020, 1, 1),
     )
-    counts = run_shitty_positional_match(conn, {"unit_test": [rec]})
+    try:
+        counts = run_shitty_positional_match(conn, {"unit_test": [rec]})
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM gaia_source_lite_mirror WHERE source_id = %s", (NEW_TEST_GAIA_ID,))
+        conn.commit()
     assert counts["shitty_matched"] == 1
 
     with conn.cursor() as cur:
@@ -412,22 +417,12 @@ def test_epoch_chunk_boundary_preserves_per_record_proper_motion(conn, monkeypat
     monkeypatch.setattr(positional_fallback, "_gaia_healpix_pool", fake_pool)
 
     # This is a live-Gaia-only (not yet tracked) match, so _process_cell also
-    # calls ingest.add_star.add_stars_batch to register the star -- that does
-    # its own separate (real, un-mocked by default) Gaia astrometry lookup,
-    # same as test_run_shitty_positional_match_discovers_untracked_gaia_star
-    # above.
-    class _FakeAstrometryJob:
-        def get_results(self):
-            return Table({
-                "source_id": [source_id],
-                "ra": [ref_ra], "dec": [ref_dec], "ref_epoch": [2016.0],
-                "pmra": [pmra], "pmdec": [pmdec], "parallax": [10.0],
-                "phot_g_mean_mag": [12.0], "phot_bp_mean_mag": [12.5], "phot_rp_mean_mag": [11.5],
-                "has_rvs": [False], "has_xp_continuous": [False],
-            })
-
-    from ingest import add_star as add_star_module
-    monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
+    # calls ingest.add_star.add_stars_batch to register the star -- offline=
+    # True there now (see sync/positional_fallback.py), so this seeds
+    # gaia_source_lite_mirror instead of mocking a live Gaia call.
+    with conn.cursor() as cur:
+        _insert_mirror_star(cur, source_id, ref_ra, ref_dec, pmra, pmdec, 12.0)
+    conn.commit()
 
     def propagate_to(obs_date_) -> tuple[float, float]:
         jyear = matcher._to_jyear(obs_date_)
@@ -454,7 +449,12 @@ def test_epoch_chunk_boundary_preserves_per_record_proper_motion(conn, monkeypat
         ra=ra_b, dec=dec_b, obs_date=date_b,
     )
 
-    counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    try:
+        counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM gaia_source_lite_mirror WHERE source_id = %s", (source_id,))
+        conn.commit()
     assert counts["shitty_matched"] == 2
 
     with conn.cursor() as cur:
@@ -499,23 +499,12 @@ def test_nearby_observation_dates_collapse_into_one_epoch_bucket(conn, monkeypat
     )
 
     # This is a live-Gaia-only (not yet tracked) match, so _process_cell also
-    # calls ingest.add_star.add_stars_batch to register the star -- that does
-    # its own separate (real, un-mocked by default) Gaia astrometry lookup,
-    # same as test_epoch_chunk_boundary_preserves_per_record_proper_motion
-    # above.
-    class _FakeAstrometryJob:
-        def get_results(self):
-            return Table({
-                "source_id": [source_id],
-                "ra": [10.0], "dec": [10.0], "ref_epoch": [2016.0],
-                "pmra": [0.0], "pmdec": [0.0], "parallax": [10.0],
-                "phot_g_mean_mag": [12.0], "phot_bp_mean_mag": [12.5], "phot_rp_mean_mag": [11.5],
-                "has_rvs": [False], "has_xp_continuous": [False],
-            })
-
-    from ingest import add_star as add_star_module
-
-    monkeypatch.setattr(add_star_module.Gaia, "launch_job", lambda query: _FakeAstrometryJob())
+    # calls ingest.add_star.add_stars_batch to register the star -- offline=
+    # True there now (see sync/positional_fallback.py), so this seeds
+    # gaia_source_lite_mirror instead of mocking a live Gaia call.
+    with conn.cursor() as cur:
+        _insert_mirror_star(cur, source_id, 10.0, 10.0, mag=12.0)
+    conn.commit()
 
     from sync import matcher as matcher_module
 
@@ -540,7 +529,12 @@ def test_nearby_observation_dates_collapse_into_one_epoch_bucket(conn, monkeypat
         ra=10.0, dec=10.0, obs_date=date(2020, 6, 4),
     )
 
-    counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    try:
+        counts = run_shitty_positional_match(conn, {"unit_test": [rec_a, rec_b]})
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM gaia_source_lite_mirror WHERE source_id = %s", (source_id,))
+        conn.commit()
     assert counts["shitty_matched"] == 2
 
     # No tracked stars are pre-inserted for this fresh source_id, so every
