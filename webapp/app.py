@@ -133,7 +133,6 @@ def _rewrite_links_for_subpath_mount(response):
 # the current site, instead of just going dark or silently redirecting --
 # keeps old bookmarks/links understandable during the decommission window.
 _REDIRECT_BASE_URL = os.environ.get("REDIRECT_BASE_URL", "").rstrip("/")
-_MOVED_NOTICE_DEADLINE = "September 5, 2026"
 
 if _REDIRECT_BASE_URL:
     @app.before_request
@@ -141,6 +140,15 @@ if _REDIRECT_BASE_URL:
         target = _REDIRECT_BASE_URL + request.path
         if request.query_string:
             target += "?" + request.query_string.decode()
+        # request.host_url, not _REDIRECT_BASE_URL, in the "will be taken
+        # offline" line below -- _REDIRECT_BASE_URL is the destination
+        # you're being sent to, not this page. Got that backwards the first
+        # time this was written (for the spectra-database -> spectra-pointer
+        # Cloud Run rename) and it went unnoticed since nobody reads a
+        # moved-notice page closely; caught this time around because it
+        # actually confused someone testing the new spectra-pointer -> joy
+        # redirect.
+        this_address = request.host_url.rstrip("/")
         return f"""
 <!doctype html>
 <html>
@@ -151,11 +159,10 @@ if _REDIRECT_BASE_URL:
 </head>
 <body>
   <h1>This site has moved</h1>
-  <p>Spectra Database has been renamed <b>The Spectra Pointer</b>
-    and now lives at a new address:</p>
+  <p><b>The Spectra Pointer</b> now lives at a new address:</p>
   <p><a href="{target}">{target}</a></p>
-  <p class="note">This address ({_REDIRECT_BASE_URL}) will be taken offline
-    around {_MOVED_NOTICE_DEADLINE} -- please update any bookmarks or links.</p>
+  <p class="note">This address ({this_address}) will be taken offline in the
+    coming months -- please update any bookmarks or links.</p>
 </body>
 </html>
 """
