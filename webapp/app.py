@@ -133,6 +133,7 @@ def _rewrite_links_for_subpath_mount(response):
 # the current site, instead of just going dark or silently redirecting --
 # keeps old bookmarks/links understandable during the decommission window.
 _REDIRECT_BASE_URL = os.environ.get("REDIRECT_BASE_URL", "").rstrip("/")
+_MOVED_NOTICE_DEADLINE = "October 15th, 2026"
 
 if _REDIRECT_BASE_URL:
     @app.before_request
@@ -161,8 +162,8 @@ if _REDIRECT_BASE_URL:
   <h1>This site has moved</h1>
   <p><b>The Spectra Pointer</b> now lives at a new address:</p>
   <p><a href="{target}">{target}</a></p>
-  <p class="note">This address ({this_address}) will be taken offline in the
-    coming months -- please update any bookmarks or links.</p>
+  <p class="note">This address ({this_address}) will be taken offline
+    {_MOVED_NOTICE_DEADLINE} -- please update any bookmarks or links.</p>
 </body>
 </html>
 """
