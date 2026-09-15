@@ -4551,7 +4551,40 @@ _joy_ssh_lock = threading.Lock()
 _joy_ssh_client_cache: paramiko.SSHClient | None = None
 
 
+def _append_triage_submission_local(payload: dict, data_dir: str) -> None:
+    """When this process already has direct filesystem access to the data
+    directory (SPECTRA_DATA_DIR -- e.g. running on joy itself), append
+    straight to the file instead of paying for an SSH round trip to itself.
+    Lazy-imports joy_triage_append (not copied into the Cloud Run image,
+    see Dockerfile -- this path never runs there, only under SPECTRA_DATA_DIR)
+    to reuse its validation so both write paths enforce identically-shaped
+    submissions, and its own flock-guarded append so this is safe against
+    scripts.export_to_parquet or another worker reading/writing concurrently.
+    """
+    import fcntl
+
+    from scripts.joy_triage_append import validate
+
+    error = validate(payload)
+    if error:
+        raise RuntimeError(f"invalid submission: {error}")
+    target_path = os.path.join(data_dir, TRIAGE_SUBMISSIONS_FILENAME)
+    line = json.dumps(payload, separators=(",", ":")) + "\n"
+    with open(target_path, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.write(line)
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def _append_triage_submission(payload: dict) -> None:
+    source = _resolve_data_source()
+    if not (source.startswith("http://") or source.startswith("https://")):
+        _append_triage_submission_local(payload, source)
+        return
+
     global _joy_ssh_client_cache
     data = json.dumps(payload, separators=(",", ":")) + "\n"
 
