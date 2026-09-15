@@ -92,11 +92,15 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # instead of touching every template. No-op when not mounted under a
 # prefix (e.g. Cloud Run), since request.script_root is only ever set by
 # ProxyFix's X-Forwarded-Prefix handling.
-_ABS_PATH_ATTR_RE = re.compile(rb'(href|src|action)=(["\'])/(?!/)')
-_ABS_PATH_FETCH_RE = re.compile(rb'fetch\((["\'])/(?!/)')
-# Several plot click-handlers navigate via plain JS assignment rather than
-# an href/fetch -- same hardcoded-absolute-path problem, different syntax.
-_ABS_PATH_LOCATION_RE = re.compile(rb'(window\.location(?:\.href)?\s*=\s*)(["\'])/(?!/)')
+# Every hardcoded-absolute-path spot found so far (href=/src=/action=
+# attributes, fetch('/...'), window.location(.href) = '/...', a plain
+# element.href = '/...', a JS helper's `return '/...'`) reduces to the same
+# shape once you strip whitespace: a leading-slash string literal right
+# after an `=`, a `(`, or a `return` keyword. One general pattern instead
+# of a growing pile of syntax-specific ones -- and a single combined sub()
+# pass (not several run back to back) so an already-rewritten
+# `href="{prefix}/..."` can't get matched a second time and prefixed twice.
+_ABS_PATH_RE = re.compile(rb'(=|\(|\breturn)\s*(["\'])/(?!/)')
 
 
 @app.after_request
@@ -106,9 +110,7 @@ def _rewrite_links_for_subpath_mount(response):
         return response
     prefix_bytes = prefix.encode()
     body = response.get_data()
-    body = _ABS_PATH_ATTR_RE.sub(lambda m: m.group(1) + b"=" + m.group(2) + prefix_bytes + b"/", body)
-    body = _ABS_PATH_LOCATION_RE.sub(lambda m: m.group(1) + m.group(2) + prefix_bytes + b"/", body)
-    body = _ABS_PATH_FETCH_RE.sub(lambda m: b"fetch(" + m.group(1) + prefix_bytes + b"/", body)
+    body = _ABS_PATH_RE.sub(lambda m: m.group(1) + m.group(2) + prefix_bytes + b"/", body)
     response.set_data(body)
     return response
 
