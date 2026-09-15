@@ -106,12 +106,25 @@ _ABS_PATH_RE = re.compile(rb'(=|\(|\breturn)\s*(["\'])/(?!/)')
 @app.after_request
 def _rewrite_links_for_subpath_mount(response):
     prefix = request.script_root
-    if not prefix or not response.content_type or "text/html" not in response.content_type:
+    if not prefix:
         return response
-    prefix_bytes = prefix.encode()
-    body = response.get_data()
-    body = _ABS_PATH_RE.sub(lambda m: m.group(1) + m.group(2) + prefix_bytes + b"/", body)
-    response.set_data(body)
+
+    # redirect()'s Location header is root-relative too (no _external=True
+    # anywhere in this app), and it's a header, not body text -- the body
+    # rewrite below can never touch it. A relative Location resolves against
+    # the origin root per HTTP semantics, so /triage/submit's redirect back
+    # to /triage was landing on the proxy's origin root and 404ing there,
+    # even though the POST itself succeeded (confirmed via gunicorn's access
+    # log showing a normal 302 for that request).
+    location = response.headers.get("Location")
+    if location and location.startswith("/") and not location.startswith("//"):
+        response.headers["Location"] = prefix + location
+
+    if response.content_type and "text/html" in response.content_type:
+        prefix_bytes = prefix.encode()
+        body = response.get_data()
+        body = _ABS_PATH_RE.sub(lambda m: m.group(1) + m.group(2) + prefix_bytes + b"/", body)
+        response.set_data(body)
     return response
 
 
