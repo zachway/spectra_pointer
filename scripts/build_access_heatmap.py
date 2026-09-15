@@ -1,6 +1,17 @@
-"""One-off/periodic: turn Cloud Run's own request logs into a country-level
-visitor-count snapshot for the "Who's using The Spectra Pointer?" map on
-/info.
+"""One-off/periodic: turn a request log into a country-level visitor-count
+snapshot for the "Who's using The Spectra Pointer?" map on /info.
+
+Two sources, picked with --source:
+  gcloud (default) -- Cloud Run's own request logs, via `gcloud logging read`.
+  local-log -- a local access log file, e.g. gunicorn's own access.log when
+    the app is reverse-proxied by Apache (as on joy.chara.gsu.edu) instead
+    of run behind Cloud Run. Apache's mod_proxy sets X-Forwarded-For on
+    every proxied request automatically, and gunicorn trusts it from a
+    127.0.0.1 peer by default (its default forwarded_allow_ips) -- so
+    gunicorn's own %(h)s access-log field is already the real client IP,
+    not the proxy's loopback address; confirmed against joy's live log.
+    Expects gunicorn's default access-log format (effectively Apache
+    combined): '%(h)s %(l)s %(u)s [%(t)s] "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"'.
 
 Privacy note (read before changing this file): the only per-request datum
 this script ever touches is the client IP address, and only transiently --
@@ -35,17 +46,31 @@ being capped by it. First run has no watermark, so it pulls
 retention window -- there's nothing older to pull anyway).
 
 Like scripts.export_to_parquet, this has no automatic trigger -- run it by
-hand or your own cron. Needs `gcloud` authenticated against the project
-running the Cloud Run service (whatever the operator already uses for
-`gcloud run deploy`), which is a separate credential from DATABASE_URL and
-not necessarily available on morgan -- so unlike export_to_parquet.py this
-will often run from a different machine, with its output copied into the
-same out_dir export_to_parquet.py writes to (morgan's
-~/public_html/spectra_data, see that script's docstring) so webapp.app's
-access_heatmap view picks it up from the same published snapshot directory.
+hand or your own cron (or an `at`-chain, on a host like joy where crontab
+isn't available to this account). --source=gcloud needs `gcloud`
+authenticated against the project running the Cloud Run service (whatever
+the operator already uses for `gcloud run deploy`), which is a separate
+credential from DATABASE_URL and not necessarily available on morgan -- so
+unlike export_to_parquet.py this will often run from a different machine,
+with its output copied into the same out_dir export_to_parquet.py writes to
+(morgan's ~/public_html/spectra_data, see that script's docstring) so
+webapp.app's access_heatmap view picks it up from the same published
+snapshot directory. --source=local-log has no such credential and can just
+be run wherever the log file already is (e.g. directly on joy, writing
+straight into the shared out_dir -- no copying needed there since it's the
+same NFS mount webapp.app already reads from).
+
+Both sources write the identical access_heatmap.json shape and share one
+running total: pointing --source at a different log than a previous run
+used still just adds newly-seen requests on top of the existing per-country
+counts (matched on country_code), so switching from Cloud Run to joy
+hosting doesn't reset or fork the visitor count -- it's intentionally the
+same file regardless of which deployment produced which slice of it.
 
 Usage:
     python3 -m scripts.build_access_heatmap --out-dir ~/public_html/spectra_data
+    python3 -m scripts.build_access_heatmap --out-dir ~/public_html/spectra_data \\
+        --source local-log --log-file ~/spectra_pointer_webapp/access.log
 """
 
 from __future__ import annotations
@@ -54,9 +79,10 @@ import argparse
 import json
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
-from typing import Iterator
+from typing import Iterable, Iterator
 
 from geoip2fast import GeoIP2Fast
 
@@ -72,16 +98,17 @@ logger = logging.getLogger(__name__)
 LOG_READ_LIMIT = 100_000
 
 
-def _parse_gcloud_timestamp(ts: str) -> datetime:
+def _parse_rfc3339(ts: str) -> datetime:
     """Cloud Logging's own RFC3339 timestamps -- observed to sometimes
     carry fractional seconds (e.g. "2026-08-11T15:39:43.106410Z") and
     sometimes not, undocumented either way, which crashed the fixed
     %Y-%m-%dT%H:%M:%SZ strptime this used before. Truncating to whole-second
     precision is fine here: the watermark only needs to exclude
-    already-processed rows on the next run (the filter in
-    _run_gcloud_logging_read is a strict '>', not '>='), so being off by
-    under a second risks re-processing one request, never silently
-    dropping one."""
+    already-processed rows on the next run, so being off by under a second
+    risks re-processing one request, never silently dropping one. Also used
+    to parse the watermark this script itself wrote (both sources normalize
+    to this same format -- see _iter_gcloud_entries/_iter_local_log_entries),
+    not just gcloud's raw output, despite the name."""
     ts = ts.strip()
     if "." in ts:
         ts = ts.split(".", 1)[0] + "Z"
@@ -112,41 +139,75 @@ def _run_gcloud_logging_read(service_name: str, project: str | None, since: date
     return result.stdout
 
 
-def _iter_country_codes(log_lines: str, geoip: GeoIP2Fast) -> Iterator[tuple[str, str]]:
-    """Yields (country_code, country_name) pairs, one per real (non-private)
-    client IP -- the IP itself never leaves this generator. Skips rows geoip2fast
-    can't resolve to a real public address (private/reserved ranges -- health
-    checks and Google-internal probes commonly show up here -- and any row
-    gcloud didn't return an IP for at all)."""
+def _iter_gcloud_entries(log_lines: str) -> Iterator[tuple[str, str]]:
+    """Yields (timestamp, ip) pairs from gcloud's tab-separated --format=value
+    output, timestamp normalized to the same %Y-%m-%dT%H:%M:%SZ form
+    _iter_local_log_entries produces -- so build() can treat both sources
+    identically from here on."""
     for line in log_lines.splitlines():
         if not line.strip():
             continue
-        _timestamp, _, ip = line.partition("\t")
+        ts, _, ip = line.partition("\t")
         ip = ip.strip()
         if not ip:
             continue
+        yield _parse_rfc3339(ts).strftime("%Y-%m-%dT%H:%M:%SZ"), ip
+
+
+# gunicorn's default access-log format (effectively Apache's "combined" log,
+# minus referer/user-agent which this doesn't need): %(h)s %(l)s %(u)s
+# [%(t)s] "%(r)s" %(s)s %(b)s ... -- only %(h)s (client IP) and %(t)s
+# (request time) matter here, so this stops matching right after the
+# request line rather than trying to fully parse everything past it.
+_GUNICORN_LOG_LINE_RE = re.compile(r'^(?P<ip>\S+) \S+ \S+ \[(?P<ts>[^\]]+)\] "')
+
+
+def _parse_gunicorn_timestamp(ts: str) -> datetime:
+    """gunicorn's %(t)s, e.g. "14/Sep/2026:20:47:06 -0400"."""
+    return datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z")
+
+
+def _iter_local_log_entries(log_path: str, since: datetime) -> Iterator[tuple[str, str]]:
+    """Yields (timestamp, ip) pairs from a local access log already on disk
+    (gunicorn's access.log -- see this module's docstring for why %(h)s is
+    already the real client IP, not the reverse proxy's). Filters to entries
+    after `since` here in Python since there's no server-side query to push
+    that down to, unlike gcloud logging read's own timestamp filter."""
+    with open(log_path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m = _GUNICORN_LOG_LINE_RE.match(line)
+            if not m:
+                continue
+            try:
+                dt = _parse_gunicorn_timestamp(m.group("ts"))
+            except ValueError:
+                continue
+            if dt <= since:
+                continue
+            yield dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), m.group("ip")
+
+
+def _iter_country_codes(entries: Iterable[tuple[str, str]], geoip: GeoIP2Fast) -> Iterator[tuple[str, str]]:
+    """Yields (country_code, country_name) pairs, one per real (non-private)
+    client IP -- the IP itself never leaves this generator. Skips entries
+    geoip2fast can't resolve to a real public address (private/reserved
+    ranges -- health checks and Google-internal probes commonly show up
+    here for the gcloud source; localhost/LAN probes for the local-log one)."""
+    for _timestamp, ip in entries:
         result = geoip.lookup(ip)
         if result.is_private or not result.country_code:
             continue
         yield result.country_code, result.country_name
 
 
-def _latest_timestamp(log_lines: str) -> str | None:
-    latest = None
-    for line in log_lines.splitlines():
-        ts, _, _ = line.partition("\t")
-        ts = ts.strip()
-        if ts:
-            latest = ts  # --order=asc, so the last non-empty line is newest
-    if latest is None:
-        return None
-    # Normalized to the canonical no-fractional-seconds form here (rather
-    # than persisting whatever raw precision gcloud happened to return) so
-    # every access_heatmap.json this ever writes has one consistent
-    # watermark format, and _parse_gcloud_timestamp's fractional-seconds
-    # handling only has to cover reading old already-written files, not new
-    # ones too.
-    return _parse_gcloud_timestamp(latest).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _latest_timestamp(entries: Iterable[tuple[str, str]]) -> str | None:
+    """Both sources already yield entries with a normalized, fixed-width
+    %Y-%m-%dT%H:%M:%SZ timestamp, so a plain string max() sorts correctly
+    without re-parsing -- and doesn't assume either source hands entries
+    back in chronological order (gcloud's --order=asc does; a plain file
+    read naturally does too, but nothing enforces that)."""
+    timestamps = [ts for ts, _ip in entries]
+    return max(timestamps) if timestamps else None
 
 
 def _load_previous(out_dir: str) -> dict:
@@ -169,27 +230,38 @@ def _write_atomic(out_dir: str, payload: dict) -> None:
     logger.info("wrote %s (%d countries, %d total requests)", path, len(payload["countries"]), payload["total_requests"])
 
 
-def build(out_dir: str, service_name: str, project: str | None, initial_window_days: int) -> None:
+def build(
+    out_dir: str,
+    source: str,
+    service_name: str,
+    project: str | None,
+    log_file: str | None,
+    initial_window_days: int,
+) -> None:
     previous = _load_previous(out_dir)
     if previous["watermark"]:
-        since = _parse_gcloud_timestamp(previous["watermark"])
+        since = _parse_rfc3339(previous["watermark"])
     else:
         since = datetime.now(timezone.utc) - timedelta(days=initial_window_days)
 
-    log_lines = _run_gcloud_logging_read(service_name, project, since)
-    if not log_lines.strip():
+    if source == "gcloud":
+        log_lines = _run_gcloud_logging_read(service_name, project, since)
+        entries = list(_iter_gcloud_entries(log_lines))
+    else:
+        entries = list(_iter_local_log_entries(log_file, since))
+    if not entries:
         logger.info("no new request log entries since %s", since.isoformat())
         return
 
     geoip = GeoIP2Fast()
     counts = previous["countries"]  # {country_code: {"country": ..., "country_code": ..., "count": ...}}
     n_new = 0
-    for country_code, country_name in _iter_country_codes(log_lines, geoip):
+    for country_code, country_name in _iter_country_codes(entries, geoip):
         entry = counts.setdefault(country_code, {"country": country_name, "country_code": country_code, "count": 0})
         entry["count"] += 1
         n_new += 1
 
-    watermark = _latest_timestamp(log_lines) or previous["watermark"]
+    watermark = _latest_timestamp(entries) or previous["watermark"]
     payload = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "watermark": watermark,
@@ -203,16 +275,21 @@ def build(out_dir: str, service_name: str, project: str | None, initial_window_d
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", required=True, help="directory Apache serves, e.g. ~/public_html/spectra_data")
-    parser.add_argument("--service-name", default="spectra-pointer", help="Cloud Run service name")
-    parser.add_argument("--project", default=None, help="GCP project id (defaults to gcloud's configured project)")
+    parser.add_argument("--source", choices=["gcloud", "local-log"], default="gcloud", help="where to read request logs from")
+    parser.add_argument("--service-name", default="spectra-pointer", help="Cloud Run service name (--source=gcloud only)")
+    parser.add_argument("--project", default=None, help="GCP project id, defaults to gcloud's configured project (--source=gcloud only)")
+    parser.add_argument("--log-file", default=None, help="path to a local access log, e.g. gunicorn's access.log (--source=local-log only)")
     parser.add_argument("--initial-window-days", type=int, default=30, help="lookback on the first run, before any watermark exists")
     args = parser.parse_args()
+
+    if args.source == "local-log" and not args.log_file:
+        parser.error("--log-file is required when --source=local-log")
 
     out_dir = os.path.expanduser(args.out_dir)
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o755)
 
-    build(out_dir, args.service_name, args.project, args.initial_window_days)
+    build(out_dir, args.source, args.service_name, args.project, args.log_file, args.initial_window_days)
 
 
 if __name__ == "__main__":
