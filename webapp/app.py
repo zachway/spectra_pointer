@@ -3332,7 +3332,7 @@ INSTRUMENTS_TEMPLATE = """
     <div class="overlap-controls">
       <select id="instrument-sky-select">
         {% for opt in instrument_sky_options %}
-          <option value="{{ opt.instrument }}"{{ " selected" if opt.instrument == selected_instrument else "" }}>{{ opt.instrument }} ({{ "{:,}".format(opt.total) }})</option>
+          <option value="{{ opt.instrument }}"{{ " selected" if opt.instrument == selected_instrument else "" }}>{{ opt.instrument }} ({{ "{:,}".format(opt.total) }}{{ ", " + opt.wave_range if opt.wave_range else "" }})</option>
         {% endfor %}
       </select>
     </div>
@@ -3855,6 +3855,21 @@ def instruments_page():
     # archive_overlap).
     cur.execute("SELECT instrument, sum(n) AS total FROM instrument_healpix WHERE instrument != '' GROUP BY instrument ORDER BY total DESC, instrument")
     instrument_sky_options = _rows_as_dicts(cur)
+
+    # Same INSTRUMENT_WAVELENGTH_RANGE_NM the chart above draws from, but
+    # keyed down to instrument name alone (first (display_name, instrument)
+    # match wins, same collapse-by-instrument-name assumption
+    # _all_instrument_wavelength_bars makes) so the dropdown can show it too
+    # without a second archive-aware lookup -- instrument_healpix itself has
+    # no display_name column to join on.
+    instrument_wavelength_nm: dict[str, tuple[float, float]] = {}
+    for r in rows:
+        coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((r["display_name"], r["instrument"]))
+        if coverage is not None:
+            instrument_wavelength_nm.setdefault(r["instrument"], coverage)
+    for opt in instrument_sky_options:
+        coverage = instrument_wavelength_nm.get(opt["instrument"])
+        opt["wave_range"] = f"{coverage[0]:g}–{coverage[1]:g} nm" if coverage else None
 
     # request.args.get(..., "") -- rather than the no-default form -- would
     # make an absent ?instrument= param indistinguishable from an explicit
