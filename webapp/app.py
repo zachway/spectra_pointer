@@ -9,7 +9,7 @@ runs) directly into morgan's ~/public_html, which joy's Apache (mod_userdir)
 already serves publicly — morgan and joy share the same NFS home directory,
 so nothing needs to explicitly sync/publish anything. This app reads it
 straight over HTTP via DuckDB's httpfs extension (SPECTRA_DATA_URL, what the
-hosted Cloud Run service uses), or from a local directory (SPECTRA_DATA_DIR)
+hosted joy deployment uses), or from a local directory (SPECTRA_DATA_DIR)
 for local dev.
 
 The one exception is /triage's classification submissions, which do need to
@@ -24,7 +24,7 @@ Run locally against a local export:
     python3 -m scripts.export_to_parquet --out-dir ./data
     SPECTRA_DATA_DIR=./data python3 -m webapp.app
 
-Run against the hosted snapshot (what Cloud Run does):
+Run against the hosted snapshot (what the joy deployment does):
     SPECTRA_DATA_URL=http://joy.chara.gsu.edu/~way/spectra_data python3 -m webapp.app
 """
 
@@ -78,11 +78,11 @@ from webapp.spectrum_viewer import (
 
 app = Flask(__name__)
 # Lets the app run correctly behind a reverse proxy that mounts it under a
-# subpath (e.g. joy's Apache serving it at /~way/spectra_pointer/) -- reads
+# subpath (joy's Apache serves it at /~way/spectra_pointer/) -- reads
 # X-Forwarded-Prefix/-Proto/-Host/-For so url_for() and redirects produce
 # paths under that prefix instead of root-relative ones. A no-op when those
-# headers aren't sent, so it doesn't change anything for the direct-to-origin
-# Cloud Run deployment.
+# headers aren't sent, so it doesn't change anything for local dev run
+# directly against gunicorn/Flask's dev server, without the proxy in front.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
 # ProxyFix (above) only fixes up SCRIPT_NAME/url_for() -- but every nav
@@ -90,8 +90,9 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 # hardcoded absolute path (e.g. `href="/instruments"`), not url_for(), so
 # none of them pick up the subpath automatically. Rewrite them here
 # instead of touching every template. No-op when not mounted under a
-# prefix (e.g. Cloud Run), since request.script_root is only ever set by
-# ProxyFix's X-Forwarded-Prefix handling.
+# prefix (e.g. local dev without the proxy in front), since
+# request.script_root is only ever set by ProxyFix's X-Forwarded-Prefix
+# handling.
 # Every hardcoded-absolute-path spot found so far (href=/src=/action=
 # attributes, fetch('/...'), window.location(.href) = '/...', a plain
 # element.href = '/...', a JS helper's `return '/...'`) reduces to the same
@@ -214,7 +215,7 @@ def _make_connection() -> duckdb.DuckDBPyConnection:
     # fields, rather than one table per field like everything else here.
     con.execute(f"CREATE VIEW stats_summary AS SELECT * FROM read_json_auto('{source}/stats_summary.json')")
     # /info's "Who's using The Spectra Pointer?" map -- country-level request
-    # counts derived from Cloud Run's own request logs, published
+    # counts derived from joy's own gunicorn access log, published
     # independently by scripts.build_access_heatmap (see that module for the
     # privacy reasoning) on its own schedule rather than as part of this
     # export pipeline. A fresh SPECTRA_DATA_DIR/out_dir that hasn't had that
@@ -639,7 +640,7 @@ def _radial_search(ra_str: str, dec_str: str, radius_str: str, export_csv: bool,
 # executing thread within milliseconds of being called). Runs `sql` on a
 # background thread and interrupts+raises TimeoutError if it doesn't finish
 # within timeout_seconds, so a caller can show a clean error instead of the
-# request just hanging until Cloud Run's own request timeout kills it.
+# request just hanging until the web server's own request timeout kills it.
 def _execute_with_timeout(cur: duckdb.DuckDBPyConnection, sql: str, params: list, timeout_seconds: float) -> None:
     outcome: dict = {}
 
@@ -1611,7 +1612,7 @@ def _lookup_local_star(cur: duckdb.DuckDBPyConnection, query: str) -> dict | Non
         # export's sort order for row-group pruning (see
         # scripts/export_to_parquet.py's `stars` ORDER BY) instead of
         # pulling the entire multi-hundred-MB file into memory and OOMing
-        # the Cloud Run container.
+        # the web process.
         n = int(query)
         cur.execute("SELECT * FROM stars WHERE gaia_source_id = ?", [n])
         rows = _rows_as_dicts(cur)
@@ -2517,7 +2518,7 @@ def leaderboard():
     # in. See that module for why: an earlier version of this route did the
     # top-5 selection here in Python, which meant sorted() over the full
     # (multi-million-star) population once per period — observed as
-    # what was actually OOMing the Cloud Run container, not the raw GROUP BY.
+    # what was actually OOMing the web process, not the raw GROUP BY.
     cur.execute("SELECT star_id, gaia_source_id, bsc_hr_number, label, yr, half, within_n, cumulative_n FROM leaderboard ORDER BY star_id, yr, half")
     rows = _rows_as_dicts(cur)
     period_labels, leaderboard_traces = _period_traces_by_star(rows, ["within_n", "cumulative_n"])
@@ -3045,8 +3046,8 @@ def instrument_holdings_csv():
     in stream_with_context, DuckDB read via fetchmany in a loop) rather than
     _csv_response's build-the-whole-string-in-memory-then-return approach
     used elsewhere in this file for much smaller result sets -- constant
-    memory regardless of archive size, matching this project's GCP
-    cost-minimization stance. No join against `stars` (e.g. for
+    memory regardless of archive size, matching this project's general
+    memory-discipline stance. No join against `stars` (e.g. for
     gaia_source_id) -- a single-table scan+filter is dramatically cheaper
     at this scale than a join across two multi-million-row tables, and
     star_id is still exported as the cross-reference key."""
@@ -4096,7 +4097,7 @@ INFO_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Who's using The Spectra Pointer?</h2>
-  <p class="note">Country-level counts derived from Cloud Run's request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept, and Google's own Cloud Logging deletes the underlying request logs after 30 days regardless. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
+  <p class="note">Country-level counts derived from this site's own request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
   {% if access_heatmap_countries %}
     <div id="access-heatmap-plot" style="width: 100%; height: 450px;"></div>
     <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries.</p>
@@ -4497,7 +4498,7 @@ def batch_search():
 # the module docstring) -- this is the app's first genuine write path. An
 # earlier version of this opened a live psycopg connection via DATABASE_URL
 # straight to Postgres, but DATABASE_URL is deliberately never set on the
-# hosted Cloud Run deployment: this is a public, unauthenticated web tier,
+# hosted joy deployment: this is a public, unauthenticated web tier,
 # and giving it direct write access to the real database is a bigger blast
 # radius than this feature is worth. Submissions are appended instead as
 # JSON lines to a public file on joy (same host/directory
@@ -4512,8 +4513,8 @@ TRIAGE_SUBMISSIONS_FILENAME = "triage_submissions.jsonl"
 
 def _joy_ssh_client() -> paramiko.SSHClient:
     """A dedicated, narrowly-scoped SSH key -- never committed to this repo,
-    configured entirely via env vars (Cloud Run Secret Manager in
-    production) -- connects to joy to append one classification submission.
+    configured entirely via env vars set outside the repo on joy in
+    production -- connects to joy to append one classification submission.
     The corresponding authorized_keys entry on joy MUST use a forced
     `command=` restriction (see scripts/joy_triage_append.py's setup
     docstring) so this key can only ever run that one append script, never
@@ -4578,8 +4579,9 @@ def _append_triage_submission_local(payload: dict, data_dir: str) -> None:
     """When this process already has direct filesystem access to the data
     directory (SPECTRA_DATA_DIR -- e.g. running on joy itself), append
     straight to the file instead of paying for an SSH round trip to itself.
-    Lazy-imports joy_triage_append (not copied into the Cloud Run image,
-    see Dockerfile -- this path never runs there, only under SPECTRA_DATA_DIR)
+    Lazy-imports joy_triage_append (not guaranteed to be present in every
+    deployment target -- see Dockerfile -- this path never runs there, only
+    under SPECTRA_DATA_DIR)
     to reuse its validation so both write paths enforce identically-shaped
     submissions, and its own flock-guarded append so this is safe against
     scripts.export_to_parquet or another worker reading/writing concurrently.
@@ -4780,9 +4782,10 @@ def _simbad_coord_url(ra: float, dec: float) -> str:
 #
 # archive_url is data this app already trusts enough to render as an outbound
 # <a href>, but here the *server* is the one making the request, off a
-# visitor-supplied query-string value -- on a public, unauthenticated Cloud
-# Run service that turns an unrestricted URL param into an SSRF proxy against
-# anything reachable from the container (notably the GCP metadata server).
+# visitor-supplied query-string value -- on a public, unauthenticated web
+# tier that turns an unrestricted URL param into an SSRF proxy against
+# anything reachable from the host (internal network services, localhost
+# ports, etc.).
 # The fix is an explicit hostname allowlist, not just a scheme check --
 # it's the exact host set observed across every archive_url in production
 # (see spectroscopy_holdings, one entry per sync/archives/*.py module), so it
@@ -5207,11 +5210,11 @@ def triage():
     # scripts/export_to_parquet.py's TRIAGE_QUEUE_QUERY) rather than grouping
     # spectroscopy_holdings live -- a true GROUP BY (archive_code,
     # raw_target_name) over the full skipped set (12M+ rows, 900K+ distinct
-    # names) OOMs the 1 GiB Cloud Run container, observed against
-    # production. Precomputing where memory isn't capped also means this can
-    # be a cheap, small read instead of a multi-second remote scan on every
-    # page load -- this project tries to keep Cloud Run request time (and
-    # therefore cost) down wherever the data doesn't need to be live-fresh,
+    # names) OOMs the web process, observed against production. Precomputing
+    # where memory isn't capped also means this can be a cheap, small read
+    # instead of a multi-second remote scan on every page load -- this
+    # project tries to keep request time down wherever the data doesn't
+    # need to be live-fresh,
     # and a "run the export by hand every so often" cadence is already how
     # every other derived page here works. No ORDER BY/LIMIT here -- the
     # whole (already-capped-upstream) pool is fetched and reshuffled in

@@ -90,8 +90,8 @@ fetchable URL in archive_url (no DataLink/resolution hop needed) -- kept
 that way rather than reconstructing paths, since archive_url is exactly the
 thing sync/archives/*.py already verified live.
 
-Memory/cost discipline (Cloud Run, single threaded Flask process, see
-project memory on GCP cost minimization): every fetch is bounded --
+Memory discipline (a single gunicorn worker process handles each request):
+every fetch is bounded --
 MAX_DOWNLOAD_BYTES caps a plain HTTP pull (checked via Content-Length where
 available, and enforced while streaming either way since a server can lie
 about or omit that header); DESI's fsspec/HTTP-range path never downloads
@@ -305,11 +305,11 @@ class SpectrumUnavailable(Exception):
 # Per-IP rate limit on actual archive fetches -- MAX_DOWNLOAD_BYTES bounds
 # any one fetch, but nothing else stops a script from hitting /spectrum/<id>
 # in a loop across many different holdings, each a real external download.
-# In-memory, per-process -- Cloud Run may run several instances, so this
-# blunts casual scripted abuse/crawlers rather than being an airtight global
-# cap (a real distributed limiter would need shared state, not worth it for
-# this project's traffic level -- see project memory on GCP cost
-# minimization). Deliberately scoped to the fetch itself, not page views in
+# In-memory, per-process -- gunicorn may run several worker processes, so
+# this blunts casual scripted abuse/crawlers rather than being an airtight
+# global cap (a real distributed limiter would need shared state, not worth
+# it for this project's traffic level). Deliberately scoped to the fetch
+# itself, not page views in
 # general -- viewing the "this looks heavy, load anyway?" interstitial from
 # the is_heavy gate costs nothing and isn't rate-limited.
 _RATE_LIMIT_WINDOW_SECONDS = 600  # 10 minutes

@@ -140,7 +140,7 @@ ORDER BY a.display_name, n DESC
 # in Python via healpy below, then the aggregated (instrument, cell, count)
 # result is fed back into DuckDB just for the final atomic Parquet write.
 # Same "memory isn't capped here" tradeoff as the sample this replaced: this
-# script runs on morgan, not the 1GiB-limited Cloud Run container, so
+# script runs on morgan, not the memory-constrained webapp process, so
 # pulling every position-tagged row into Python for one precompute pass is
 # fine even at tens of millions of rows.
 INSTRUMENT_HEALPIX_NSIDE = 32
@@ -724,10 +724,10 @@ STATS_QUERIES = {
 # and a GROUP BY), each one a fresh full scan of the 1GB+ remote Parquet file
 # over HTTP. Individually a couple hundred ms to ~1s each from a fast
 # connection, but confirmed this is the slow-page complaint in practice
-# (Cloud Run's connection to joy is neither fast nor consistent, and it's the
-# same live-query-over-the-full-holdings-table shape already fixed for /sky,
-# /leaderboard, and /triage elsewhere in this module -- /info was just missed
-# in that pass). NEEDS_REVIEW_QUERY/SKIPPED_QUERY only cover the unfiltered
+# (historically, when the webapp ran on Cloud Run, its connection to joy was
+# neither fast nor consistent) -- it's the same live-query-over-the-full-
+# holdings-table shape already fixed for /sky, /leaderboard, and /triage
+# elsewhere in this module -- /info was just missed in that pass). NEEDS_REVIEW_QUERY/SKIPPED_QUERY only cover the unfiltered
 # default view; /info's per-archive filter (?archive=...) is rare enough,
 # and cheap enough once narrowed to one archive_code, to stay a live query in
 # webapp.app.
@@ -792,9 +792,9 @@ LIMIT {SKIPPED_TOP_N}
 # includes needs_review and even already-matched rows a user might still
 # want to see alongside unmatched ones (match_status is exported so
 # webapp.app can label each result). Observed this whole query,
-# sorted, comes to 320.6MB -- comfortably under the 1GiB Cloud Run limit
-# even loaded alongside the other exported tables, unlike a full-width
-# resorted clone would have been.
+# sorted, comes to 320.6MB -- comfortably small enough to load alongside
+# the other exported tables without pressuring the webapp process's memory,
+# unlike a full-width resorted clone would have been.
 #
 # ORDER BY raw_dec, not a spatial/HEALPix bucket -- matches the exact
 # `raw_dec BETWEEN ? AND ?` pre-filter shape webapp.app's radial search
@@ -813,8 +813,8 @@ ORDER BY raw_dec
 # Precomputed per-(archive, reported target name) triage queue -- the
 # /triage page used to run this grouping live against the hosted
 # DuckDB/Parquet snapshot, but a true GROUP BY (archive_code, raw_target_name)
-# over the full skipped set (12M+ rows, 900k+ distinct names) OOM'd the 1 GiB
-# Cloud Run container outright, observed against production -- same
+# over the full skipped set (12M+ rows, 900k+ distinct names) OOM'd the
+# webapp process outright, observed against production -- same
 # OOM-shaped risk as everything else precomputed here, just without the
 # option of even a windowed live fallback (there's no cheap way to know which
 # recent rows share a name without grouping first). Computed here instead,
@@ -950,7 +950,7 @@ LIMIT {TRIAGE_QUEUE_TOP_N}
 # instrument names made instrument_overlap_triple balloon to ~6.8M rows (not
 # "nowhere near N^3" as originally assumed here) -- webapp.app's /instruments
 # route pulls every row into Python dicts and JSON-serializes them straight
-# into the page, which OOM'd/timed out the Cloud Run container. See
+# into the page, which OOM'd/timed out the webapp process. See
 # INSTRUMENT_OVERLAP_TOP_N below.
 ARCHIVE_OVERLAP_QUERY = """
 WITH per_star AS (

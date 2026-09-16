@@ -11,8 +11,9 @@ allowed to run.
 Setup on joy (do this once):
     1. Generate a dedicated keypair just for this -- not your personal key:
            ssh-keygen -t ed25519 -f ~/.ssh/triage_submit_key -N ""
-       The private half (~/.ssh/triage_submit_key) goes into Cloud Run's
-       Secret Manager as JOY_SSH_KEY_PATH content, never into this repo.
+       The private half (~/.ssh/triage_submit_key) is provisioned as
+       JOY_SSH_KEY_PATH content via env vars set outside the repo in
+       production, never committed into this repo.
     2. Copy this script onto joy, e.g. ~/bin/joy_triage_append.py.
     3. Add ONE line to ~/.ssh/authorized_keys on joy, using the *public*
        half of the key from step 1 and the real target path (matching

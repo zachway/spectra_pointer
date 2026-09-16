@@ -31,7 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   live database credentials.
 - Continuum normalization module (`webapp/continuum.py`).
 - Automated test suite (`tests/`) and CI (`.github/workflows/tests.yml`).
-- Deployment to Google Cloud Run.
+- Deployment on Georgia State's `joy` server, via gunicorn behind an Apache
+  subpath reverse proxy.
 
 [Unreleased]: https://github.com/zachway/spectra_pointer/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/zachway/spectra_pointer/releases/tag/v1.0.0

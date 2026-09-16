@@ -14,6 +14,6 @@ authors:
     affiliation: "Department of Physics and Astronomy, Georgia State University"
 license: MIT
 repository-code: "https://github.com/zachway/spectra_pointer"
-url: "https://spectra-pointer-997472993697.us-central1.run.app"
+url: "https://astro.gsu.edu/~way/spectra_pointer/"
 # Add a preferred-citation entry for the JOSS paper (see paper.md) once it's
 # published, and set version/date-released to match the first tagged release.

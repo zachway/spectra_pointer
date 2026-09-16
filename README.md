@@ -28,7 +28,7 @@ researcher can query by Gaia `source_id` or common name to get a
 consolidated, deduplicated list of every archive holding a spectrum of
 that star, along with pointers back to the original data in each home
 archive. A public search webapp (built on this database) is deployed at
-<https://spectra-pointer-997472993697.us-central1.run.app>. This is 
+<https://astro.gsu.edu/~way/spectra_pointer/>. This is 
 software is developed to be reusable infrastructure for anybody,
 using no proprietary access and minimal personal keys.
 
@@ -129,7 +129,7 @@ Querying the live deployment for Proxima Centauri (`?format=csv` on any
 name/`source_id` search returns a CSV instead of the HTML page):
 
 ```bash
-curl "https://spectra-pointer-997472993697.us-central1.run.app/?q=Proxima+Cen&format=csv"
+curl "https://astro.gsu.edu/~way/spectra_pointer/?q=Proxima+Cen&format=csv"
 ```
 
 ```csv
@@ -168,10 +168,13 @@ q3c from source on a clean Ubuntu runner.
 
 ## Deployment
 
-The webapp is deployed on Google Cloud Run from the root `Dockerfile`:
+The webapp runs under [gunicorn](https://gunicorn.org/) on Georgia State's
+`joy` server, reverse-proxied by Apache at a subpath
+(`/~way/spectra_pointer/` — see the `ProxyFix` setup in `webapp/app.py` for
+how the app adapts its links/redirects to that subpath):
 
 ```bash
-gcloud run deploy spectra-pointer --source . --region us-central1 --allow-unauthenticated
+gunicorn webapp.app:app
 ```
 
 ## Contributing

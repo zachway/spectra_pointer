@@ -2,16 +2,22 @@
 snapshot for the "Who's using The Spectra Pointer?" map on /info.
 
 Two sources, picked with --source:
-  gcloud (default) -- Cloud Run's own request logs, via `gcloud logging read`.
-  local-log -- a local access log file, e.g. gunicorn's own access.log when
-    the app is reverse-proxied by Apache (as on joy.chara.gsu.edu) instead
-    of run behind Cloud Run. Apache's mod_proxy sets X-Forwarded-For on
-    every proxied request automatically, and gunicorn trusts it from a
-    127.0.0.1 peer by default (its default forwarded_allow_ips) -- so
-    gunicorn's own %(h)s access-log field is already the real client IP,
-    not the proxy's loopback address; confirmed against joy's live log.
-    Expects gunicorn's default access-log format (effectively Apache
-    combined): '%(h)s %(l)s %(u)s [%(t)s] "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"'.
+  local-log (default) -- a local access log file, e.g. gunicorn's own
+    access.log when the app is reverse-proxied by Apache (as on joy, the
+    project's current and only deployment target). Apache's mod_proxy sets
+    X-Forwarded-For on every proxied request automatically, and gunicorn
+    trusts it from a 127.0.0.1 peer by default (its default
+    forwarded_allow_ips) -- so gunicorn's own %(h)s access-log field is
+    already the real client IP, not the proxy's loopback address; confirmed
+    against joy's live log. Expects gunicorn's default access-log format
+    (effectively Apache combined): '%(h)s %(l)s %(u)s [%(t)s] "%(r)s" %(s)s
+    %(b)s "%(f)s" "%(a)s"'.
+  gcloud -- historical only: Cloud Run's own request logs, via `gcloud
+    logging read`. Cloud Run was this project's deployment target before the
+    move to joy; kept so the running per-country total (see "Both sources"
+    below) can still be explained/reproduced, not because it's expected to
+    run again -- the Cloud Run service it queried has since been
+    decommissioned.
 
 Privacy note (read before changing this file): the only per-request datum
 this script ever touches is the client IP address, and only transiently --
@@ -21,12 +27,11 @@ writes to disk, ever, is a raw IP: the persisted output
 (access_heatmap.json) is an aggregate country -> count table plus a
 watermark timestamp, the same shape whether one visitor or ten thousand
 produced a given country's count. No new logging is added to the app itself
-either -- Cloud Run already records the connecting client IP on every
-request as httpRequest.remoteIp in Cloud Logging (Google's own request log,
-not app code), retained under the project's normal Cloud Logging retention
-(30 days by default) and deleted by Google on that schedule regardless of
-what this script does. Country-level geocoding (not city, no lat/lon) is a
-deliberate choice, not just a limitation of the geoip2fast library used
+either -- gunicorn's own access.log already records the connecting client IP
+on every request as part of its normal operation, independent of this
+project's code, and is subject to whatever log-rotation/retention policy is
+already configured on joy. Country-level geocoding (not city, no lat/lon) is
+a deliberate choice, not just a limitation of the geoip2fast library used
 here -- it's the coarsest granularity that still answers "who's using
 this," well short of anything that could pinpoint an individual visitor.
 
@@ -38,33 +43,34 @@ with this project's general aversion to live external calls in a hot path
 instead of live Postgres).
 
 Incremental: each run reads the previous access_heatmap.json (if any) in
---out-dir, only asks Cloud Logging for entries newer than its "watermark"
-timestamp, and adds the new country counts on top of the old ones -- so the
-running total survives Cloud Logging's 30-day retention window rather than
-being capped by it. First run has no watermark, so it pulls
---initial-window-days worth of history (default 30, matching that same
-retention window -- there's nothing older to pull anyway).
+--out-dir, only processes entries newer than its "watermark" timestamp, and
+adds the new country counts on top of the old ones -- so the running total
+survives log rotation on joy rather than being capped by whatever's still
+in the current access.log. First run has no watermark, so it pulls
+--initial-window-days worth of history (default 30 -- a reasonable lookback
+for a first run; not tied to any particular log-retention guarantee on joy,
+since whatever's still on disk in the log file is all there is to read
+either way).
 
 Like scripts.export_to_parquet, this has no automatic trigger -- run it by
 hand or your own cron (or an `at`-chain, on a host like joy where crontab
-isn't available to this account). --source=gcloud needs `gcloud`
-authenticated against the project running the Cloud Run service (whatever
-the operator already uses for `gcloud run deploy`), which is a separate
-credential from DATABASE_URL and not necessarily available on morgan -- so
-unlike export_to_parquet.py this will often run from a different machine,
-with its output copied into the same out_dir export_to_parquet.py writes to
-(morgan's ~/public_html/spectra_data, see that script's docstring) so
-webapp.app's access_heatmap view picks it up from the same published
-snapshot directory. --source=local-log has no such credential and can just
-be run wherever the log file already is (e.g. directly on joy, writing
-straight into the shared out_dir -- no copying needed there since it's the
-same NFS mount webapp.app already reads from).
+isn't available to this account). --source=local-log has no external
+credential and can just be run wherever the log file already is (e.g.
+directly on joy, writing straight into the shared out_dir -- no copying
+needed there since it's the same NFS mount webapp.app already reads from).
+--source=gcloud (historical -- see this module's docstring) needed `gcloud`
+authenticated against the now-decommissioned Cloud Run project, which was a
+separate credential from DATABASE_URL and not necessarily available on
+morgan, so it would often run from a different machine, with its output
+copied into the same out_dir export_to_parquet.py writes to (morgan's
+~/public_html/spectra_data, see that script's docstring) so webapp.app's
+access_heatmap view picks it up from the same published snapshot directory.
 
 Both sources write the identical access_heatmap.json shape and share one
 running total: pointing --source at a different log than a previous run
 used still just adds newly-seen requests on top of the existing per-country
-counts (matched on country_code), so switching from Cloud Run to joy
-hosting doesn't reset or fork the visitor count -- it's intentionally the
+counts (matched on country_code), so the historical switch from Cloud Run to
+joy hosting didn't reset or fork the visitor count -- it's intentionally the
 same file regardless of which deployment produced which slice of it.
 
 Usage:
@@ -275,9 +281,9 @@ def build(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", required=True, help="directory Apache serves, e.g. ~/public_html/spectra_data")
-    parser.add_argument("--source", choices=["gcloud", "local-log"], default="gcloud", help="where to read request logs from")
-    parser.add_argument("--service-name", default="spectra-pointer", help="Cloud Run service name (--source=gcloud only)")
-    parser.add_argument("--project", default=None, help="GCP project id, defaults to gcloud's configured project (--source=gcloud only)")
+    parser.add_argument("--source", choices=["gcloud", "local-log"], default="local-log", help="where to read request logs from")
+    parser.add_argument("--service-name", default="spectra-pointer", help="Cloud Run service name (--source=gcloud only, historical -- see module docstring)")
+    parser.add_argument("--project", default=None, help="GCP project id, defaults to gcloud's configured project (--source=gcloud only, historical -- see module docstring)")
     parser.add_argument("--log-file", default=None, help="path to a local access log, e.g. gunicorn's access.log (--source=local-log only)")
     parser.add_argument("--initial-window-days", type=int, default=30, help="lookback on the first run, before any watermark exists")
     args = parser.parse_args()
