@@ -4579,11 +4579,11 @@ def _append_triage_submission_local(payload: dict, data_dir: str) -> None:
     """When this process already has direct filesystem access to the data
     directory (SPECTRA_DATA_DIR -- e.g. running on joy itself), append
     straight to the file instead of paying for an SSH round trip to itself.
-    Lazy-imports joy_triage_append (not guaranteed to be present in every
-    deployment target -- see Dockerfile -- this path never runs there, only
-    under SPECTRA_DATA_DIR)
-    to reuse its validation so both write paths enforce identically-shaped
-    submissions, and its own flock-guarded append so this is safe against
+    Lazy-imports joy_triage_append (only needed for this SPECTRA_DATA_DIR
+    path -- no reason to pay the import cost when running against
+    SPECTRA_DATA_URL instead, where this function never runs) to reuse its
+    validation so both write paths enforce identically-shaped submissions,
+    and its own flock-guarded append so this is safe against
     scripts.export_to_parquet or another worker reading/writing concurrently.
     """
     import fcntl

@@ -55,9 +55,10 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install -r requirements.txt pytest
-          # --no-deps: same reason as the Dockerfile -- mdwarf-contin's own
-          # pinned numpy<2.0 conflicts with astropy/healpy's numpy>=2.0
-          # above; its real runtime deps are already installed above instead.
+          # --no-deps: mdwarf-contin's own pinned numpy<2.0 conflicts with
+          # astropy/healpy's numpy>=2.0 above (see requirements.txt's comment
+          # on this same install); its real runtime deps are already
+          # installed above instead.
           pip install --no-deps "mdwarf-contin @ https://github.com/imedan/mdwarf_contin/archive/refs/heads/main.tar.gz"
 
       - name: Run tests
