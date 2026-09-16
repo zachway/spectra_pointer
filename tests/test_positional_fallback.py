@@ -57,6 +57,25 @@ def test_bsc5_candidate_wins_regardless_of_gaia_brightness():
     assert "bsc5" in reason
 
 
+def test_two_close_bsc5_candidates_are_ambiguous():
+    # Alpha Cen A/B shape: two BSC5 stars both in range, similarly close --
+    # brightness can't disambiguate them (neither has phot_g_mean_mag), so
+    # this must NOT be a confident categorical win for either.
+    a = _cand(sep=27.0, mag=None, source_catalog="bsc5", star_id=1)
+    b = _cand(sep=32.0, mag=None, source_catalog="bsc5", star_id=2)
+    winner, reason = pick_best_candidate("noirlab", [a, b])
+    assert winner is None
+    assert "too close together" in reason
+
+
+def test_bsc5_winner_decisively_closer_still_wins():
+    close = _cand(sep=3.0, mag=None, source_catalog="bsc5", star_id=1)
+    far = _cand(sep=50.0, mag=None, source_catalog="bsc5", star_id=2)  # > 2x closer's separation
+    winner, reason = pick_best_candidate("noirlab", [close, far])
+    assert winner is close
+    assert "bsc5" in reason
+
+
 def test_sole_candidate_within_ceiling_accepted():
     winner, reason = pick_best_candidate("koa", [_cand(sep=8.0, mag=15.0)])
     assert winner is not None

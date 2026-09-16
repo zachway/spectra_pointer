@@ -169,6 +169,36 @@ def _normalize_name(name: str) -> str:
     return key
 
 
+def _lookup_star_id(raw_target_name: str, alias_lookup: dict[str, int]) -> int | None:
+    """_normalize_name(raw_target_name) against alias_lookup, plus one
+    fallback: a bare Henry Draper number with no "HD" prefix at all (e.g.
+    RV-monitoring programs logging their OBJECT header as plain "128620"
+    rather than "HD 128620"). Confirmed live (2026-09-16): NOIRLab's SMARTS/
+    CHIRON program does exactly this for both Alpha Cen A (HD 128620) and
+    Alpha Cen B (HD 128621) -- neither ever matched by name, so both fell
+    through to shitty_positional_match, where the two stars sit close enough
+    together (and both drift enough from their shared Hipparcos ref_epoch)
+    that most of B's spectra were silently mismatched onto A. See PR fixing
+    this.
+
+    Deliberately narrow (digits-only, HD prefix only -- not attempted for
+    other bare-number catalogs like HIP/TYC/HR, which weren't observed to
+    have this problem and would add ambiguity without evidence they need
+    it): the fold can only ever succeed by hitting an alias already present
+    in this project's own tracked stars, so a coincidental digit string that
+    isn't really an HD number can't spuriously invent a match -- and
+    match_records's own name-match sanity check (NAME_MATCH_SANITY_RADIUS_ARCSEC)
+    still applies on top of this as a second guard.
+    """
+    key = _normalize_name(raw_target_name)
+    star_id = alias_lookup.get(key)
+    if star_id is not None:
+        return star_id
+    if key.isdigit():
+        return alias_lookup.get("HD" + key)
+    return None
+
+
 def _load_candidate_stars(
     conn: psycopg.Connection, target_ra: list[float], target_dec: list[float], radius_deg: float
 ) -> list[tuple]:
@@ -478,7 +508,7 @@ def match_records(conn: psycopg.Connection, archive_code: str, records: list[Raw
     name_match_rejected: set[int] = set()
     with conn.cursor() as cur:
         for r in no_gaia_column:
-            star_id = alias_lookup.get(_normalize_name(r.raw_target_name)) if r.raw_target_name else None
+            star_id = _lookup_star_id(r.raw_target_name, alias_lookup) if r.raw_target_name else None
             if star_id is not None and _name_match_plausible(star_id, star_positions, r):
                 _upsert_holding(cur, archive_code, r, star_id, "name_resolved", "matched", None)
                 counts["name_matched"] += 1

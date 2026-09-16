@@ -218,6 +218,52 @@ def test_name_resolution_falls_back_to_positional_when_no_alias_hit(conn):
     assert counts["positional_matched"] == 1
 
 
+def test_bare_hd_number_resolves_against_hd_alias(conn):
+    """Confirmed live (2026-09-16): NOIRLab's SMARTS/CHIRON program logs its
+    OBJECT header as a bare HD number ("128620"/"128621") with no "HD "
+    prefix at all, so it never matched name_aliases' "HD 128620" -- both
+    Alpha Cen A and B fell through to shitty_positional_match, where their
+    close separation and shared propagation drift caused most of B's
+    spectra to be silently mismatched onto A. A bare-digit raw_target_name
+    must resolve against an "HD <same digits>" alias.
+    """
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000082, 219.9, -60.8, name_aliases=["HD 128620", "* alf01 Cen"])
+    conn.commit()
+
+    ra, dec = _offset(219.9, -60.8, 0.0, 3.0)  # close enough to pass the sanity check
+    rec = RawObservation(
+        archive_obs_id="hd-1", archive_url="http://example.test/hd1",
+        ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+        raw_target_name="128620",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 1
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT s.gaia_source_id, h.match_method FROM spectroscopy_holdings h "
+            "LEFT JOIN stars s ON s.star_id = h.star_id "
+            "WHERE h.archive_code='unit_test' AND h.archive_obs_id='hd-1'"
+        )
+        gaia_id, method = cur.fetchone()
+    assert gaia_id == 900000000000000082
+    assert method == "name_resolved"
+
+
+def test_bare_number_without_matching_hd_alias_falls_through(conn):
+    """A bare digit string that doesn't correspond to any tracked star's HD
+    number must not spuriously match anything -- the HD fold only ever
+    succeeds by hitting an alias already present in the lookup table."""
+    rec = RawObservation(
+        archive_obs_id="hd-2", archive_url="http://example.test/hd2",
+        ra=10.0, dec=10.0, obs_date=date(2016, 1, 1),
+        raw_target_name="999999",
+    )
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["name_matched"] == 0
+
+
 def test_name_match_rejected_when_position_is_far_off(conn):
     """The "Mira" case: "Mira" is SIMBAD's own proper name for omicron Ceti
     *and* an informal class label for any Mira-type long-period variable. A
