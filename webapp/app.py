@@ -234,7 +234,7 @@ def _make_connection() -> duckdb.DuckDBPyConnection:
     except duckdb.Error:
         con.execute(
             "CREATE VIEW access_heatmap AS SELECT "
-            "NULL::VARCHAR AS generated_at, 0::BIGINT AS total_requests, "
+            "NULL::VARCHAR AS generated_at, 0::BIGINT AS total_requests, 30::BIGINT AS window_days, "
             "[]::STRUCT(country VARCHAR, country_code VARCHAR, count BIGINT)[] AS countries"
         )
     return con
@@ -4105,10 +4105,10 @@ INFO_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Who's using The Spectra Pointer?</h2>
-  <p class="note">Country-level counts derived from this site's own request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project; only the aggregate counts below are kept. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
+  <p class="note">Country-level counts derived from this site's own request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project, and the underlying request log itself is trimmed on the same schedule (see <code>scripts/trim_access_log.py</code>); only the aggregate counts below are kept, and only for the trailing window shown. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
   {% if access_heatmap_countries %}
     <div id="access-heatmap-plot" style="width: 100%; height: 450px;"></div>
-    <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries.</p>
+    <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries in the past {{ access_heatmap_window_days }} days.</p>
     <script>
       (function() {
         const countries = {{ access_heatmap_countries | tojson }};
@@ -4276,9 +4276,9 @@ def info():
     cur.execute("SELECT archive_code, display_name, n FROM skipped_by_archive ORDER BY n DESC")
     skipped_by_archive = _rows_as_dicts(cur)
 
-    cur.execute("SELECT generated_at, total_requests, countries FROM access_heatmap")
+    cur.execute("SELECT generated_at, total_requests, window_days, countries FROM access_heatmap")
     access_heatmap_row = cur.fetchone()
-    access_heatmap_generated_at, access_heatmap_total, access_heatmap_countries = access_heatmap_row
+    access_heatmap_generated_at, access_heatmap_total, access_heatmap_window_days, access_heatmap_countries = access_heatmap_row
 
     # The per-archive filter is a rare, deliberate user action (not the
     # default page load), and cheap once narrowed to one archive_code -- kept
@@ -4309,7 +4309,7 @@ def info():
         needs_review=needs_review, needs_review_total=needs_review_total,
         skipped=skipped, skipped_by_archive=skipped_by_archive, archive_filter=archive_filter,
         access_heatmap_generated_at=access_heatmap_generated_at, access_heatmap_total=access_heatmap_total,
-        access_heatmap_countries=access_heatmap_countries,
+        access_heatmap_window_days=access_heatmap_window_days, access_heatmap_countries=access_heatmap_countries,
     )
 
 

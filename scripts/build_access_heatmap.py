@@ -1,5 +1,7 @@
-"""One-off/periodic: turn a request log into a country-level visitor-count
-snapshot for the "Who's using The Spectra Pointer?" map on /info.
+"""One-off/periodic: turn a request log into a "who's used this in the past
+--window-days days" snapshot for the "Who's using The Spectra Pointer?" map
+on /info -- a rolling window, not an all-time total (see "Rolling window"
+below).
 
 Two sources, picked with --source:
   local-log (default) -- a local access log file, e.g. gunicorn's own
@@ -14,26 +16,27 @@ Two sources, picked with --source:
     %(b)s "%(f)s" "%(a)s"'.
   gcloud -- historical only: Cloud Run's own request logs, via `gcloud
     logging read`. Cloud Run was this project's deployment target before the
-    move to joy; kept so the running per-country total (see "Both sources"
-    below) can still be explained/reproduced, not because it's expected to
-    run again -- the Cloud Run service it queried has since been
+    move to joy; kept so the rolling window's earlier history (see "Both
+    sources" below) can still be explained/reproduced, not because it's
+    expected to run again -- the Cloud Run service it queried has since been
     decommissioned.
 
 Privacy note (read before changing this file): the only per-request datum
 this script ever touches is the client IP address, and only transiently --
 each IP is geocoded to a country in memory and the IP string is discarded in
-the same loop iteration (see _iter_country_codes below). Nothing this script
-writes to disk, ever, is a raw IP: the persisted output
-(access_heatmap.json) is an aggregate country -> count table plus a
-watermark timestamp, the same shape whether one visitor or ten thousand
-produced a given country's count. No new logging is added to the app itself
-either -- gunicorn's own access.log already records the connecting client IP
-on every request as part of its normal operation, independent of this
-project's code, and is subject to whatever log-rotation/retention policy is
-already configured on joy. Country-level geocoding (not city, no lat/lon) is
-a deliberate choice, not just a limitation of the geoip2fast library used
-here -- it's the coarsest granularity that still answers "who's using
-this," well short of anything that could pinpoint an individual visitor.
+the same loop iteration (see _iter_dated_country_codes below). Nothing this
+script writes to disk, ever, is a raw IP: the persisted output
+(access_heatmap.json) is per-day country -> count buckets plus a watermark
+timestamp, the same shape whether one visitor or ten thousand produced a
+given country's count on a given day. No new logging is added to the app
+itself either -- gunicorn's own access.log already records the connecting
+client IP on every request as part of its normal operation, independent of
+this project's code; see scripts/trim_access_log.py for why that log is
+itself kept to a matching retention window rather than accumulating
+forever. Country-level geocoding (not city, no lat/lon) is a deliberate
+choice, not just a limitation of the geoip2fast library used here -- it's
+the coarsest granularity that still answers "who's using this," well short
+of anything that could pinpoint an individual visitor.
 
 Geocoding is done fully offline via geoip2fast (MIT-licensed, pure Python,
 bundles its own small MaxMind-GeoLite2-derived country database) -- no
@@ -42,15 +45,25 @@ with this project's general aversion to live external calls in a hot path
 (see webapp.app's module docstring on why it reads a precomputed snapshot
 instead of live Postgres).
 
-Incremental: each run reads the previous access_heatmap.json (if any) in
---out-dir, only processes entries newer than its "watermark" timestamp, and
-adds the new country counts on top of the old ones -- so the running total
-survives log rotation on joy rather than being capped by whatever's still
-in the current access.log. First run has no watermark, so it pulls
---initial-window-days worth of history (default 30 -- a reasonable lookback
-for a first run; not tied to any particular log-retention guarantee on joy,
-since whatever's still on disk in the log file is all there is to read
-either way).
+Rolling window: the persisted output is deliberately "countries seen in the
+past --window-days days" (default 30, matching Cloud Logging's old default
+retention -- see scripts/trim_access_log.py), not an all-time running
+total. Each run reads the previous access_heatmap.json's per-day country
+buckets, adds today's newly-seen requests into today's bucket, then drops
+any bucket older than --window-days before writing back out -- so a quiet
+country from five weeks ago silently ages out of the map on its own,
+without this script ever needing to know which raw log lines it came from.
+This also means a run with zero new log entries still has to rewrite the
+file whenever a day ages out, so build() never skips straight to a no-op
+return the way an appending-only design could. First run (or a run against
+an old-format file with no "daily" key -- see _load_previous) has no
+watermark, so it pulls --window-days worth of history straight from the
+current log; that's also the only lookback available in practice, since
+scripts/trim_access_log.py doesn't keep more than that on disk either.
+
+Incremental within that window: each run only re-reads log entries newer
+than the previous run's watermark, rather than re-parsing and re-geocoding
+the whole log every time -- cheap regardless of window size.
 
 Like scripts.export_to_parquet, this has no automatic trigger -- run it by
 hand or your own cron (or an `at`-chain, on a host like joy where crontab
@@ -66,12 +79,12 @@ copied into the same out_dir export_to_parquet.py writes to (morgan's
 ~/public_html/spectra_data, see that script's docstring) so webapp.app's
 access_heatmap view picks it up from the same published snapshot directory.
 
-Both sources write the identical access_heatmap.json shape and share one
-running total: pointing --source at a different log than a previous run
-used still just adds newly-seen requests on top of the existing per-country
-counts (matched on country_code), so the historical switch from Cloud Run to
-joy hosting didn't reset or fork the visitor count -- it's intentionally the
-same file regardless of which deployment produced which slice of it.
+Both sources write into the same per-day buckets: pointing --source at a
+different log than a previous run used still just adds newly-seen requests
+into today's bucket (matched on country_code), so the historical switch
+from Cloud Run to joy hosting didn't reset or fork the map -- it's
+intentionally the same file regardless of which deployment produced which
+day's data.
 
 Usage:
     python3 -m scripts.build_access_heatmap --out-dir ~/public_html/spectra_data
@@ -193,17 +206,20 @@ def _iter_local_log_entries(log_path: str, since: datetime) -> Iterator[tuple[st
             yield dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), m.group("ip")
 
 
-def _iter_country_codes(entries: Iterable[tuple[str, str]], geoip: GeoIP2Fast) -> Iterator[tuple[str, str]]:
-    """Yields (country_code, country_name) pairs, one per real (non-private)
-    client IP -- the IP itself never leaves this generator. Skips entries
+def _iter_dated_country_codes(entries: Iterable[tuple[str, str]], geoip: GeoIP2Fast) -> Iterator[tuple[str, str, str]]:
+    """Yields (date, country_code, country_name) triples, one per real
+    (non-private) client IP -- the IP itself never leaves this generator.
+    `date` is the entry's own %Y-%m-%d, taken from its already-normalized
+    timestamp, so build() can bucket requests by the day they actually
+    happened rather than the day this script happened to run. Skips entries
     geoip2fast can't resolve to a real public address (private/reserved
     ranges -- health checks and Google-internal probes commonly show up
     here for the gcloud source; localhost/LAN probes for the local-log one)."""
-    for _timestamp, ip in entries:
+    for timestamp, ip in entries:
         result = geoip.lookup(ip)
         if result.is_private or not result.country_code:
             continue
-        yield result.country_code, result.country_name
+        yield timestamp[:10], result.country_code, result.country_name
 
 
 def _latest_timestamp(entries: Iterable[tuple[str, str]]) -> str | None:
@@ -218,12 +234,26 @@ def _latest_timestamp(entries: Iterable[tuple[str, str]]) -> str | None:
 
 def _load_previous(out_dir: str) -> dict:
     path = os.path.join(out_dir, "access_heatmap.json")
+    empty = {"watermark": None, "daily": {}, "country_names": {}}
     if not os.path.exists(path):
-        return {"watermark": None, "countries": {}}
+        return empty
     with open(path) as f:
         data = json.load(f)
-    countries = {c["country_code"]: c for c in data.get("countries", [])}
-    return {"watermark": data.get("watermark"), "countries": countries}
+    if "daily" not in data:
+        # Pre-rolling-window file (a flat all-time running total, no
+        # per-day buckets) from before this script tracked history by day.
+        # Rather than trying to retrofit a day breakdown onto that old
+        # total, treat it like there's no previous file at all -- dropping
+        # the watermark too so build() re-reads --window-days of the log
+        # from scratch and rebuilds real daily buckets. One-time migration
+        # cost only, and cheap: whatever's on disk in the log file right
+        # now is within window_days anyway (see scripts/trim_access_log.py).
+        return empty
+    return {
+        "watermark": data.get("watermark"),
+        "daily": data.get("daily", {}),
+        "country_names": data.get("country_names", {}),
+    }
 
 
 def _write_atomic(out_dir: str, payload: dict) -> None:
@@ -242,39 +272,62 @@ def build(
     service_name: str,
     project: str | None,
     log_file: str | None,
-    initial_window_days: int,
+    window_days: int,
 ) -> None:
     previous = _load_previous(out_dir)
     if previous["watermark"]:
         since = _parse_rfc3339(previous["watermark"])
     else:
-        since = datetime.now(timezone.utc) - timedelta(days=initial_window_days)
+        since = datetime.now(timezone.utc) - timedelta(days=window_days)
 
     if source == "gcloud":
         log_lines = _run_gcloud_logging_read(service_name, project, since)
         entries = list(_iter_gcloud_entries(log_lines))
     else:
         entries = list(_iter_local_log_entries(log_file, since))
-    if not entries:
-        logger.info("no new request log entries since %s", since.isoformat())
-        return
 
     geoip = GeoIP2Fast()
-    counts = previous["countries"]  # {country_code: {"country": ..., "country_code": ..., "count": ...}}
+    daily = previous["daily"]  # {date: {country_code: count}}
+    country_names = previous["country_names"]  # {country_code: name}
     n_new = 0
-    for country_code, country_name in _iter_country_codes(entries, geoip):
-        entry = counts.setdefault(country_code, {"country": country_name, "country_code": country_code, "count": 0})
-        entry["count"] += 1
+    for date, country_code, country_name in _iter_dated_country_codes(entries, geoip):
+        day = daily.setdefault(date, {})
+        day[country_code] = day.get(country_code, 0) + 1
+        country_names[country_code] = country_name
         n_new += 1
 
     watermark = _latest_timestamp(entries) or previous["watermark"]
+
+    # Age out any day outside the rolling display window -- this, not
+    # anything about how the requests were fetched, is what makes the map
+    # "who's used this in the past window_days days" rather than an
+    # all-time total. Runs even when n_new is 0, so a quiet country still
+    # ages out on schedule.
+    cutoff_date = (datetime.now(timezone.utc) - timedelta(days=window_days)).strftime("%Y-%m-%d")
+    daily = {date: counts for date, counts in daily.items() if date >= cutoff_date}
+    active_codes = {code for day_counts in daily.values() for code in day_counts}
+    country_names = {code: name for code, name in country_names.items() if code in active_codes}
+
+    totals: dict[str, int] = {}
+    for day_counts in daily.values():
+        for code, c in day_counts.items():
+            totals[code] = totals.get(code, 0) + c
+
+    countries = sorted(
+        ({"country": country_names[code], "country_code": code, "count": c} for code, c in totals.items()),
+        key=lambda c: c["count"],
+        reverse=True,
+    )
     payload = {
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "watermark": watermark,
-        "total_requests": sum(c["count"] for c in counts.values()),
-        "countries": sorted(counts.values(), key=lambda c: c["count"], reverse=True),
+        "window_days": window_days,
+        "total_requests": sum(totals.values()),
+        "countries": countries,
+        "daily": daily,
+        "country_names": country_names,
     }
-    logger.info("%d new request(s) geocoded this run", n_new)
+    logger.info("%d new request(s) geocoded this run (%d countries in past %d days)", n_new, len(countries), window_days)
     _write_atomic(out_dir, payload)
 
 
@@ -285,7 +338,7 @@ def main() -> None:
     parser.add_argument("--service-name", default="spectra-pointer", help="Cloud Run service name (--source=gcloud only, historical -- see module docstring)")
     parser.add_argument("--project", default=None, help="GCP project id, defaults to gcloud's configured project (--source=gcloud only, historical -- see module docstring)")
     parser.add_argument("--log-file", default=None, help="path to a local access log, e.g. gunicorn's access.log (--source=local-log only)")
-    parser.add_argument("--initial-window-days", type=int, default=30, help="lookback on the first run, before any watermark exists")
+    parser.add_argument("--window-days", type=int, default=30, help="rolling display window -- countries seen in the past N days (also the lookback on the first run, before any watermark exists)")
     args = parser.parse_args()
 
     if args.source == "local-log" and not args.log_file:
@@ -295,7 +348,7 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     os.chmod(out_dir, 0o755)
 
-    build(out_dir, args.source, args.service_name, args.project, args.log_file, args.initial_window_days)
+    build(out_dir, args.source, args.service_name, args.project, args.log_file, args.window_days)
 
 
 if __name__ == "__main__":
