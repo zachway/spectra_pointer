@@ -3309,7 +3309,7 @@ INSTRUMENTS_TEMPLATE = """
 
   <hr>
   <h2>Tracked instruments</h2>
-  <p class="note">Every instrument seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) hand-maintained from published specs, not derived from the database. This says the instrument is covered by the sync, not that every star has data from it. A range is shown where R varies by grating/mode. "n/a" marks imagers; "&mdash;" marks ones not yet looked up.</p>
+  <p class="note">Every instrument seen in current holdings, grouped by archive, with an approximate resolving power (R = &lambda;/&Delta;&lambda;) and wavelength coverage hand-maintained from published specs, not derived from the database. This says the instrument is covered by the sync, not that every star has data from it. A range is shown where R varies by grating/mode. "n/a" marks imagers; "&mdash;" marks ones not yet looked up.</p>
   {% for a in instruments %}
   <details>
     <summary class="summary-row">
@@ -3317,9 +3317,9 @@ INSTRUMENTS_TEMPLATE = """
       <span class="summary-count">{{ a.instruments|length }} instrument{{ "s" if a.instruments|length != 1 else "" }}</span>
     </summary>
     <table>
-      <tr><th>Instrument</th><th>Holdings</th><th>Resolving power</th></tr>
+      <tr><th>Instrument</th><th>Holdings</th><th>Resolving power</th><th>Wavelength coverage</th></tr>
       {% for i in a.instruments %}
-      <tr><td>{{ i.instrument }}</td><td>{{ "{:,}".format(i.n) }}</td><td>{{ i.resolving_power }}</td></tr>
+      <tr><td>{{ i.instrument }}</td><td>{{ "{:,}".format(i.n) }}</td><td>{{ i.resolving_power }}</td><td>{{ i.wave_range }}</td></tr>
       {% endfor %}
     </table>
   </details>
@@ -3829,10 +3829,12 @@ def instruments_page():
 
     instruments_by_archive: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
+        coverage = INSTRUMENT_WAVELENGTH_RANGE_NM.get((r["display_name"], r["instrument"]))
         instruments_by_archive[r["display_name"]].append({
             "instrument": r["instrument"],
             "n": r["n"],
             "resolving_power": INSTRUMENT_RESOLVING_POWER.get((r["display_name"], r["instrument"]), "—"),
+            "wave_range": f"{coverage[0]:g}–{coverage[1]:g} nm" if coverage else "—",
         })
     instruments = [
         {
