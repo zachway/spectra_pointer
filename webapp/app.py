@@ -8,23 +8,30 @@ scripts.export_to_parquet from the real Postgres database (wherever that
 runs) directly into morgan's ~/public_html, which joy's Apache (mod_userdir)
 already serves publicly — morgan and joy share the same NFS home directory,
 so nothing needs to explicitly sync/publish anything. This app reads it
-straight over HTTP via DuckDB's httpfs extension (SPECTRA_DATA_URL, what the
-hosted joy deployment uses), or from a local directory (SPECTRA_DATA_DIR)
-for local dev.
+straight over HTTP via DuckDB's httpfs extension (SPECTRA_DATA_URL), or from
+a local directory (SPECTRA_DATA_DIR) -- the hosted joy deployment uses
+SPECTRA_DATA_DIR, since the app runs colocated with the exported snapshot on
+the same NFS mount; SPECTRA_DATA_URL is for running this app somewhere else
+(local dev, or any future non-joy host) against the published copy over
+plain HTTP.
 
 The one exception is /triage's classification submissions, which do need to
 persist somewhere: rather than opening a write path from this public,
 unauthenticated web tier to Postgres, they're appended as JSON lines to
-another public file on joy over a narrowly-scoped SSH connection (see
-_append_triage_submission / _joy_ssh_client below) and only actually land in
-skip_classifications the next time scripts.export_to_parquet runs and
-imports them.
+another public file. Under SPECTRA_DATA_DIR (what production uses) that's a
+direct, flock-guarded local append (see _append_triage_submission_local);
+under SPECTRA_DATA_URL it goes instead over a narrowly-scoped SSH connection
+to joy (see _append_triage_submission / _joy_ssh_client below) since there's
+no local filesystem access to write through in that mode. Either way, the
+submission only actually lands in skip_classifications the next time
+scripts.export_to_parquet runs and imports it.
 
 Run locally against a local export:
     python3 -m scripts.export_to_parquet --out-dir ./data
     SPECTRA_DATA_DIR=./data python3 -m webapp.app
 
-Run against the hosted snapshot (what the joy deployment does):
+Run against the hosted snapshot over HTTP (for a dev/staging instance not
+colocated with the data -- not what the joy deployment itself does):
     SPECTRA_DATA_URL=http://joy.chara.gsu.edu/~way/spectra_data python3 -m webapp.app
 """
 
@@ -193,9 +200,10 @@ def _resolve_data_source() -> str:
     if local_dir:
         return local_dir.rstrip("/")
     raise RuntimeError(
-        "Set SPECTRA_DATA_URL (e.g. http://joy.chara.gsu.edu/~way/spectra_data "
-        "— what the hosted service uses) or SPECTRA_DATA_DIR (local export) — "
-        "see webapp.app's module docstring."
+        "Set SPECTRA_DATA_DIR (local export directory — what the hosted joy "
+        "deployment uses) or SPECTRA_DATA_URL (e.g. "
+        "http://joy.chara.gsu.edu/~way/spectra_data, for a non-colocated "
+        "instance) — see webapp.app's module docstring."
     )
 
 
