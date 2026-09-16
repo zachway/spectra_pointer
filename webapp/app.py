@@ -2643,6 +2643,14 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('CARMENES', 'CARMENES VIS'): 'R ≈ 94,600',
     ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES NIR'): 'R ≈ 80,600',
     ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES VIS'): 'R ≈ 94,600',
+    # Same physical instrument as the two CARMENES entries above -- these are
+    # just different derived data products (a co-added telluric-corrected
+    # template library and a fixed input catalog snapshot) over the same
+    # CAHA-hosted VIS/NIR channels, so the R doesn't change.
+    ('CARMENES Telluric-Corrected Template Library', 'CARMENES VIS'): 'R ≈ 94,600',
+    ('CARMENES Telluric-Corrected Template Library', 'CARMENES NIR'): 'R ≈ 80,600',
+    ('CARMENES Reiners et al. 2018 Input Catalog', 'CARMENES VIS'): 'R ≈ 94,600',
+    ('CARMENES Reiners et al. 2018 Input Catalog', 'CARMENES NIR'): 'R ≈ 80,600',
     ('CFHT / CADC', 'SPIRou'): 'R ≈ 70,000',
     ('CFHT / CADC', 'ESPaDOnS'): 'R ≈ 68,000 (spectroscopy mode)',
     ('CFHT / CADC', 'MegaPrime'): 'n/a (wide-field imager)',
@@ -2750,7 +2758,7 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('IRTF SpeX (via IRSA)', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): 'R ≈ 80,000 (0.375" slit)',
     ('IRTF Legacy Archive', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
-    ('IRTF Legacy Archive', 'CSHELL'): '—',
+    ('IRTF Legacy Archive', 'CSHELL'): 'R ≈ 5,000–43,000 (slit-dependent)',
     ('Keck Observatory Archive', 'NIRSPEC'): 'R ≈ 2,000–25,000 (mode-dependent)',
     ('Keck Observatory Archive', 'HIRES'): 'R ≈ 25,000–85,000 (slit-dependent)',
     ('Keck Observatory Archive', 'MOSFIRE'): 'R ≈ 3,600',
