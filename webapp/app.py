@@ -781,6 +781,13 @@ NAV_HTML = """
   </nav>
 """
 
+FOOTER_HTML = """
+  <footer class="site-footer">
+    <img class="gsu-logo" src="/static/gsu_logo.jpg" alt="Georgia State University logo">
+    <p>Hosted by Georgia State University</p>
+  </footer>
+"""
+
 SHARED_STYLE = """
     body { font-family: monospace; max-width: min(90vw, 1200px); margin: 2rem auto; padding: 0 1rem; color: #000; background: #fff; }
     dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2rem 1rem; }
@@ -825,6 +832,10 @@ SHARED_STYLE = """
                       gap: 0.6rem 1rem; margin: 0.6rem 0; }
     .advanced-grid label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; }
     .advanced-grid select, .advanced-grid input { font-family: monospace; padding: 0.2rem; }
+    .site-footer { display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
+                    margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #000;
+                    text-align: center; font-size: 0.85rem; }
+    .site-footer .gsu-logo { height: 50px; width: auto; }
 """
 
 PAGE_TEMPLATE = """
@@ -1516,6 +1527,7 @@ PAGE_TEMPLATE = """
     })();
   </script>
 
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -1928,6 +1940,7 @@ SPECTRUM_TEMPLATE = """
       }, { responsive: true });
     </script>
   {% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -2140,6 +2153,7 @@ CMD_TEMPLATE = """
   {% else %}
     <p>No stars with both BP/RP photometry and a positive parallax yet.</p>
   {% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -2224,6 +2238,7 @@ SKY_TEMPLATE = """
   {% else %}
     <p>No stars with position and G magnitude yet.</p>
   {% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -2449,6 +2464,7 @@ LEADERBOARD_TEMPLATE = """
     </tr>
     {% endfor %}
   </table>
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -3686,6 +3702,7 @@ INSTRUMENTS_TEMPLATE = """
   {% else %}
     <p>Not enough archives with matched holdings yet to compute overlap.</p>
   {% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -4050,6 +4067,7 @@ ARCHIVE_STATUS_TEMPLATE = """
     <tr><td>{{ archive }}</td><td>{{ missing }}</td><td>{{ why }}</td></tr>
     {% endfor %}
   </table>
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -4248,6 +4266,7 @@ INFO_TEMPLATE = """
   {% else %}
     <p>None yet.</p>
   {% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -4269,6 +4288,7 @@ CITATION_TEMPLATE = """
   <p>This page is currently under development and does not have a citable DOI. Once created, this page will link to the direct citation.</p>
   <p>If you make use of this page for your research, please use the following acknowledgement:</p>
   <p>Source code: <a href="https://github.com/zachway/spectra_pointer" target="_blank" rel="noopener">github.com/zachway/spectra_pointer</a></p>
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -5124,6 +5144,7 @@ TRIAGE_TEMPLATE = """
   </div>
   {% endfor %}
   {% if not rows %}<p>No skipped records right now.</p>{% endif %}
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
@@ -5152,6 +5173,7 @@ TRIAGE_GATE_TEMPLATE = """
     <label>Name/handle: <input type="text" name="submitter" required size="24" autofocus></label>
     <button type="submit">Start triaging</button>
   </form>
+""" + FOOTER_HTML + """
 </body>
 </html>
 """
