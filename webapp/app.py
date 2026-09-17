@@ -835,7 +835,7 @@ SHARED_STYLE = """
     .site-footer { display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
                     margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #000;
                     text-align: center; font-size: 0.85rem; }
-    .site-footer .gsu-logo { height: 50px; width: auto; }
+    .site-footer .gsu-logo { height: 90px; width: auto; }
 """
 
 PAGE_TEMPLATE = """
