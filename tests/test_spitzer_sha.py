@@ -84,11 +84,33 @@ def test_fetch_cell_keeps_spectral_modes_only_and_dedupes(monkeypatch):
     assert got == {"1": "Spitzer/IRS (Stare)", "2": "Spitzer/IRS (Map)", "4": "Spitzer/MIPS-SED"}
 
 
-def test_fetch_advances_cell_cursor_and_finished_grid_is_noop(monkeypatch):
+def test_fetch_returns_one_nonempty_cell_and_advances_cursor(monkeypatch):
+    monkeypatch.setattr(spitzer_sha, "_fetch_cell", lambda ra, dec: ["obs"])
+    assert spitzer_sha.fetch({}) == (["obs"], {"cell": 1})
+    assert spitzer_sha.fetch({"cell": 7}) == (["obs"], {"cell": 8})
+
+
+def test_fetch_walks_past_empty_cells_instead_of_ending_the_run(monkeypatch):
+    # sync_archive stops on the first zero-count page, so an empty sky cell
+    # must never be returned as an empty page while cells remain.
+    seen = []
+
+    def fake_cell(ra, dec):
+        seen.append((ra, dec))
+        return ["obs"] if len(seen) == 4 else []
+
+    monkeypatch.setattr(spitzer_sha, "_fetch_cell", fake_cell)
+    records, cursor = spitzer_sha.fetch({"cell": 44})
+    assert records == ["obs"]
+    assert cursor == {"cell": 48}
+    assert seen == spitzer_sha.GRID_CELLS[44:48]
+
+
+def test_fetch_finished_or_all_empty_remainder_is_an_empty_final_page(monkeypatch):
     monkeypatch.setattr(spitzer_sha, "_fetch_cell", lambda ra, dec: [])
-    records, cursor = spitzer_sha.fetch({})
-    assert (records, cursor) == ([], {"cell": 1})
-    done = {"cell": len(spitzer_sha.GRID_CELLS)}
+    n = len(spitzer_sha.GRID_CELLS)
+    assert spitzer_sha.fetch({"cell": n - 2}) == ([], {"cell": n})
+    done = {"cell": n}
     assert spitzer_sha.fetch(done) == ([], done)
 
 
