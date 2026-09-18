@@ -234,6 +234,16 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     if cell_index >= len(GRID_CELLS):
         return [], cursor
 
-    ra, dec = GRID_CELLS[cell_index]
-    records = _fetch_cell(ra, dec)
-    return records, {"cell": cell_index + 1}
+    # Walks forward past empty cells within this one call, returning only
+    # once a cell has records (or the grid ends). sync.main.sync_archive
+    # stops its page loop as soon as a page's match counts sum to zero, so
+    # returning an empty page for an empty sky cell would end the whole run
+    # as if the archive had converged -- observed on prod: the first resumed
+    # run stopped at empty cell 44 after one page, with 1,600+ cells left.
+    while cell_index < len(GRID_CELLS):
+        ra, dec = GRID_CELLS[cell_index]
+        records = _fetch_cell(ra, dec)
+        cell_index += 1
+        if records:
+            return records, {"cell": cell_index}
+    return [], {"cell": cell_index}
