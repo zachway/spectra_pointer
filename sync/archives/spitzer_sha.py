@@ -144,7 +144,10 @@ def _search(ra: float, dec: float, radius_deg: float, enabled_key: str) -> list[
             raise RuntimeError(f"SHA search failed: {str(body)[:300]}")
         table = body["tableData"]
         names = [c["name"] for c in table["columns"]]
-        page = [dict(zip(names, row)) for row in table["data"]]
+        # A cone with no matches comes back with "columns" but no "data" key
+        # at all (observed, totalRows: 0) -- e.g. an empty IRS cone at
+        # (261.8, -72.5), which crashed the first prod run at cell 44.
+        page = [dict(zip(names, row)) for row in table.get("data", [])]
         rows.extend(page)
         if len(page) < PAGE_SIZE:
             return rows
