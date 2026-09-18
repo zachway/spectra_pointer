@@ -23,10 +23,23 @@ curation_publisherdid are the same column across every collection here.
     irtf_legacy.py -- flagged as a known gap in irtf_spex.py's own
     docstring, closed here. 468 stars, 498 spectra.
 
+Three further stellar Spitzer/IRS legacy-survey tables are served not via SSA
+but IRSA's TAP service (irsa.ipac.caltech.edu/TAP, schema "spitzer"), added
+2026-09-18 after Spitzer's 2003-2009 cryogenic IRS mission turned out to be
+almost entirely missing (see TAP_TABLES): spitzer.feps_spectra_v5 (328 solar-
+type stars), spitzer.disks_sh_spectra (54 disk-hosting stars) and
+spitzer.c2d_irs_spec (1,382 c2d young-stellar-object spectra). Their files are
+IPAC .tbl/.dat text tables under irsa.ipac.caltech.edu/data/SPITZER/<dir>/, not
+the FITS the SASS/IRS-std viewer parser expects, and none of the three tables
+carries an observation date (obs_date stays None, same as the SSA collections
+above). Positions and names are real, so name matching works today; positional
+matching needs nominal-epoch support in the matcher (not implemented here).
+
 Deliberately excludes every other Spitzer IRSA collection found alongside
-these (spitzer_sings, spitzer_m83m33, spitzer_c2d, spitzer_sage,
-spitzer_s5, spitzer_5muses, spitzer_ssgss) -- confirmed extragalactic/ISM
-surveys, not stellar, out of scope.
+these (spitzer_sings, spitzer_m83m33, spitzer_sage, spitzer_s5,
+spitzer_5muses, spitzer_ssgss, spitzer_goals) -- confirmed extragalactic/ISM
+surveys, not stellar, out of scope. (c2d was previously excluded with them;
+its IRS spectra are of young stellar objects, so they are now included via TAP.)
 
 SIZE is a real radius here too, same confirmed-live behavior as svo_cab.py
 (not the usual IVOA SSA "diameter" reading): querying irtf_mearth from two
@@ -103,9 +116,38 @@ import requests
 from astropy.io.votable import parse_single_table
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, reduction_status_from_calib_level
+from sync.base import RawObservation, clean_float, make_tap_service, reduction_status_from_calib_level
 
 SSA_URL = "https://irsa.ipac.caltech.edu/SSA"
+TAP_URL = "https://irsa.ipac.caltech.edu/TAP"
+SPITZER_DATA_URL = "https://irsa.ipac.caltech.edu/data/SPITZER"
+
+# Stellar Spitzer/IRS legacy-survey tables served via TAP (see module
+# docstring). "files" maps a table column holding a relative file path to the
+# instrument label that file is recorded under; a value of "none" (FEPS's
+# irs_hi_dat_u when no high-res spectrum exists, observed) means no such file.
+# "name_col" is the target-name column, or None when the name has to be
+# recovered from the file path's parent directory (c2d, see _tap_target_name).
+TAP_TABLES = {
+    "spitzer.feps_spectra_v5": {
+        "base": f"{SPITZER_DATA_URL}/FEPS",
+        "name_col": "name",
+        "files": {
+            "irs_lo_tbl_u": "Spitzer/IRS (FEPS)",
+            "irs_hi_dat_u": "Spitzer/IRS (FEPS high-res)",
+        },
+    },
+    "spitzer.disks_sh_spectra": {
+        "base": f"{SPITZER_DATA_URL}/Disks_SH_spectra",
+        "name_col": "object",
+        "files": {"spectrum_tbl_u": "Spitzer/IRS (Disks SH)"},
+    },
+    "spitzer.c2d_irs_spec": {
+        "base": f"{SPITZER_DATA_URL}/C2D",
+        "name_col": None,
+        "files": {"tbl_u": "Spitzer/IRS (c2d)"},
+    },
+}
 
 # Collections whose entire catalog comes back in one whole-sky SIZE=180
 # query -- see module docstring for confirmed-live timings/row counts.
@@ -210,6 +252,42 @@ def _to_observation(row, instrument: str) -> RawObservation:
     )
 
 
+def _tap_target_name(row, name_col) -> str:
+    if name_col is not None:
+        return str(row[name_col]).strip()
+    # c2d: no name column -- the real target name is the file's parent
+    # directory (e.g. ".../IRS_POINTED/RR_Tau/SPITZER_IRS_..._RR_Tau.tbl" ->
+    # "RR_Tau"), observed on the first rows sampled.
+    return str(row["file_name"]).rstrip("/").split("/")[-2]
+
+
+def _fetch_tap_spectra() -> list[RawObservation]:
+    service = make_tap_service(TAP_URL)
+    records = []
+    for table, meta in TAP_TABLES.items():
+        rows = service.run_sync(f"SELECT * FROM {table}").to_table()
+        for row in rows:
+            name = _tap_target_name(row, meta["name_col"]).replace("_", " ")
+            ra, dec = clean_float(row["ra"]), clean_float(row["dec"])
+            for column, instrument in meta["files"].items():
+                path = str(row[column]).strip()
+                if not path or path.lower() == "none":
+                    continue
+                url = f"{meta['base']}/{path.removeprefix('./')}"
+                records.append(
+                    RawObservation(
+                        archive_obs_id=url,
+                        archive_url=url,
+                        instrument=instrument,
+                        ra=ra,
+                        dec=dec,
+                        raw_target_name=name,
+                        reduction_status="reduced",
+                    )
+                )
+    return records
+
+
 def _fetch_whole_sky() -> list[RawObservation]:
     records = []
     for collection, meta in WHOLE_SKY_COLLECTIONS.items():
@@ -222,6 +300,14 @@ def _fetch_whole_sky() -> list[RawObservation]:
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
+    if not cursor.get("tap_done"):
+        # Runs once, ahead of everything else -- including for an existing
+        # cursor from before the TAP tables were added (whole_sky_done/
+        # grid_index already set), which just gains tap_done and carries on.
+        new_cursor = dict(cursor)
+        new_cursor["tap_done"] = True
+        return _fetch_tap_spectra(), new_cursor
+
     if not cursor.get("whole_sky_done"):
         records = _fetch_whole_sky()
         new_cursor = {"whole_sky_done": True, "grid_index": 0}

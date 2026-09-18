@@ -720,7 +720,10 @@ def _parse_irsa_missions(holding: dict) -> dict:
     # IRTF/MEarth is a bare WCS image with no bintable at all; ISO/SOFIA/
     # IRAS weren't checked and may differ again.
     instrument = holding.get("instrument") or ""
-    if not instrument.startswith("Spitzer/IRS"):
+    # Exact labels, not a "Spitzer/IRS" prefix: the FEPS/Disks SH/c2d
+    # instruments (added via TAP) are IPAC .tbl/.dat text tables, not this
+    # FITS bintable shape.
+    if instrument not in ("Spitzer/IRS (SASS)", "Spitzer/IRS (Std Stars)"):
         raise SpectrumUnavailable(
             f"Spectrum display for irsa_missions is only implemented for Spitzer/IRS "
             f"products so far, not {instrument or 'this instrument'}."
