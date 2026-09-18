@@ -137,3 +137,54 @@ def test_reconcile_shitty_positional_match_respects_only_archives(conn, monkeypa
     reconcile_shitty_positional_match(conn, only_archives=["eso", "mast"])
 
     assert calls == [{"only_archives": ["eso", "mast"], "skipped_only": True}]
+
+
+def test_reconcile_archive_retries_transient_error(conn, monkeypatch):
+    import requests
+
+    _clear_sync_state(conn, "unit_test")
+    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    calls = []
+
+    def flaky_fetch(cursor):
+        calls.append(cursor)
+        if len(calls) == 1:
+            raise requests.exceptions.ReadTimeout("slow")
+        return [], {}
+
+    reconcile_archive(conn, "unit_test", flaky_fetch, max_pages=1)
+
+    assert len(calls) == 2, "the failed page must be retried once"
+
+
+def test_reconcile_archive_does_not_retry_real_bugs(conn, monkeypatch):
+    import pytest
+
+    _clear_sync_state(conn, "unit_test")
+    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    calls = []
+
+    def broken_fetch(cursor):
+        calls.append(cursor)
+        raise KeyError("bug")
+
+    with pytest.raises(KeyError):
+        reconcile_archive(conn, "unit_test", broken_fetch, max_pages=1)
+    assert len(calls) == 1
+
+
+def test_reconcile_archive_gives_up_after_page_retries(conn, monkeypatch):
+    import pytest
+    import requests
+
+    _clear_sync_state(conn, "unit_test")
+    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    calls = []
+
+    def dead_fetch(cursor):
+        calls.append(cursor)
+        raise requests.exceptions.ConnectionError("down")
+
+    with pytest.raises(requests.exceptions.ConnectionError):
+        reconcile_archive(conn, "unit_test", dead_fetch, max_pages=1)
+    assert len(calls) == reconcile_module.PAGE_RETRIES

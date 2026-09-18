@@ -34,6 +34,13 @@ if [ -s "$COOKIE_FILE" ]; then
     GOA_SESSION_COOKIE="$(cat "$COOKIE_FILE")"
 fi
 
+# Same lock as scripts/weekly_reconcile.sh so the two never overlap.
+exec 9>/tmp/spectra_reconcile.lock
+if ! flock -n 9; then
+    echo "$(date): another reconcile run holds the lock, skipping"
+    exit 0
+fi
+
 echo "=== $(date): monthly reconcile starting ==="
 
 python3 -m sync.reconcile --max-pages-per-archive 20

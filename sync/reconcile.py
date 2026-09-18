@@ -50,8 +50,12 @@ import argparse
 import logging
 import os
 import sys
+import time
 
 import psycopg
+import pyvo.dal.exceptions
+import requests
+import urllib3.exceptions
 
 from scripts import shitty_positional_match
 from sync import state
@@ -109,13 +113,49 @@ AT_RISK_ARCHIVES = [
 ]
 
 
+# Errors a page is worth retrying on: archive-side hiccups seen in the 2026-09-01
+# monthly run (CADC read timeouts for cfht_cadc/dao, a JVO non-VOTable response
+# for naoj) and a Postgres deadlock against a concurrent writer (koa). Anything
+# else is a real bug and propagates immediately.
+TRANSIENT_ERRORS = (
+    requests.exceptions.Timeout,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.ChunkedEncodingError,
+    urllib3.exceptions.HTTPError,
+    pyvo.dal.exceptions.DALFormatError,
+    psycopg.errors.DeadlockDetected,
+    psycopg.errors.SerializationFailure,
+)
+PAGE_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 30
+
+
+def _run_page_with_retry(conn: psycopg.Connection, archive_code: str, fetch_fn, offline: bool):
+    """run_sync for one page, retried on TRANSIENT_ERRORS with growing backoff.
+    Rolls the connection back first (a deadlock leaves the transaction aborted).
+    The cursor only advances on success, so a retry re-fetches the same page."""
+    for attempt in range(1, PAGE_RETRIES + 1):
+        try:
+            return run_sync(conn, archive_code, fetch_fn, "reconcile", offline=offline)
+        except TRANSIENT_ERRORS as exc:
+            conn.rollback()
+            if attempt == PAGE_RETRIES:
+                raise
+            delay = RETRY_BACKOFF_SECONDS * attempt
+            logger.warning(
+                "%s: transient error on reconcile page (attempt %d/%d), retrying in %ds: %s",
+                archive_code, attempt, PAGE_RETRIES, delay, exc,
+            )
+            time.sleep(delay)
+
+
 def reconcile_archive(conn: psycopg.Connection, archive_code: str, fetch_fn, max_pages: int | None) -> dict:
     totals: dict[str, int] = {}
     pages = 0
     converged = False
     offline = False
     while max_pages is None or pages < max_pages:
-        counts, gaia_degraded = run_sync(conn, archive_code, fetch_fn, "reconcile", offline=offline)
+        counts, gaia_degraded = _run_page_with_retry(conn, archive_code, fetch_fn, offline)
         if gaia_degraded and not offline:
             # Same sticky per-archive fallback as sync.main.sync_archive --
             # see there for why.
