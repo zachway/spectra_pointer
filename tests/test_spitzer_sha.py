@@ -108,6 +108,36 @@ def test_timeout_splits_into_four_half_radius_cones_then_gives_up(monkeypatch):
     assert calls[:3] == [4.0, 2.0, 1.0]
 
 
+class _FakeResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+def test_empty_cone_without_a_data_key_returns_no_rows(monkeypatch):
+    # Observed live: a cone with no matches has "columns" and totalRows 0 but
+    # no "data" key at all (crashed the first prod run with KeyError: 'data').
+    body = {"totalRows": 0, "tableData": {"columns": [{"name": "targetname"}, {"name": "reqkey"}]}}
+    monkeypatch.setattr(spitzer_sha._session, "post", lambda *a, **k: _FakeResponse(body))
+    assert spitzer_sha._search(261.8, -72.5, 4.5, "instrumentFilter_IRS") == []
+
+
+def test_search_pages_until_a_short_page(monkeypatch):
+    monkeypatch.setattr(spitzer_sha, "PAGE_SIZE", 2)
+    monkeypatch.setattr(spitzer_sha, "REQUEST_DELAY_SEC", 0)
+    columns = [{"name": "reqkey"}]
+    pages = iter([[["1"], ["2"]], [["3"]]])
+    monkeypatch.setattr(
+        spitzer_sha._session, "post", lambda *a, **k: _FakeResponse({"tableData": {"columns": columns, "data": next(pages)}})
+    )
+    assert [r["reqkey"] for r in spitzer_sha._search(0.0, 0.0, 4.5, "instrumentFilter_IRS")] == ["1", "2", "3"]
+
+
 def test_every_instrument_label_has_wavelength_and_resolving_power_entries():
     labels = {label for keep in spitzer_sha.QUERIES.values() for label in keep.values()}
     assert labels == {"Spitzer/IRS (Stare)", "Spitzer/IRS (Map)", "Spitzer/MIPS-SED"}
