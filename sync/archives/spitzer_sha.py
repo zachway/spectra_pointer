@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import time
 from datetime import datetime
 
@@ -72,6 +73,9 @@ PAGE_SIZE = 2000
 MAX_SPLIT_DEPTH = 2
 REQUEST_DELAY_SEC = 0.5
 READ_TIMEOUT_SEC = 150
+SEARCH_ATTEMPTS = 4
+RETRY_BACKOFF_SEC = 10
+PROC_URL = f"{FILE_BASE_URL}/SHA/archive/proc/"
 
 # instrument-filter key to enable -> {modedisplayname: instrument label} to keep.
 QUERIES = {
@@ -129,18 +133,27 @@ def _search(ra: float, dec: float, radius_deg: float, enabled_key: str) -> list[
         }
         for key in ALL_FILTER_KEYS:
             request[key] = "all" if key == enabled_key else "none"
-        resp = _session.post(
-            SEARCH_URL,
-            params={"cmd": "tableSearch"},
-            data={"request": json.dumps(request), "cmd": "tableSearch"},
-            headers={"x-requested-with": "XMLHttpRequest"},
-            timeout=(15, READ_TIMEOUT_SEC),
-        )
-        resp.raise_for_status()
-        body = resp.json()
-        if not isinstance(body, dict):
+        for attempt in range(SEARCH_ATTEMPTS):
+            resp = _session.post(
+                SEARCH_URL,
+                params={"cmd": "tableSearch"},
+                data={"request": json.dumps(request), "cmd": "tableSearch"},
+                headers={"x-requested-with": "XMLHttpRequest"},
+                timeout=(15, READ_TIMEOUT_SEC),
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            if isinstance(body, dict):
+                break
             # A failed search comes back as a bare list, e.g.
-            # [{"success": "false", "error": "..."}] (observed).
+            # [{"success": "false", "error": "..."}] (observed). The backend
+            # intermittently answers a perfectly good cone with
+            # "DataAccessException: Failed to retrieve data" (observed live,
+            # 2026-09-21, on a 0.5 deg cone near Sz 102) -- transient, so
+            # retried with a growing pause; anything else fails at once.
+            if attempt < SEARCH_ATTEMPTS - 1 and "Failed to retrieve data" in str(body):
+                time.sleep(RETRY_BACKOFF_SEC * (attempt + 1))
+                continue
             raise RuntimeError(f"SHA search failed: {str(body)[:300]}")
         table = body["tableData"]
         names = [c["name"] for c in table["columns"]]
@@ -187,6 +200,43 @@ def _aor_folder_url(depth_of_coverage: str | None) -> str | None:
     return f"{FILE_BASE_URL}/SHA/{directory[len('/sha/'):]}/"
 
 
+_campaign_maps: dict[str, dict[str, str]] = {}
+
+
+def _campaign_map(prefix: str) -> dict[str, str]:
+    """{aorkey: campaign directory} for every processed AOR under the
+    /proc/<prefix>*/ campaign directories of IRSA's file tree (IRSX = IRS,
+    MIPS = MIPS), built once per process on first use -- ~77 small directory
+    listings for IRSX."""
+    if prefix not in _campaign_maps:
+        listing = _session.get(PROC_URL, timeout=(15, 120))
+        listing.raise_for_status()
+        campaigns = sorted(c for c in set(re.findall(r'href="([A-Z0-9]+)/"', listing.text)) if c.startswith(prefix))
+        found: dict[str, str] = {}
+        for campaign in campaigns:
+            resp = _session.get(f"{PROC_URL}{campaign}/", timeout=(15, 120))
+            resp.raise_for_status()
+            for aorkey in set(re.findall(r'href="r(\d+)/"', resp.text)):
+                found[aorkey] = campaign
+            time.sleep(REQUEST_DELAY_SEC)
+        _campaign_maps[prefix] = found
+    return _campaign_maps[prefix]
+
+
+def _folder_url_from_tree(aorkey: str, instrument: str) -> str | None:
+    """The AOR's directory, found via the file tree instead of the search row.
+    Needed because ~10% of real IRS Stare rows come back from the search with
+    depthofcoverage None (observed: Beta Pictoris AOR 4888320, HD 163466,
+    HD 172728) even though their processed folder exists -- dropping them
+    left 1,805 IRSX AORs (mostly, but not only, legitimately dropped peak-up
+    imaging and engineering requests) missing from the first full prod crawl,
+    ~10% of them real Stare observations. An AOR with no folder in the tree at
+    all has no products to point at and stays dropped."""
+    prefix = "MIPS" if instrument.startswith("Spitzer/MIPS") else "IRSX"
+    campaign = _campaign_map(prefix).get(str(aorkey))
+    return f"{PROC_URL}{campaign}/r{aorkey}/" if campaign else None
+
+
 def _parse_date(value) -> datetime | None:
     if not value:
         return None
@@ -197,9 +247,11 @@ def _parse_date(value) -> datetime | None:
 
 
 def _to_observation(row: dict, instrument: str) -> RawObservation | None:
-    url = _aor_folder_url(row.get("depthofcoverage"))
     aorkey = row.get("reqkey")
-    if url is None or not aorkey:
+    if not aorkey:
+        return None
+    url = _aor_folder_url(row.get("depthofcoverage")) or _folder_url_from_tree(aorkey, instrument)
+    if url is None:
         return None
     start = _parse_date(row.get("reqbegintime"))
     return RawObservation(
