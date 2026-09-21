@@ -149,6 +149,7 @@ transparency -- only the axis label changes.
 
 from __future__ import annotations
 
+import bz2
 import gzip
 import io
 import re
@@ -170,6 +171,7 @@ SUPPORTED_ARCHIVES = {
     "rave", "feros_gavo", "flashheros_gavo", "ondrejov", "heros_ondrejov", "sophie", "hermes_mercator",
     "carmenes_tac", "carmenes_reiners2018", "cfht_cadc",
     "galah", "spitzer_sha", "iacob", "mast",
+    "naoj", "harpsn_tng", "hpol", "svo_cab", "gemini_ghost",
 }
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
@@ -230,6 +232,11 @@ SIZE_HINT_BYTES = {
     "spitzer_sha": 500_000,  # ~12 exposures x ~26KB per channel, 2-4 channels
     "iacob": 5_400_000,  # 2 x 335,539 float64 -- real sample, just over HEAVY_THRESHOLD_BYTES
     "mast": 500_000,  # HST x1d/x1dsum 260-430KB, cspec 40KB, aspec 1.9MB, IUE 0.7MB, EUVE 43KB
+    "naoj": 225_000,  # HDS 1D primary image
+    "harpsn_tng": 4_600_000,  # S1D_FLUXCAL bintable, ~4.6MB gz (older s1d_A: ~1MB)
+    "hpol": 20_000,
+    "svo_cab": 4_800_000,  # gbs is 4.8MB; miles/catlib/stelib/xshooter are 8KB-820KB
+    "gemini_ghost": 3_900_000,  # bz2, 2.7MB blue / 3.9MB red
 }
 
 HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
@@ -1280,12 +1287,170 @@ def _parse_mast(holding: dict) -> dict:
     }
 
 
+def _maybe_decompress(raw: bytes) -> bytes:
+    if raw[:2] == b"\x1f\x8b":
+        return gzip.decompress(raw)
+    if raw[:3] == b"BZh":
+        return bz2.decompress(raw)
+    return raw
+
+
+def _linear_wave(header, n: int) -> np.ndarray:
+    crpix = header.get("CRPIX1", 1.0)
+    return header["CRVAL1"] + (np.arange(n) + 1 - crpix) * header["CDELT1"]
+
+
+_NAOJ_HDS_RE = re.compile(r"/PIPE-[\d.]+_1d_nrmwec_[^/]*\.fits$")
+_HARPSN_S1D_RE = re.compile(r"_S1D_FLUXCAL_A\.fits\.gz$|_s1d_A\.fits\.gz$")
+_HPOL_RE = re.compile(r"_hw\.fits\.gz$")
+_SVO_COLLECTIONS = ("miles", "catlib", "stelib", "xshooter", "gbs")
+_GHOST_RE = re.compile(r"_calibrated(_ql)?\.fits\.bz2$")
+
+
+def _parse_naoj(holding: dict) -> dict:
+    """Subaru/HDS pipeline product (PIPE-*_1d_nrmwec_*): a continuum-normalized
+    1D primary-HDU image with a linear WCS (CRVAL1/CDELT1, ~0.026 Å/px,
+    ~50k px), confirmed live; no uncertainty array. naoj's other rows (raw
+    .tar bundles, .txt) are not displayable -- see _ROW_GATES."""
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        flux = np.asarray(hdul[0].data, dtype=float).reshape(-1)
+        wave = _linear_wave(hdul[0].header, len(flux))
+    wave, flux = _bin_mean(wave, flux, 8000)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "continuum-normalized (dimensionless)",
+        "segments": [_segment("Subaru/HDS", wave, flux, None, max_points=8000)],
+    }
+
+
+def _parse_harpsn_tng(holding: dict) -> dict:
+    """HARPS-N (TNG/IA2). Two real reduced products, both confirmed live:
+    *_S1D_FLUXCAL_A.fits.gz (bintable wavelength/flux_cal/error_cal, ~212k
+    rows, 4.6MB) and older *_s1d_A.fits.gz (1D 'Relative Flux' image, linear
+    Å WCS, ~304k px). Both are bin-averaged to keep line shapes at 8000 pts.
+    Raw exposures (no S1D in the name) are excluded by the row gate."""
+    raw = _maybe_decompress(_fetch_bytes(holding["archive_url"]))
+    with fits.open(io.BytesIO(raw)) as hdul:
+        if len(hdul) > 1 and "flux_cal" in (getattr(hdul[1], "columns", None) and hdul[1].columns.names or []):
+            d = hdul[1].data
+            wave = np.asarray(d["wavelength"], dtype=float)
+            flux = np.asarray(d["flux_cal"], dtype=float)
+            unc = np.asarray(d["error_cal"], dtype=float)
+            unit = "arbitrary (flux-calibrated pipeline units)"
+        else:
+            flux = np.asarray(hdul[0].data, dtype=float).reshape(-1)
+            wave = _linear_wave(hdul[0].header, len(flux))
+            unc, unit = None, "relative flux"
+    binned_wave, binned_flux = _bin_mean(wave, flux, 8000)
+    binned_unc = _bin_mean(wave, unc, 8000)[1] if unc is not None else None
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": unit,
+        "segments": [_segment("HARPS-N", binned_wave, binned_flux, binned_unc, max_points=8000)],
+    }
+
+
+def _parse_hpol(holding: dict) -> dict:
+    """HPOL spectropolarimeter (STScI mirror): the 1D flux is the PRIMARY image
+    (linear WCS, BUNIT erg/cm^2/s/Å -- a real calibrated flux); Q/U live in a
+    POLARIMETRY table and are not plotted. No flux uncertainty."""
+    raw = _maybe_decompress(_fetch_bytes(holding["archive_url"]))
+    with fits.open(io.BytesIO(raw)) as hdul:
+        flux = np.asarray(hdul[0].data, dtype=float).reshape(-1)
+        wave = _linear_wave(hdul[0].header, len(flux))
+        physical = _is_erg_flux_unit(hdul[0].header.get("BUNIT"))
+    if physical:
+        flux = flux * 1e17
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A if physical else "arbitrary (pipeline flux units)",
+        "segments": [_segment("HPOL", wave, flux, None)],
+    }
+
+
+def _svo_collection(url: str) -> str | None:
+    m = re.search(r"svocats\.cab\.inta-csic\.es/([a-z0-9_]+)/ssap\.php", url or "")
+    return m.group(1) if m and m.group(1) in _SVO_COLLECTIONS else None
+
+
+def _parse_svo_cab(holding: dict) -> dict:
+    """SVO Cluster/CAB spectral libraries (one archive_code, 5 collections
+    with 3 different shapes, each confirmed live): miles/catlib/stelib are a
+    1D (or 1xN) flux image with linear Å WCS; xshooter is natural-log
+    wavelength (CRVAL1=ln λ; 2990-10200 Å matches XShooter's coverage) with
+    an ERRS extension; gbs is a normalized 600k-px spectrum with a SIGMA
+    extension whose axis is in nm (300-900). The XSL sub-collection that once
+    returned 'No data found' is not in _SVO_COLLECTIONS. Flux is treated as
+    arbitrary even where a BUNIT says erg (library normalizations vary)."""
+    coll = _svo_collection(holding["archive_url"])
+    if coll is None:
+        raise SpectrumUnavailable("This SVO collection isn't supported for display.")
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        header = hdul[0].header
+        flux = np.asarray(hdul[0].data, dtype=float).reshape(-1)
+        n = len(flux)
+        unc = None
+        if coll == "xshooter":
+            wave = np.exp(header["CRVAL1"] + np.arange(n) * header["CDELT1"])
+            if "ERRS" in hdul:
+                unc = np.asarray(hdul["ERRS"].data, dtype=float).reshape(-1)
+        elif coll == "gbs":
+            wave = _linear_wave(header, n) * 10.0  # nm -> Å
+            if "SIGMA" in hdul:
+                unc = np.asarray(hdul["SIGMA"].data, dtype=float).reshape(-1)
+        else:
+            wave = _linear_wave(header, n)
+    if n > 8000:
+        w, f = _bin_mean(wave, flux, 8000)
+        unc = _bin_mean(wave, unc, 8000)[1] if unc is not None else None
+        wave, flux = w, f
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "arbitrary (library-normalized flux)",
+        "segments": [_segment(f"SVO {coll}", wave, flux, unc, max_points=8000)],
+    }
+
+
+def _parse_gemini_ghost(holding: dict) -> dict:
+    """Gemini/GHOST reduced (calibrated) echelle, bz2 MEF, confirmed live to
+    download anonymously (the audit's earlier auth doubt did not hold): SCI
+    (orders, pix, 2), VAR, WAVL (orders, pix). Extensions are read by index
+    because 'SCI' also names the primary HDU. The trailing axis of 2 is two
+    slit positions; index 0 is the science target (median ~60x brighter than
+    index 1 on a real bright star, i.e. the other is sky/secondary) and is
+    the one plotted. WAVL is Å despite its BUNIT string (3474-5439 Å blue,
+    5209-10610 Å red); flux is W m^-2 nm^-1 (x100 -> erg/s/cm^2/Å), a real
+    physical unit."""
+    raw = _maybe_decompress(_fetch_bytes(holding["archive_url"]))
+    with fits.open(io.BytesIO(raw)) as hdul:
+        sci, var, wavl = hdul[1].data, hdul[2].data, hdul[3].data
+    if sci is None or wavl is None or sci.ndim != 3:
+        raise SpectrumUnavailable("Unexpected GHOST file layout.")
+    segments = []
+    for i in range(sci.shape[0]):
+        flux = np.asarray(sci[i, :, 0], dtype=float) * 100.0 * 1e17
+        unc = np.sqrt(np.clip(np.asarray(var[i, :, 0], dtype=float), 0, None)) * 100.0 * 1e17
+        seg = _segment(f"GHOST order {i}", np.asarray(wavl[i], dtype=float), flux, unc)
+        if seg["wavelength"]:
+            segments.append(seg)
+    if not segments:
+        raise SpectrumUnavailable("No usable orders in this GHOST file.")
+    return {"wavelength_unit": "Å", "flux_unit": FLUX_UNIT_ERG_CM2_S_A, "segments": segments}
+
+
 # Archives where SUPPORTED_ARCHIVES is necessary but not sufficient: only some
 # rows carry a displayable product. Each gate takes the holding dict.
 _ROW_GATES = {
     "mast": lambda h: _mast_resolve(h) is not None,
     "irsa_missions": lambda h: (h.get("instrument") or "") in ("Spitzer/IRS (SASS)", "Spitzer/IRS (Std Stars)"),
     "spitzer_sha": lambda h: (h.get("instrument") or "") == "Spitzer/IRS (Stare)",
+    "naoj": lambda h: bool(_NAOJ_HDS_RE.search(h.get("archive_url") or "")),
+    "harpsn_tng": lambda h: bool(_HARPSN_S1D_RE.search(h.get("archive_url") or "")),
+    "hpol": lambda h: bool(_HPOL_RE.search(h.get("archive_url") or "")),
+    "svo_cab": lambda h: _svo_collection(h.get("archive_url") or "") is not None,
+    "gemini_ghost": lambda h: bool(_GHOST_RE.search(h.get("archive_url") or "")),
 }
 
 
@@ -1325,6 +1490,11 @@ _PARSERS = {
     "spitzer_sha": _parse_spitzer_sha,
     "iacob": _parse_iacob,
     "mast": _parse_mast,
+    "naoj": _parse_naoj,
+    "harpsn_tng": _parse_harpsn_tng,
+    "hpol": _parse_hpol,
+    "svo_cab": _parse_svo_cab,
+    "gemini_ghost": _parse_gemini_ghost,
 }
 
 

@@ -101,6 +101,35 @@ def test_per_row_gates_for_spitzer_and_irsa_missions():
     assert not is_spectrum_viewable({"archive_code": "harpsn_tng", "instrument": "HARPS-N"})
 
 
+def test_second_batch_row_gates():
+    from webapp.spectrum_viewer import is_spectrum_viewable
+
+    def v(code, url):
+        return is_spectrum_viewable({"archive_code": code, "archive_url": url, "instrument": "x"})
+
+    hds = "http://jvo.nao.ac.jp/skynode/do/download/hds/public/file/"
+    assert v("naoj", hds + "PIPE-1.0_1d_nrmwec_fsclmo_HDSA00003798.fits")
+    assert not v("naoj", hds + "SK-0611_HDSA00003463.tar")
+    assert not v("naoj", hds + "PIPE-1.0_1d_nrmwec_fsclmo_HDSA00037843.txt")
+
+    tng = "http://archives.ia2.inaf.it/files/tng/"
+    assert v("harpsn_tng", tng + "r.HARPN.2013-10-11T00-10-28.341_S1D_FLUXCAL_A.fits.gz")
+    assert v("harpsn_tng", tng + "HARPN.2012-09-05T20-35-43.956_s1d_A.fits.gz")
+    assert not v("harpsn_tng", tng + "HARPN.2012-09-02T20-24-34.231.fits.gz")  # raw exposure
+
+    svo = "http://svocats.cab.inta-csic.es/"
+    for coll in ("miles", "catlib", "stelib", "xshooter", "gbs"):
+        assert v("svo_cab", f"{svo}{coll}/ssap.php?ID=1&label=spec_fits")
+    assert not v("svo_cab", f"{svo}xsl/ssap.php?ID=320&label=spec_fits")  # "No data found" upstream
+
+    gem = "https://archive.gemini.edu/file/"
+    assert v("gemini_ghost", gem + "S20230416S0079_blue001_calibrated.fits.bz2")
+    assert v("gemini_ghost", gem + "S20230416S0079_blue001_calibrated_ql.fits.bz2")
+    assert not v("gemini_igrins", gem + "SDCH_20180402_0100.spec_a0v.fits.bz2")  # anonymous GET returns 400
+
+    assert v("hpol", "https://archive.stsci.edu/missions/hpol/data/x/hpolret_x_hw.fits.gz")
+
+
 def test_bin_mean_preserves_shape_instead_of_striding():
     from webapp.spectrum_viewer import _bin_mean
 
