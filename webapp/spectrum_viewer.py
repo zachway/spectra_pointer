@@ -357,7 +357,16 @@ def check_rate_limit(client_ip: str) -> None:
         _rate_limit_state[client_ip] = timestamps
 
 
+# REQUEST_TIMEOUT_SECONDS is per socket read, so a slow-but-steady archive
+# (a trickling 3.6MB hermes_mercator VOTable, say) can hold one request open
+# for minutes -- long enough for the reverse proxy or browser to drop the
+# connection, which the page shows as an opaque "TypeError: Failed to fetch"
+# instead of our own message. This caps the whole download.
+TOTAL_DOWNLOAD_DEADLINE_SECONDS = 40
+
+
 def _fetch_bytes(url: str) -> bytes:
+    deadline = time.monotonic() + TOTAL_DOWNLOAD_DEADLINE_SECONDS
     try:
         with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             resp.raise_for_status()
@@ -369,6 +378,10 @@ def _fetch_bytes(url: str) -> bytes:
             chunks = []
             total = 0
             for chunk in resp.iter_content(chunk_size=1 << 16):
+                if time.monotonic() > deadline:
+                    raise SpectrumUnavailable(
+                        f"The archive is responding too slowly (over {TOTAL_DOWNLOAD_DEADLINE_SECONDS}s) -- try again later."
+                    )
                 total += len(chunk)
                 if total > MAX_DOWNLOAD_BYTES:
                     raise SpectrumUnavailable("Spectrum file exceeded the size limit while downloading.")
@@ -830,6 +843,7 @@ def _parse_hermes_mercator(holding: dict) -> dict:
     # _fetch_bytes' Content-Length check happens on the *first* response,
     # so a redirect chain could dodge the size cap; stream+redirect
     # directly here instead of going through _fetch_bytes.
+    deadline = time.monotonic() + TOTAL_DOWNLOAD_DEADLINE_SECONDS
     try:
         with requests.get(holding["archive_url"], stream=True, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
             resp.raise_for_status()
@@ -838,6 +852,10 @@ def _parse_hermes_mercator(holding: dict) -> dict:
                 raise SpectrumUnavailable(f"Spectrum file is too large to display ({int(content_length):,} bytes).")
             chunks, total = [], 0
             for chunk in resp.iter_content(chunk_size=1 << 16):
+                if time.monotonic() > deadline:
+                    raise SpectrumUnavailable(
+                        f"The archive is responding too slowly (over {TOTAL_DOWNLOAD_DEADLINE_SECONDS}s) -- try again later."
+                    )
                 total += len(chunk)
                 if total > MAX_DOWNLOAD_BYTES:
                     raise SpectrumUnavailable("Spectrum file exceeded the size limit while downloading.")
