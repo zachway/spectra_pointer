@@ -1969,7 +1969,7 @@ def _resolve_spectrum(holding: dict) -> dict:
       {"ok": False, "error": str}
     """
     if not is_spectrum_viewable(holding):
-        return {"ok": False, "error": f"Spectrum display isn't implemented for this {holding['display_name']} product yet."}
+        return {"ok": False, "error": f"Spectrum display isn't implemented for {holding['display_name']} yet."}
     if is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
         # Ask before fetching rather than after -- a plain <a href> is
         # exactly the shape a crawler/link-preview bot follows automatically,
