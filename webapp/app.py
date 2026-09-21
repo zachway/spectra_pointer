@@ -1218,8 +1218,10 @@ PAGE_TEMPLATE = """
               var seenNames = {};
               result.segments.forEach(function(seg) {
                 if (seg.uncertainty) {
-                  var lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
-                  var upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+                  // Missing points arrive as null (see spectrum_viewer's
+                  // _nan_to_none) -- null - u would be a spike at -u, not a gap.
+                  var lower = seg.flux.map(function(f, j) { var u = seg.uncertainty[j]; return (f === null || u === null) ? null : f - u; });
+                  var upper = seg.flux.map(function(f, j) { var u = seg.uncertainty[j]; return (f === null || u === null) ? null : f + u; });
                   traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
                                 showlegend: false, hoverinfo: 'skip' });
                   traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
@@ -1915,8 +1917,8 @@ SPECTRUM_TEMPLATE = """
       segments.forEach(function(seg, i) {
         const color = palette[i % palette.length];
         if (seg.uncertainty) {
-          const lower = seg.flux.map(function(f, j) { return f - seg.uncertainty[j]; });
-          const upper = seg.flux.map(function(f, j) { return f + seg.uncertainty[j]; });
+          const lower = seg.flux.map(function(f, j) { const u = seg.uncertainty[j]; return (f === null || u === null) ? null : f - u; });
+          const upper = seg.flux.map(function(f, j) { const u = seg.uncertainty[j]; return (f === null || u === null) ? null : f + u; });
           traces.push({ x: seg.wavelength, y: lower, mode: 'lines', line: { width: 0 },
                         showlegend: false, hoverinfo: 'skip' });
           traces.push({ x: seg.wavelength, y: upper, mode: 'lines', line: { width: 0 }, fill: 'tonexty',
