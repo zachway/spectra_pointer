@@ -675,10 +675,16 @@ STATS_QUERIES = {
         GROUP BY a.display_name
         ORDER BY n DESC
     """,
+    # shitty_positional_match rows are stored as match_status='needs_review'
+    # (deliberately low-confidence -- see sync/positional_fallback.py) but
+    # still carry a real star_id, so they are matches for this table and
+    # were missing from it entirely. Its no-confident-candidate rows have
+    # star_id NULL and are correctly still excluded.
     "by_method": """
         SELECT match_method, count(*) AS n
         FROM pg.spectroscopy_holdings
         WHERE match_status = 'matched'
+           OR (match_method = 'shitty_positional_match' AND star_id IS NOT NULL)
         GROUP BY match_method
         ORDER BY n DESC
     """,
