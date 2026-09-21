@@ -683,7 +683,12 @@ def _process_cell(conn: psycopg.Connection, cell: int, cell_entries: list[tuple[
                     if winner is None:
                         pending_rows.append(matcher.upsert_holding_row(archive_code, r, None, "shitty_positional_match", "needs_review", None))
                         counts["no_confident_candidate"] += 1
-                        logger.info("%s: no confident shitty_positional_match candidate for %s (%s)", archive_code, r.archive_obs_id, reason)
+                        # DEBUG, not INFO: this fires once per unmatched record
+                        # (millions, mostly eso_raw calibration/engineering frames)
+                        # and grew monthly_reconcile.log to 1.4GB. The per-cell
+                        # summary line's no_confident_candidate count carries the
+                        # same information at a readable volume.
+                        logger.debug("%s: no confident shitty_positional_match candidate for %s (%s)", archive_code, r.archive_obs_id, reason)
                         continue
 
                     star_id = winner.star_id
