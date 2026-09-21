@@ -18,6 +18,15 @@ archive's sync cursor is reset and it's resynced -- this parser will work
 for those rows immediately once that resync lands, no further code change
 needed.
 
+galah/spitzer_sha/iacob/mast (the general HST/IUE/EUVE/... archive) added
+later after live-fetching real production rows of every product type each
+handles -- see _parse_galah/_parse_spitzer_sha/_parse_iacob/_parse_mast for
+the confirmed shapes. mast and spitzer_sha only cover some rows of their
+archive_code (image/raw products, IRS Map, MIPS-SED are excluded), so
+viewability is decided per row by is_spectrum_viewable() via _ROW_GATES,
+not by archive_code alone. The earlier note below that mast is unimplemented
+is superseded: it needed only a per-row product gate, not a sync change.
+
 mast_jwst/eso/lamost_mrs/elodie added after checking real production
 samples (not just one earlier one-off fetch each) -- two archives that
 looked "nearly free" from format alone turned out NOT to be, and are
@@ -145,6 +154,8 @@ import io
 import re
 import threading
 import time
+import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import requests
@@ -158,6 +169,7 @@ SUPPORTED_ARCHIVES = {
     "mast_jwst", "eso", "lamost_mrs", "elodie", "irsa_missions",
     "rave", "feros_gavo", "flashheros_gavo", "ondrejov", "heros_ondrejov", "sophie", "hermes_mercator",
     "carmenes_tac", "carmenes_reiners2018", "cfht_cadc",
+    "galah", "spitzer_sha", "iacob", "mast",
 }
 
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024  # hard cap -- enforced regardless of the size hint below
@@ -214,6 +226,10 @@ SIZE_HINT_BYTES = {
     # outright before this hint would even matter, so the usable case is
     # the one worth warning about.
     "cfht_cadc": 18_500_000,
+    "galah": 160_000,  # 4 camera bands x ~40KB
+    "spitzer_sha": 500_000,  # ~12 exposures x ~26KB per channel, 2-4 channels
+    "iacob": 5_400_000,  # 2 x 335,539 float64 -- real sample, just over HEAVY_THRESHOLD_BYTES
+    "mast": 500_000,  # HST x1d/x1dsum 260-430KB, cspec 40KB, aspec 1.9MB, IUE 0.7MB, EUVE 43KB
 }
 
 HEAVY_THRESHOLD_BYTES = 5 * 1024 * 1024
@@ -610,6 +626,7 @@ ESO_FILE_URL = "https://dataportal.eso.org/dataportal_new/file/{dp_id}"
 # products, not 1D spectra) -- cleanly rejected below rather than crashing.
 _ESO_WAVE_UNIT_TO_ANGSTROM = {
     "angstrom": 1.0,
+    "angstroms": 1.0,  # STIS x1d/sx1 spell it this way
     "aa": 1.0,
     "nm": 10.0,
     "um": 1e4,
@@ -961,6 +978,327 @@ def _parse_cfht_cadc(holding: dict) -> dict:
     }
 
 
+def _bin_mean(wave: np.ndarray, flux: np.ndarray, n_bins: int):
+    """Bin-averages a very finely sampled spectrum down to n_bins points.
+    _downsample's plain stride would alias a spectrum with hundreds of
+    thousands of pixels (iacob's HERMES spectra: 335,539 points at
+    0.0156 Å) and silently drop narrow lines; averaging keeps the shape."""
+    n = len(wave)
+    if n <= n_bins:
+        return wave, flux
+    edges = np.linspace(0, n, n_bins + 1).astype(int)
+    with np.errstate(invalid="ignore"):
+        w = np.array([np.nanmean(wave[i:j]) for i, j in zip(edges[:-1], edges[1:])])
+        f = np.array([np.nanmean(flux[i:j]) for i, j in zip(edges[:-1], edges[1:])])
+    return w, f
+
+
+def _parse_galah(holding: dict) -> dict:
+    """GALAH DR4: archive_url is Data Central's slink for FILT=B only (one of
+    four HERMES cameras). The same URL with FILT=G/R/I serves the other three
+    bands, so all four are fetched (in parallel) for the full ~4700-7900 Å
+    coverage. Confirmed live: each is a 4096-pixel, ~40KB 1D primary-HDU
+    image, continuum-normalized (median ~1), with NO uncertainty array. The
+    WCS is CTYPE=LINEAR with CDELT1=1.0 and the real Å/pixel step in PC1_1
+    (0.046-0.074) -- reading CDELT1 alone (as _wcs_wave does) would stretch a
+    190 Å band to 4096 Å, so PC1_1*CDELT1 is used. Data Central returns
+    sporadic HTTP 500s for individual bands (confirmed live, per band per
+    star), so a failed band is skipped, not fatal."""
+    base = holding["archive_url"]
+    if "FILT=B" not in base:
+        raise SpectrumUnavailable("Unexpected GALAH archive_url shape.")
+
+    def fetch_band(band: str):
+        try:
+            raw = _fetch_bytes(base.replace("FILT=B", f"FILT={band}"))
+            with fits.open(io.BytesIO(raw)) as hdul:
+                header, data = hdul[0].header, np.asarray(hdul[0].data, dtype=float)
+        except (SpectrumUnavailable, OSError, ValueError):
+            return None
+        step = header.get("PC1_1", 1.0) * header.get("CDELT1", 1.0)
+        wave = header["CRVAL1"] + np.arange(len(data)) * step
+        return _segment(f"GALAH {band}", wave, data, None)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        segments = [s for s in pool.map(fetch_band, ("B", "G", "R", "I")) if s is not None and s["wavelength"]]
+    if not segments:
+        raise SpectrumUnavailable(
+            "Data Central returned no usable band for this GALAH spectrum (it fails intermittently -- try again)."
+        )
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "continuum-normalized (dimensionless)",
+        "segments": segments,
+    }
+
+
+def _parse_iacob(holding: dict) -> dict:
+    """IACOB (HERMES/Mercator + FIES/NOT): a single 2 x N primary image, N up
+    to ~335k pixels at 0.0156 Å. Confirmed live: row 0 is the continuum-
+    normalized flux (~1) and row 1 the un-normalized ADU flux; CRVAL1/CDELT1
+    give a linear wavelength axis. Row 0 is shown -- these are OB-star
+    spectra used for line profiles. No uncertainty array."""
+    raw = _fetch_bytes(holding["archive_url"])
+    with fits.open(io.BytesIO(raw)) as hdul:
+        header, data = hdul[0].header, hdul[0].data
+        if data is None or data.ndim != 2 or data.shape[0] < 1:
+            raise SpectrumUnavailable("Unexpected IACOB file shape (expected a 2 x N image).")
+        wave = header["CRVAL1"] + np.arange(data.shape[1]) * header["CDELT1"]
+        flux = np.asarray(data[0], dtype=float)
+    wave, flux = _bin_mean(wave, flux, 6000)
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": "continuum-normalized (dimensionless)",
+        "segments": [_segment("IACOB", wave, flux, None, max_points=6000)],
+    }
+
+
+_SPITZER_LINK_RE = re.compile(r'href="([^"?/][^"?]*)"')
+SPITZER_MAX_FILES_PER_CHANNEL = 12
+
+
+def _spitzer_list(url: str) -> list[str]:
+    return _SPITZER_LINK_RE.findall(_fetch_bytes(url).decode("utf-8", "replace"))
+
+
+def _parse_spitzer_sha(holding: dict) -> dict:
+    """Spitzer Heritage Archive IRS Stare: archive_url is an AOR directory
+    (see sync/archives/spitzer_sha.py), not a file. Confirmed live: each
+    ch{0,1,2,3}/bcd/ folder holds one extracted 1D SPITZER_S*_spect.fits per
+    exposure (bintable ORDER/WAVELENGTH[um]/FLUX_DENSITY[Jy]/ERROR[Jy]/
+    BIT_FLAG, ~26KB each). There is no combined per-target 1D product (pbcd/
+    only has 2D images), so the exposures are median-combined per (channel,
+    order) onto the longest exposure's wavelength grid -- an approximation
+    for display, not the SSC's own coadd; the error is the mean per-exposure
+    error / sqrt(N). Jy -> F_lambda is a real physical conversion, so these
+    overlay with the other erg/s/cm^2/Å archives."""
+    base = holding["archive_url"].rstrip("/") + "/"
+    channels = [n for n in _spitzer_list(base) if re.fullmatch(r"ch\d/", n)]
+    if not channels:
+        raise SpectrumUnavailable("No IRS channel folders found for this Spitzer AOR.")
+
+    def list_channel(ch: str):
+        try:
+            files = [n for n in _spitzer_list(f"{base}{ch}bcd/") if n.endswith("_spect.fits")]
+        except SpectrumUnavailable:
+            return ch, []
+        return ch, [f"{base}{ch}bcd/{n}" for n in sorted(files)[:SPITZER_MAX_FILES_PER_CHANNEL]]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        per_channel = list(pool.map(list_channel, channels))
+
+    def load(item):
+        ch, url = item
+        try:
+            with fits.open(io.BytesIO(_fetch_bytes(url))) as hdul:
+                d = hdul[1].data
+                order = np.asarray(d["ORDER"])
+                wave = np.asarray(d["WAVELENGTH"], dtype=float)
+                flux = np.asarray(d["FLUX_DENSITY"], dtype=float)
+                err = np.asarray(d["ERROR"], dtype=float)
+                bad = np.asarray(d["BIT_FLAG"]) != 0
+        except (SpectrumUnavailable, OSError, KeyError, ValueError):
+            return []
+        flux, err = np.where(bad, np.nan, flux), np.where(bad, np.nan, err)
+        return [(ch.strip("/"), int(o), wave[order == o], flux[order == o], err[order == o]) for o in np.unique(order)]
+
+    items = [(ch, url) for ch, urls in per_channel for url in urls]
+    if not items:
+        raise SpectrumUnavailable("No extracted IRS spectra (*_spect.fits) found for this Spitzer AOR.")
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        loaded = [piece for pieces in pool.map(load, items) for piece in pieces]
+
+    groups: dict[tuple[str, int], list] = {}
+    for ch, order, wave, flux, err in loaded:
+        groups.setdefault((ch, order), []).append((wave, flux, err))
+
+    segments = []
+    for (ch, order), members in sorted(groups.items()):
+        ref_wave = np.sort(max((m[0] for m in members), key=lambda w: np.ptp(w) if len(w) else 0))
+        if len(ref_wave) < 2:
+            continue
+        fluxes, errs = [], []
+        for wave, flux, err in members:
+            if len(wave) < 2:
+                continue
+            o = np.argsort(wave)
+            fluxes.append(np.interp(ref_wave, wave[o], flux[o], left=np.nan, right=np.nan))
+            errs.append(np.interp(ref_wave, wave[o], err[o], left=np.nan, right=np.nan))
+        if not fluxes:
+            continue
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN columns where no exposure overlaps
+            n = np.sum(np.isfinite(fluxes), axis=0)
+            flux = np.nanmedian(np.array(fluxes), axis=0)
+            unc = np.nanmean(np.array(errs), axis=0) / np.sqrt(np.maximum(n, 1))
+        wave_a = ref_wave * 1e4  # um -> Å
+        flux = _jy_to_flambda_1e17(wave_a, flux)
+        unc = _jy_to_flambda_1e17(wave_a, unc)
+        seg = _segment(f"IRS {ch} order {order} (median of {len(fluxes)})", wave_a, flux, unc)
+        if seg["wavelength"]:
+            segments.append(seg)
+    if not segments:
+        raise SpectrumUnavailable("Every extracted IRS spectrum for this AOR was empty after masking.")
+    return {"wavelength_unit": "Å", "flux_unit": FLUX_UNIT_ERG_CM2_S_A, "segments": segments}
+
+
+def _mast_resolve(holding: dict):
+    """Returns (kind, file_url) for a mast holding whose product is a
+    displayable 1D spectrum, else None. mast bundles image products (flt/drz/
+    c0f/raw/...: ~100k of 440k rows) with spectra, so this gates per row by
+    the URL's product suffix, confirmed live against a real sample of each:
+      hst_table  -- HST *_x1d / *_x1dsum / *_sx1 (COS/STIS): SCI bintable, one
+                    row per segment/order, WAVELENGTH[Å]/FLUX/ERROR
+      hasp       -- HASP/HSLA *_cspec / *_aspec coadds: SCI bintable, one row
+      wavflux    -- archive.stsci.edu vocontainer *_vo.fits (EUVE/BEFS/WUPPE/
+                    HUT) and TUES *_spectrum.fits.gz: WAVE/FLUX (no error)
+      iue        -- IUE *.mxhi.gz: MEHI echelle orders, ABS_CAL flux
+    HST _asn.fits rows (an association manifest, not a spectrum) are mapped to
+    the association's product: STIS -> <root>_x1d.fits, COS -> <root>_x1dsum.fits
+    (same rootname)."""
+    url = holding.get("archive_url") or ""
+    instrument = (holding.get("instrument") or "").upper()
+    if re.search(r"_(x1d|x1dsum|sx1)\.fits$", url):
+        return "hst_table", url
+    if re.search(r"_(cspec|aspec)\.fits$", url):
+        return "hasp", url
+    if url.endswith("_vo.fits"):
+        return "wavflux", url
+    if url.endswith("_spectrum.fits.gz"):
+        return "tues", url
+    if re.search(r"\.mxhi\.gz$", url):
+        return "iue", url
+    if url.endswith("_asn.fits") and "mast:HST/" in url:
+        if instrument.startswith("STIS"):
+            return "hst_table", url[: -len("_asn.fits")] + "_x1d.fits"
+        if instrument.startswith("COS"):
+            return "hst_table", url[: -len("_asn.fits")] + "_x1dsum.fits"
+    return None
+
+
+def _is_erg_flux_unit(unit: str | None) -> bool:
+    """True if a table column's TUNIT says erg/s/cm^2/Å (any spelling)."""
+    u = (unit or "").lower().replace(" ", "")
+    return "erg" in u and ("angstrom" in u or u.endswith("/a") or "aa" in u)
+
+
+def _mast_table_segments(hdu, labels, wave_names, flux_names, err_names, prefix):
+    names = {n.upper(): n for n in hdu.columns.names}
+    pick = lambda options: next((names[o] for o in options if o in names), None)
+    wcol, fcol, ecol = pick(wave_names), pick(flux_names), pick(err_names)
+    if not wcol or not fcol:
+        raise SpectrumUnavailable("This product has no wavelength/flux table columns.")
+    wave_unit = hdu.columns[wcol].unit
+    physical = _is_erg_flux_unit(hdu.columns[fcol].unit)
+    scale = 1e17 if physical else 1.0
+    data = hdu.data
+    segments = []
+    for i in range(len(data)):
+        wave = _eso_wave_to_angstrom(np.asarray(data[wcol][i], dtype=float).reshape(-1), wave_unit)
+        flux = np.asarray(data[fcol][i], dtype=float).reshape(-1) * scale
+        unc = np.asarray(data[ecol][i], dtype=float).reshape(-1) * scale if ecol else None
+        # COS/STIS x1d pad unused detector regions with zero/negative
+        # wavelengths (confirmed live: a COS x1d reported a -28 Å minimum);
+        # 50 Å is below every real product handled here (EUVE reaches ~70 Å)
+        valid = wave > 50
+        wave, flux = wave[valid], flux[valid]
+        unc = unc[valid] if unc is not None else None
+        seg = _segment(f"{prefix} {labels[i]}".strip(), wave, flux, unc)
+        if seg["wavelength"]:
+            segments.append(seg)
+    return segments, physical
+
+
+def _parse_mast(holding: dict) -> dict:
+    resolved = _mast_resolve(holding)
+    if resolved is None:
+        raise SpectrumUnavailable(
+            "This MAST product isn't a 1D spectrum file (it's an image, raw frame, or "
+            "manifest); spectrum display covers HST COS/STIS x1d products, HASP/HSLA "
+            "coadds, EUVE/BEFS/WUPPE/HUT/TUES spectra and IUE high-resolution."
+        )
+    kind, url = resolved
+    instrument = holding.get("instrument") or ""
+    raw = _fetch_bytes(url)
+    if url.endswith(".gz"):
+        raw = gzip.decompress(raw)
+    with fits.open(io.BytesIO(raw)) as hdul:
+        if kind == "hst_table":
+            hdu = hdul["SCI"] if "SCI" in hdul else hdul[1]
+            cols = hdu.columns.names
+            labels = [
+                str(hdu.data["SEGMENT"][i]).strip() if "SEGMENT" in cols
+                else f"order {hdu.data['SPORDER'][i]}" if "SPORDER" in cols else str(i)
+                for i in range(len(hdu.data))
+            ]
+            segments, physical = _mast_table_segments(
+                hdu, labels, ("WAVELENGTH",), ("FLUX",), ("ERROR",), f"HST {instrument}"
+            )
+        elif kind == "hasp":
+            segments, physical = _mast_table_segments(
+                hdul["SCI"], ["coadd"], ("WAVELENGTH",), ("FLUX",), ("ERROR",), f"HST {instrument}"
+            )
+        elif kind == "wavflux":
+            segments, physical = _mast_table_segments(
+                hdul[1], [""], ("WAVE", "WAVELENGTH"), ("FLUX",), ("ERROR", "ERR", "SIGMA"), instrument
+            )
+        elif kind == "tues":
+            # TUES (ORFEUS echelle): one ORDER_nn table per order; ENERGY_FLUX
+            # is erg/cm^2/s/Å and RELATIVE_ERROR a fractional error.
+            segments = []
+            for hdu in hdul[1:]:
+                if not hdu.name.startswith("ORDER_") or hdu.data is None:
+                    continue
+                flux = np.asarray(hdu.data["ENERGY_FLUX"], dtype=float)
+                unc = np.abs(flux) * np.asarray(hdu.data["RELATIVE_ERROR"], dtype=float)
+                seg = _segment(
+                    f"TUES {hdu.name.replace('_', ' ').lower()}",
+                    np.asarray(hdu.data["WAVELENGTH"], dtype=float), flux * 1e17, unc * 1e17,
+                )
+                if seg["wavelength"]:
+                    segments.append(seg)
+            physical = True
+        else:  # iue
+            hdu = hdul["MEHI"] if "MEHI" in hdul else hdul[1]
+            segments = []
+            for row in hdu.data:
+                n = int(row["NPOINTS"])
+                wave = float(row["WAVELENGTH"]) + float(row["DELTAW"]) * np.arange(n)
+                flux = np.asarray(row["ABS_CAL"], dtype=float)[:n] * 1e17
+                # QUALITY != 0 flags saturated/bad/extrapolated pixels
+                flux = np.where(np.asarray(row["QUALITY"])[:n] == 0, flux, np.nan)
+                seg = _segment(f"IUE {instrument} order {int(row['ORDER'])}", wave, flux, None)
+                if seg["wavelength"]:
+                    segments.append(seg)
+            physical = True
+    if not segments:
+        raise SpectrumUnavailable("No usable data in this MAST spectrum file.")
+    return {
+        "wavelength_unit": "Å",
+        "flux_unit": FLUX_UNIT_ERG_CM2_S_A if physical else "arbitrary (pipeline flux units)",
+        "segments": segments,
+    }
+
+
+# Archives where SUPPORTED_ARCHIVES is necessary but not sufficient: only some
+# rows carry a displayable product. Each gate takes the holding dict.
+_ROW_GATES = {
+    "mast": lambda h: _mast_resolve(h) is not None,
+    "irsa_missions": lambda h: (h.get("instrument") or "") in ("Spitzer/IRS (SASS)", "Spitzer/IRS (Std Stars)"),
+    "spitzer_sha": lambda h: (h.get("instrument") or "") == "Spitzer/IRS (Stare)",
+}
+
+
+def is_spectrum_viewable(holding: dict) -> bool:
+    """True if this specific holding can be shown: its archive is supported
+    and, for archives that bundle non-spectrum products, the row passes its
+    per-row gate."""
+    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
+        return False
+    gate = _ROW_GATES.get(holding["archive_code"])
+    return gate(holding) if gate else True
+
+
 _PARSERS = {
     "lamost": _parse_lamost,
     "gaia_rvs": _parse_gaia_rvs,
@@ -983,6 +1321,10 @@ _PARSERS = {
     "carmenes_tac": _parse_carmenes_tac,
     "carmenes_reiners2018": _parse_carmenes_reiners2018,
     "cfht_cadc": _parse_cfht_cadc,
+    "galah": _parse_galah,
+    "spitzer_sha": _parse_spitzer_sha,
+    "iacob": _parse_iacob,
+    "mast": _parse_mast,
 }
 
 

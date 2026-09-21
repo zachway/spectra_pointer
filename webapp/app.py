@@ -75,11 +75,11 @@ from ingest.add_star import (
 )
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 from webapp.spectrum_viewer import (
-    SUPPORTED_ARCHIVES,
     SpectrumUnavailable,
     check_rate_limit,
     fetch_spectrum,
     is_heavy,
+    is_spectrum_viewable,
     size_hint_label,
 )
 
@@ -1786,7 +1786,7 @@ def search():
     # every other archive_code. Heavy archives (see is_heavy) get a size
     # hint on the link itself, not just after clicking through.
     for h in raw_holdings:
-        h["spectrum_viewable"] = h["archive_code"] in SUPPORTED_ARCHIVES
+        h["spectrum_viewable"] = is_spectrum_viewable(h)
         h["spectrum_size_hint"] = size_hint_label(h["archive_code"]) if is_heavy(h["archive_code"]) else None
     if adv_filters:
         raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
@@ -1968,8 +1968,8 @@ def _resolve_spectrum(holding: dict) -> dict:
       {"ok": False, "needs_confirm": True, "size_hint": str | None}
       {"ok": False, "error": str}
     """
-    if holding["archive_code"] not in SUPPORTED_ARCHIVES:
-        return {"ok": False, "error": f"Spectrum display isn't implemented for {holding['display_name']} yet."}
+    if not is_spectrum_viewable(holding):
+        return {"ok": False, "error": f"Spectrum display isn't implemented for this {holding['display_name']} product yet."}
     if is_heavy(holding["archive_code"]) and request.args.get("confirm") != "1":
         # Ask before fetching rather than after -- a plain <a href> is
         # exactly the shape a crawler/link-preview bot follows automatically,
