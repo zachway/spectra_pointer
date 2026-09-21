@@ -156,6 +156,34 @@ def test_unexpected_parser_exception_becomes_spectrum_unavailable(monkeypatch):
         sv.fetch_spectrum({"archive_code": "galah", "archive_url": "x", "archive_obs_id": "1"})
 
 
+def test_result_is_strict_json_even_when_continuum_fit_yields_nan(monkeypatch):
+    """The continuum toggle on TW Cam returned bare NaN in the payload, which
+    browsers reject ('Unexpected token N ... is not valid JSON')."""
+    import json
+
+    from webapp import spectrum_viewer as sv
+
+    wave = np.linspace(4000, 5000, 200)
+
+    def parser(holding):
+        return {
+            "wavelength_unit": "Å", "flux_unit": "arbitrary",
+            "segments": [sv._segment("x", wave, np.ones(200), np.full(200, 0.1))],
+        }
+
+    def nan_continuum(result):
+        result["continuum_normalized"] = True
+        for seg in result["segments"]:
+            seg["flux"] = [float("nan")] * len(seg["flux"])
+            seg["uncertainty"] = [float("nan")] * len(seg["uncertainty"])
+
+    monkeypatch.setitem(sv._PARSERS, "galah", parser)
+    monkeypatch.setattr(sv, "_apply_continuum_normalization", nan_continuum)
+    result = sv.fetch_spectrum({"archive_code": "galah", "archive_url": "u", "archive_obs_id": "1"}, continuum_normalize=True)
+    json.dumps(result, allow_nan=False)  # raises ValueError on NaN/Infinity
+    assert result["segments"][0]["flux"][0] is None
+
+
 def test_hopeless_products_are_gated_out():
     from webapp.spectrum_viewer import is_spectrum_viewable
 

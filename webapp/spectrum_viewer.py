@@ -153,6 +153,7 @@ import bz2
 import gzip
 import io
 import logging
+import math
 import re
 import threading
 import time
@@ -1604,6 +1605,22 @@ def _apply_continuum_normalization(result: dict) -> None:
         result["continuum_normalized"] = True
 
 
+def _nan_to_none(result: dict) -> None:
+    """Replaces non-finite flux/uncertainty values with None, in place. The
+    continuum fit (and any flux/0) leaves NaN behind, and Flask's jsonify
+    writes that as a bare `NaN` -- not valid JSON -- so the browser's
+    r.json() threw 'Unexpected token N' (confirmed live on TW Cam with the
+    continuum toggle on). None serializes to null, which Plotly draws as a
+    gap."""
+    def clean(values):
+        return [v if v is not None and math.isfinite(v) else None for v in values]
+
+    for seg in result["segments"]:
+        seg["flux"] = clean(seg["flux"])
+        if seg["uncertainty"] is not None:
+            seg["uncertainty"] = clean(seg["uncertainty"])
+
+
 def fetch_spectrum(holding: dict, continuum_normalize: bool = False) -> dict:
     """holding needs at least archive_code, archive_url, archive_obs_id (DESI only).
 
@@ -1657,4 +1674,5 @@ def fetch_spectrum(holding: dict, continuum_normalize: bool = False) -> dict:
     _apply_display_scale(result)
     if continuum_normalize:
         _apply_continuum_normalization(result)
+    _nan_to_none(result)
     return result
