@@ -1443,6 +1443,26 @@ def _parse_gemini_ghost(holding: dict) -> dict:
     physical unit."""
     raw = _maybe_decompress(_fetch_bytes(holding["archive_url"]))
     with fits.open(io.BytesIO(raw)) as hdul:
+        if ("AWAV", 1) in [(h.name, h.ver) for h in hdul]:
+            # Second real layout (confirmed live on prod, e.g. a 2023 blue
+            # HD 103295 file): per-slit SCI/VAR/DQ/AWAV extensions (versions
+            # 1 and 2), each (orders, pix). SCI is in electrons -- NOT flux
+            # calibrated -- and AWAV in nm (347-544 for blue). Slit 1 is
+            # plotted (much higher median than slit 2 in the checked file).
+            sci, var, awav = hdul["SCI", 1].data, hdul["VAR", 1].data, hdul["AWAV", 1].data
+            dq = hdul["DQ", 1].data if ("DQ", 1) in [(h.name, h.ver) for h in hdul] else None
+            segments = []
+            for i in range(sci.shape[0]):
+                flux = np.asarray(sci[i], dtype=float)
+                if dq is not None:
+                    flux = np.where(np.asarray(dq[i]) == 0, flux, np.nan)
+                unc = np.sqrt(np.clip(np.asarray(var[i], dtype=float), 0, None))
+                seg = _segment(f"GHOST order {i}", np.asarray(awav[i], dtype=float) * 10.0, flux, unc)
+                if seg["wavelength"]:
+                    segments.append(seg)
+            if not segments:
+                raise SpectrumUnavailable("No usable orders in this GHOST file.")
+            return {"wavelength_unit": "Å", "flux_unit": "arbitrary (extracted electrons, not flux-calibrated)", "segments": segments}
         sci, var, wavl = hdul[1].data, hdul[2].data, hdul[3].data
     if sci is None or wavl is None or sci.ndim != 3:
         raise SpectrumUnavailable("Unexpected GHOST file layout.")
