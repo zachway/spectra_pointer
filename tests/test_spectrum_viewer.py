@@ -139,3 +139,57 @@ def test_bin_mean_preserves_shape_instead_of_striding():
     w, f = _bin_mean(wave, flux, 1000)
     assert len(w) == len(f) == 1000
     assert f.min() < 1.0
+
+
+def test_unexpected_parser_exception_becomes_spectrum_unavailable(monkeypatch):
+    """An unseen file layout must produce the normal error message, not an
+    unhandled exception (which surfaced as HTTP 500 in production)."""
+    import pytest
+
+    from webapp import spectrum_viewer as sv
+
+    def boom(holding):
+        raise IndexError("list index out of range")
+
+    monkeypatch.setitem(sv._PARSERS, "galah", boom)
+    with pytest.raises(sv.SpectrumUnavailable, match="galah"):
+        sv.fetch_spectrum({"archive_code": "galah", "archive_url": "x", "archive_obs_id": "1"})
+
+
+def test_hopeless_products_are_gated_out():
+    from webapp.spectrum_viewer import is_spectrum_viewable
+
+    def v(code, inst, url=""):
+        return is_spectrum_viewable({"archive_code": code, "instrument": inst, "archive_url": url})
+
+    for inst in ("APEXHET", "EFOSC", "SOFI", "VIMOS"):
+        assert not v("eso", inst)
+    assert v("eso", "HARPS")
+    assert v("cfht_cadc", "SPIRou")
+    assert not v("cfht_cadc", "ESPaDOnS")
+
+    jw = "https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:JWST/product/x_"
+    assert v("mast_jwst", "NIRSPEC/MSA", jw + "x1d.fits")
+    assert not v("mast_jwst", "NIRCAM/IMAGE", jw + "x1d.fits")
+    assert not v("mast_jwst", "NIRCAM/GRISM", jw + "x1dints.fits")
+
+
+def test_mast_jwst_two_dimensional_extract1d_gives_one_segment_per_row(monkeypatch):
+    import io
+
+    from astropy.io import fits
+
+    from webapp import spectrum_viewer as sv
+
+    n = 50
+    wave = np.tile(np.linspace(0.9, 2.8, n), (2, 1))  # (rows, pix), microns
+    cols = [
+        fits.Column(name="WAVELENGTH", format=f"{n}D", array=wave),
+        fits.Column(name="FLUX", format=f"{n}D", array=np.ones((2, n))),
+        fits.Column(name="FLUX_ERROR", format=f"{n}D", array=np.full((2, n), 0.1)),
+    ]
+    buf = io.BytesIO()
+    fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns(cols, name="EXTRACT1D")]).writeto(buf)
+    monkeypatch.setattr(sv, "_fetch_bytes", lambda url: buf.getvalue())
+    result = sv.fetch_spectrum({"archive_code": "mast_jwst", "archive_url": "u", "archive_obs_id": "1"})
+    assert len(result["segments"]) == 2

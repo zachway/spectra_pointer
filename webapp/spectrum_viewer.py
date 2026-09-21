@@ -152,6 +152,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import logging
 import re
 import threading
 import time
@@ -624,11 +625,21 @@ def _parse_mast_jwst(holding: dict) -> dict:
     wave = wave_um * 1e4
     flux = _jy_to_flambda_1e17(wave, flux_jy)
     uncertainty = _jy_to_flambda_1e17(wave, unc_jy)
-    return {
-        "wavelength_unit": "Å",
-        "flux_unit": FLUX_UNIT_ERG_CM2_S_A,
-        "segments": [_segment("JWST", wave, flux, uncertainty)],
-    }
+    if wave.ndim == 1 and flux.shape == wave.shape == uncertainty.shape:
+        segments = [_segment("JWST", wave, flux, uncertainty)]
+    elif wave.ndim == 2 and flux.shape == wave.shape == uncertainty.shape:
+        # e.g. NIRISS/SOSS: one row per spectral order/source, each a full
+        # array (confirmed live: (1, 2048)) -- the old flat-array assumption
+        # raised a ValueError, surfacing as an HTTP 500.
+        segments = [_segment(f"JWST row {i}", wave[i], flux[i], uncertainty[i]) for i in range(min(len(wave), 40))]
+        segments = [s for s in segments if s["wavelength"]]
+    else:
+        raise SpectrumUnavailable(
+            f"This JWST product's EXTRACT1D table has an unsupported shape (wavelength {wave.shape}, flux {flux.shape})."
+        )
+    if not segments:
+        raise SpectrumUnavailable("No usable data in this JWST product.")
+    return {"wavelength_unit": "Å", "flux_unit": FLUX_UNIT_ERG_CM2_S_A, "segments": segments}
 
 
 ESO_FILE_URL = "https://dataportal.eso.org/dataportal_new/file/{dp_id}"
@@ -767,6 +778,11 @@ def _parse_irsa_missions(holding: dict) -> dict:
         )
     raw = _fetch_bytes(holding["archive_url"])
     with fits.open(io.BytesIO(raw)) as hdul:
+        if len(hdul) < 2:
+            # Some IRS_Std files (e.g. kgiant/hd44104.coadd.lo.s19.fits) are a
+            # bare 2D detector image in e-/sec, not the bintable variant --
+            # confirmed live; previously an IndexError -> HTTP 500.
+            raise SpectrumUnavailable("This IRS product is a 2D image, not an extracted 1D spectrum table.")
         data = hdul[1].data  # unnamed extension, confirmed live -- index, not extname
         wave_um = np.asarray(data["WAVELENGTH"], dtype=float)
         flux = np.asarray(data["FLUX"], dtype=float)
@@ -1481,6 +1497,16 @@ def _parse_gemini_ghost(holding: dict) -> dict:
 # Archives where SUPPORTED_ARCHIVES is necessary but not sufficient: only some
 # rows carry a displayable product. Each gate takes the holding dict.
 _ROW_GATES = {
+    # Instruments whose ESO products have no 1D SPECTRUM extension at all
+    # (raw/imaging/heterodyne) -- confirmed live in the spot-check sweep.
+    "eso": lambda h: (h.get("instrument") or "") not in ("APEXHET", "EFOSC", "SOFI", "VIMOS"),
+    # Only SPIRou has ever produced a displayable product here; the sweep
+    # found all 14 other CFHT instruments resolve to non-spectrum products.
+    "cfht_cadc": lambda h: (h.get("instrument") or "") == "SPIRou",
+    # Only plain _x1d.fits from a spectroscopic mode: the image/target-acq
+    # instruments and _x1dints/_c1d/_s2d/_cal products aren't 1D spectra.
+    "mast_jwst": lambda h: (h.get("archive_url") or "").endswith("_x1d.fits")
+    and not (h.get("instrument") or "").endswith(("IMAGE", "TARGACQ")),
     "mast": lambda h: _mast_resolve(h) is not None,
     "irsa_missions": lambda h: (h.get("instrument") or "") in ("Spitzer/IRS (SASS)", "Spitzer/IRS (Std Stars)"),
     "spitzer_sha": lambda h: (h.get("instrument") or "") == "Spitzer/IRS (Stare)",
@@ -1607,7 +1633,23 @@ def fetch_spectrum(holding: dict, continuum_normalize: bool = False) -> dict:
     parser = _PARSERS.get(archive_code)
     if parser is None:
         raise SpectrumUnavailable(f"Spectrum display isn't implemented for {archive_code} yet.")
-    result = parser(holding)
+    try:
+        result = parser(holding)
+    except SpectrumUnavailable:
+        raise
+    except Exception as exc:
+        # Every parser was written against the shapes seen when it was
+        # checked; an unseen variant (a JWST product with 2D columns, an IRS
+        # file with no table, ...) used to escape as an unhandled exception ->
+        # HTTP 500 and an unreadable page. Turn any such failure into the
+        # normal "couldn't display this one" message instead, and log it so
+        # the shape can be added properly.
+        logging.getLogger(__name__).warning(
+            "spectrum parse failed for %s holding %s: %r", archive_code, holding.get("archive_obs_id"), exc
+        )
+        raise SpectrumUnavailable(
+            f"Couldn't read this {archive_code} product ({type(exc).__name__}) -- its file layout isn't one this viewer handles yet."
+        ) from exc
     result["flux_unit_family"] = (
         FLUX_FAMILY_ERG_CM2_S_A if result["flux_unit"] == FLUX_UNIT_ERG_CM2_S_A else FLUX_FAMILY_ARBITRARY
     )
