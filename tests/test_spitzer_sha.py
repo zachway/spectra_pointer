@@ -67,9 +67,63 @@ def test_observation_carries_real_date_and_no_fabrication():
     assert obs.reduction_status == "reduced"
 
 
-def test_row_without_url_or_aorkey_is_dropped():
-    assert spitzer_sha._to_observation(_row(depthofcoverage=None), "x") is None
-    assert spitzer_sha._to_observation(_row(key=None, depthofcoverage="/sha/a/b/c.fits"), "x") is None
+def test_row_without_aorkey_or_any_folder_is_dropped(monkeypatch):
+    monkeypatch.setattr(spitzer_sha, "_campaign_map", lambda prefix: {})  # AOR absent from the file tree
+    assert spitzer_sha._to_observation(_row(depthofcoverage=None), "Spitzer/IRS (Stare)") is None
+    assert spitzer_sha._to_observation(_row(key=None, depthofcoverage="/sha/a/b/c.fits"), "Spitzer/IRS (Stare)") is None
+
+
+def test_null_depth_of_coverage_falls_back_to_the_file_tree(monkeypatch):
+    # Observed: ~10% of real IRS Stare rows (e.g. Beta Pictoris AOR 4888320)
+    # come back with depthofcoverage None though their folder exists.
+    seen = []
+
+    def fake_map(prefix):
+        seen.append(prefix)
+        return {"4888320": "IRSX002500"}
+
+    monkeypatch.setattr(spitzer_sha, "_campaign_map", fake_map)
+    obs = spitzer_sha._to_observation(_row(key="4888320", name="Beta Pictoris", depthofcoverage=None), "Spitzer/IRS (Stare)")
+    assert obs.archive_url == "https://irsa.ipac.caltech.edu/data/SPITZER/SHA/archive/proc/IRSX002500/r4888320/"
+    assert obs.raw_target_name == "Beta Pictoris"
+    spitzer_sha._to_observation(_row(key="9", depthofcoverage=None), "Spitzer/MIPS-SED")
+    assert seen == ["IRSX", "MIPS"]  # MIPS-SED rows look in the MIPS campaign dirs
+
+
+def test_row_with_a_search_path_never_touches_the_file_tree(monkeypatch):
+    def boom(prefix):
+        raise AssertionError("file tree consulted needlessly")
+
+    monkeypatch.setattr(spitzer_sha, "_campaign_map", boom)
+    assert spitzer_sha._to_observation(_row(), "Spitzer/IRS (Stare)") is not None
+
+
+def test_transient_backend_error_is_retried_then_succeeds(monkeypatch):
+    monkeypatch.setattr(spitzer_sha, "RETRY_BACKOFF_SEC", 0)
+    good = {"tableData": {"columns": [{"name": "reqkey"}], "data": [["1"]]}}
+    answers = iter([[{"success": "false", "error": "DataAccessException: Failed to retrieve data"}], good])
+    monkeypatch.setattr(spitzer_sha._session, "post", lambda *a, **k: _FakeResponse(next(answers)))
+    assert spitzer_sha._search(0.0, 0.0, 4.5, "instrumentFilter_IRS") == [{"reqkey": "1"}]
+
+
+def test_persistent_or_other_errors_still_raise(monkeypatch):
+    monkeypatch.setattr(spitzer_sha, "RETRY_BACKOFF_SEC", 0)
+    calls = []
+
+    def always_transient(*a, **k):
+        calls.append(1)
+        return _FakeResponse([{"error": "DataAccessException: Failed to retrieve data"}])
+
+    monkeypatch.setattr(spitzer_sha._session, "post", always_transient)
+    with pytest.raises(RuntimeError):
+        spitzer_sha._search(0.0, 0.0, 4.5, "instrumentFilter_IRS")
+    assert len(calls) == spitzer_sha.SEARCH_ATTEMPTS
+
+    calls.clear()
+    monkeypatch.setattr(spitzer_sha._session, "post", lambda *a, **k: (calls.append(1), _FakeResponse([{"error": "bad request"}]))[1])
+    with pytest.raises(RuntimeError):
+        spitzer_sha._search(0.0, 0.0, 4.5, "instrumentFilter_IRS")
+    assert len(calls) == 1  # not transient: no retry
 
 
 def test_fetch_cell_keeps_spectral_modes_only_and_dedupes(monkeypatch):
