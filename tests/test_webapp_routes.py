@@ -91,6 +91,29 @@ def test_spectrum_page_for_unimplemented_archive_shows_not_implemented_error(cli
     assert "Spectrum display isn&#39;t implemented for Webapp Test Archive yet." in resp.get_data(as_text=True)
 
 
+def _fake_spectrum_result(continuum_normalized):
+    return {
+        "wavelength_unit": "Å", "flux_unit": "arbitrary", "flux_unit_family": "arbitrary",
+        "flux_scale_factor": 2.0, "continuum_normalized": continuum_normalized,
+        "segments": [{"label": "x", "wavelength": [1.0, 2.0], "flux": [1.0, 1.0], "uncertainty": None}],
+    }
+
+
+def test_spectrum_page_says_so_when_requested_continuum_fit_failed(client, webapp_module, monkeypatch):
+    """A failed fit used to fall back to the median wording with no mention
+    that the continuum fit (which the user had asked for) hadn't applied."""
+    holding_id = _webapp_test_holding_id(webapp_module)
+    monkeypatch.setattr(
+        webapp_module, "_resolve_spectrum", lambda holding: {"ok": True, "result": _fake_spectrum_result(False)}
+    )
+    body = client.get(f"/spectrum/{holding_id}?continuum=1").get_data(as_text=True)
+    assert "continuum fit was requested but failed for this spectrum" in body
+    # ...and without the request, the plain median wording stays as before
+    plain = client.get(f"/spectrum/{holding_id}").get_data(as_text=True)
+    assert "requested but failed" not in plain
+    assert "Show continuum-normalized flux" in plain
+
+
 def test_spectrum_data_json_for_unimplemented_archive(client, webapp_module):
     holding_id = _webapp_test_holding_id(webapp_module)
     resp = client.get(f"/spectrum/{holding_id}/data")

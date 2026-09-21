@@ -1254,9 +1254,18 @@ PAGE_TEMPLATE = """
             // the plot (see its change handler below) rather than allowing
             // a mix of scaled-flux and continuum-normalized traces sharing
             // one axis, which wouldn't mean anything as an overlay.
-            var continuumNormalized = plotted.length > 0 && plotted.every(function(e) { return e.result.continuum_normalized; });
+            // The fit can fail per spectrum (confirmed live: every Spitzer/IRS
+            // order raises an alpha_shape error -- 60-110 points per order),
+            // and the server reports that only as continuum_normalized=false.
+            // One such spectrum used to flip the whole plot's note and axis
+            // back to the median-scaled wording while the checkbox stayed
+            // ticked. Track fitted vs. unfitted separately and say so.
+            var continuumRequested = document.getElementById('spectrum-continuum').checked;
+            var fitted = plotted.filter(function(e) { return e.result.continuum_normalized; });
+            var unfitted = plotted.filter(function(e) { return !e.result.continuum_normalized; });
+            var continuumNormalized = fitted.length > 0;
             if (continuumNormalized) {
-              var allX = [].concat.apply([], plotted.map(function(e) {
+              var allX = [].concat.apply([], fitted.map(function(e) {
                 return [].concat.apply([], e.result.segments.map(function(s) { return s.wavelength; }));
               }));
               traces.push({ x: [Math.min.apply(null, allX), Math.max.apply(null, allX)], y: [1, 1],
@@ -1269,18 +1278,31 @@ PAGE_TEMPLATE = """
               height: SPECTRUM_PANEL_HEIGHT,
               margin: { t: 20, b: 90 },
               xaxis: { title: xTitle },
-              yaxis: { title: continuumNormalized ? 'Continuum-Normalized Flux' : 'Scaled Flux',
+              yaxis: { title: continuumNormalized
+                         ? (unfitted.length ? 'Flux (continuum-normalized where fit)' : 'Continuum-Normalized Flux')
+                         : 'Scaled Flux',
                        range: yRangeCapped(traces, continuumNormalized) },
               hovermode: 'closest',
               legend: { font: { size: 10 }, orientation: 'h', x: 0, y: -0.22, yanchor: 'top' },
             }, { responsive: true });
 
             var noteEl = document.getElementById('spectrum-viewer-note');
+            var unfittedNames = unfitted.slice(0, 3).map(function(e) { return e.label; }).join(', ')
+              + (unfitted.length > 3 ? ', +' + (unfitted.length - 3) + ' more' : '');
             if (plotted.length && continuumNormalized) {
-              noteEl.innerHTML = 'Each spectrum is divided by its own fitted continuum (alpha-hull + '
+              noteEl.innerHTML = 'Each fitted spectrum is divided by its own fitted continuum (alpha-hull + '
                 + 'local regression, experimental, via <a href="https://github.com/imedan/mdwarf_contin" '
                 + 'target="_blank" rel="noopener">Ilija Medan’s mdwarf_contin</a>) -- values near 1 are '
-                + 'the continuum, dips/bumps are real spectral features relative to it, not an absolute scale.';
+                + 'the continuum, dips/bumps are real spectral features relative to it, not an absolute scale.'
+                + (unfitted.length
+                  ? ' The fit failed for ' + unfitted.length + ' of ' + plotted.length + ' plotted spectra ('
+                    + unfittedNames + '), so those are shown divided by their median instead -- '
+                    + 'not a continuum fit.'
+                  : '');
+            } else if (plotted.length && continuumRequested) {
+              noteEl.textContent = 'Continuum fit was requested but failed for every plotted spectrum ('
+                + unfittedNames + ') -- it needs long, stellar-continuum spectra and fails on short or '
+                + 'non-stellar ones such as Spitzer/IRS orders. Showing median-normalized flux instead.';
             } else if (plotted.length) {
               noteEl.textContent = 'Each spectrum is normalized by its own median flux (see hover for '
                 + 'the original unit) so everything fits one axis -- not a physical calibration.'
@@ -1882,6 +1904,12 @@ SPECTRUM_TEMPLATE = """
         <a href="https://github.com/imedan/mdwarf_contin" target="_blank" rel="noopener">Ilija Medan’s
         mdwarf_contin</a>) -- values near 1 are the continuum, dips/bumps are real spectral features
         relative to it, not an absolute scale.
+        <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">Back to scaled flux</a>.
+      {% elif request.args.get('continuum') == '1' %}
+        The continuum fit was requested but failed for this spectrum (it needs a long, stellar-continuum
+        spectrum and fails on short or non-stellar ones such as Spitzer/IRS orders), so flux is shown
+        divided by its own median (×{{ "%.3g"|format(result.flux_scale_factor) }}, originally
+        {{ result.flux_unit }}) instead -- not a continuum fit and not a physical calibration.
         <a href="?{% if request.args.get('confirm') == '1' %}confirm=1{% endif %}">Back to scaled flux</a>.
       {% else %}
         Flux is normalized by this spectrum's own median (×{{ "%.3g"|format(result.flux_scale_factor) }},
