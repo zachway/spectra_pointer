@@ -83,7 +83,7 @@ A search in The Spectra Pointer can be done in several ways. A query by the name
 
 This work will provide stellar astronomers with a tool that is both broad and deep, tracking 17.5 million stars and 48.7 million spectra. An astronomer who studies a particular star can now search immediately to see if their source has been observed, and obtain links to the public archive for data retrieval. This breadth of coverage is relevant for time-domain astronomy, where a source can be characterized without the need for additional follow-up, as well as for inter-archival comparison and validation.
 
-The depth of the data is staggering. At the time of writing, Toliman is found to be the most observed star, with more than 70,000 spectra and observations of Eta Carinae dating back to 1893. TW Hydrae has the broadest wavelength coverage, with overlapping data taken from the x-ray all the way to the far infrared. The Spectra Pointer allows a user to, at a glance, see all the available spectra for a particular source and enrich the research on these sources.
+The depth of the data is staggering. At the time of writing, the most observed star is Toliman with more than 70,000 spectra and the database tracks observations of Eta Carinae dating back to 1893. TW Hydrae has the broadest wavelength coverage, with overlapping data taken from the x-ray all the way to the far infrared. The Spectra Pointer allows a user to, at a glance, see all the available spectra for a particular source and enrich the research on these sources.
 
 # AI usage disclosure
 
