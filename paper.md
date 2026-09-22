@@ -1,5 +1,5 @@
 ---
-title: The Spectra Pointer: A Pointer Database for Stellar Spectroscopy
+title: "The Spectra Pointer: A Pointer Database for Stellar Spectroscopy"
 tags:
   - Python
   - astronomy
