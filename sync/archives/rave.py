@@ -14,12 +14,12 @@ product RAVE ever published; there's no public raw-frame release for it.
 import numpy as np
 from astropy.time import Time
 
-from sync.base import RawObservation, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://tapvizier.cds.unistra.fr/TAPVizieR/tap"
 
 QUERY = """
-SELECT x."ObsID", x."Gaiae3", r."Obs.date", s."FileName"
+SELECT x."ObsID", x."Gaiae3", r."Obs.date", r."RAJ2000", r."DEJ2000", s."FileName"
 FROM "III/283/xgaiae3" AS x
 JOIN "III/283/ravedr6" AS r ON x."ObsID" = r."ObsID"
 JOIN "III/283/spectra" AS s ON x."ObsID" = s."ObsID"
@@ -47,6 +47,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="RAVE",
                 obs_date=obs_date,
                 gaia_source_id=int(row["Gaiae3"]),
+                ra=clean_float(row["RAJ2000"]),
+                dec=clean_float(row["DEJ2000"]),
                 reduction_status="reduced",
             )
         )

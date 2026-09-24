@@ -16,12 +16,12 @@ frame; GALAH has no public raw-frame distribution path.
 import numpy as np
 from astropy.time import Time
 
-from sync.base import RawObservation, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://datacentral.org.au/vo/tap"
 
 QUERY = """
-SELECT sobject_id, gaiadr3_source_id, mjd
+SELECT sobject_id, gaiadr3_source_id, mjd, ra, dec
 FROM galah_dr4.mainspectable
 WHERE mjd > {last_mjd}
 """
@@ -56,6 +56,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="GALAH (HERMES)",
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 gaia_source_id=int(row["gaiadr3_source_id"]),
+                ra=clean_float(row["ra"]),
+                dec=clean_float(row["dec"]),
                 reduction_status="reduced",
             )
         )

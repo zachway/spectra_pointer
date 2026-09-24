@@ -161,6 +161,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ),
                 instrument="DESI",
                 gaia_source_id=source_id,
+                ra=float(rv["TARGET_RA"]),
+                dec=float(rv["TARGET_DEC"]),
                 reduction_status="reduced",
             )
         )

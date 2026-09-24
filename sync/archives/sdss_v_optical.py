@@ -57,6 +57,8 @@ into SPEC_FILE's filename, independent of run2d), so field-mjd-catalogid
 survives a reduction bump and lets the upsert do its job.
 """
 
+from __future__ import annotations
+
 import os
 
 import numpy as np
@@ -95,6 +97,19 @@ def _ensure_cached() -> None:
     os.rename(tmp_path, SPALL_CACHE_PATH)
 
 
+# Where the fiber actually sat on the sky for this exposure -- the archive's
+# own reported position, not the catalog position (RACAT/DECCAT, which is
+# at COORD_EPOCH rather than the observation date). FIBER_RA/DEC is the
+# robotic-FPS era's measured fiber position; PLUG_RA/DEC is the plate-era
+# equivalent and the fallback when FIBER_RA/DEC is unset (0 or non-finite).
+def _fiber_position(row) -> tuple[float | None, float | None]:
+    for ra_col, dec_col in (("FIBER_RA", "FIBER_DEC"), ("PLUG_RA", "PLUG_DEC")):
+        ra, dec = float(row[ra_col]), float(row[dec_col])
+        if np.isfinite(ra) and np.isfinite(dec) and not (ra == 0.0 and dec == 0.0):
+            return ra, dec
+    return None, None
+
+
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_mjd = cursor.get("last_mjd", 0)
 
@@ -114,6 +129,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         field_group = f"{field:06d}"[:3]
         spec_file = row["SPEC_FILE"].strip()
         catalogid = int(row["CATALOGID"])
+        ra, dec = _fiber_position(row)
         records.append(
             RawObservation(
                 archive_obs_id=f"{field}-{mjd}-{catalogid}",
@@ -122,6 +138,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 obs_date=Time(mjd, format="mjd").to_datetime().date(),
                 program_id=row["SURVEY"].strip(),
                 gaia_source_id=int(row["GAIA_ID"]),
+                ra=ra,
+                dec=dec,
                 reduction_status="reduced",
             )
         )
