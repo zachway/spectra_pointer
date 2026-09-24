@@ -20,7 +20,7 @@ from sync.base import RawObservation
 SQL_URL = "https://skyserver.sdss.org/dr20/SkyServerWS/SearchTools/SqlSearch"
 
 QUERY = """
-SELECT TOP {page_size} apogee_id, telescope, field, [file], gaiaedr3_source_id
+SELECT TOP {page_size} apogee_id, telescope, field, [file], gaiaedr3_source_id, ra, dec
 FROM apogeeStar
 WHERE gaiaedr3_source_id IS NOT NULL AND apogee_id > '{last_apogee_id}'
 ORDER BY apogee_id ASC
@@ -55,6 +55,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 archive_url=SPECTRUM_URL.format(telescope=row["telescope"], field=row["field"], file=row["file"]),
                 instrument="APOGEE",
                 gaia_source_id=int(row["gaiaedr3_source_id"]),
+                ra=float(row["ra"]),
+                dec=float(row["dec"]),
                 reduction_status="reduced",
             )
         )

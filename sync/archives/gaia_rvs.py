@@ -34,12 +34,12 @@ matcher's ON CONFLICT DO NOTHING makes re-matching an already-held spectrum
 a no-op.
 """
 
-from sync.base import RawObservation, make_tap_service
+from sync.base import RawObservation, clean_float, make_tap_service
 
 TAP_URL = "https://gea.esac.esa.int/tap-server/tap"
 
 QUERY = """
-SELECT TOP {page_size} source_id
+SELECT TOP {page_size} source_id, ra, dec
 FROM gaiadr3.gaia_source
 WHERE has_rvs = 'true' AND source_id > {last_source_id}
 ORDER BY source_id ASC
@@ -73,6 +73,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 archive_url=RVS_DEEP_LINK.format(source_id=source_id),
                 instrument="Gaia RVS",
                 gaia_source_id=source_id,
+                ra=clean_float(row["ra"]),
+                dec=clean_float(row["dec"]),
             )
         )
 

@@ -83,6 +83,8 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 instrument="LAMOST-MRS",
                 obs_date=Time(int(row["mjd"]), format="mjd").to_datetime().date(),
                 gaia_source_id=int(row["gaia_source_id"]),
+                ra=float(row["ra"]),
+                dec=float(row["dec"]),
                 reduction_status="reduced",
             )
         )
