@@ -870,6 +870,7 @@ PAGE_TEMPLATE = """
     <button type="button" data-tab="star" class="{{ 'active' if active_search_tab == 'star' else '' }}">Star search</button>
     <button type="button" data-tab="batch" class="{{ 'active' if active_search_tab == 'batch' else '' }}">Batch search</button>
     <button type="button" data-tab="instrument" class="{{ 'active' if active_search_tab == 'instrument' else '' }}">Instrument search</button>
+    <button type="button" data-tab="overlap" class="{{ 'active' if active_search_tab == 'overlap' else '' }}">Overlap search</button>
   </nav>
 
   <div id="tab-star" class="search-tab-panel"{{ "" if active_search_tab == "star" else " hidden" }}>
@@ -1534,11 +1535,80 @@ PAGE_TEMPLATE = """
   </script>
   </div>
 
+  <div id="tab-overlap" class="search-tab-panel"{{ "" if active_search_tab == "overlap" else " hidden" }}>
+  <h2>Overlap search</h2>
+  <p class="note">List every star with matched holdings in both of two archives or instruments. Either side can be
+    a whole archive ("all instruments") or one instrument within it, so archive-vs-archive,
+    instrument-vs-instrument, and archive-vs-instrument all work. Only matched holdings count, same as the
+    overlap heatmap on the <a href="/instruments">Instruments</a> page. Each search scans the full holdings
+    table, so it can take several seconds.</p>
+  <form method="get" action="/overlap" class="instrument-search-controls">
+    {% for side, selected in [("a", overlap_a_value), ("b", overlap_b_value)] %}
+    <select name="{{ side }}" aria-label="{{ 'First' if side == 'a' else 'Second' }} archive or instrument">
+      <option value="">{{ 'First' if side == 'a' else 'Second' }} archive/instrument…</option>
+      {% for arc in overlap_side_options %}
+      <optgroup label="{{ arc.display_name }}">
+        <option value="{{ arc.archive_code }}"{{ " selected" if selected == arc.archive_code else "" }}>{{ arc.display_name }} — all instruments</option>
+        {% for inst in arc.instruments %}
+        {% set v = arc.archive_code ~ "::" ~ inst %}
+        <option value="{{ v }}"{{ " selected" if selected == v else "" }}>{{ arc.display_name }} — {{ inst }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+    {% if side == "a" %}<span>&amp;</span>{% endif %}
+    {% endfor %}
+    <button type="submit">Find overlap</button>
+    <button type="submit" name="format" value="csv">Download CSV</button>
+  </form>
+
+  {% if overlap_error %}
+    <p class="error">Error: {{ overlap_error }}</p>
+  {% endif %}
+
+  {% if overlap_result %}
+    {% set r = overlap_result %}
+    {% set pair_qs = r.pair_qs %}
+    {% if r.total is not none %}
+      <p><strong>{{ "{:,}".format(r.total) }}</strong> star{{ "" if r.total == 1 else "s" }} with matched holdings in both
+        <strong>{{ r.a.label }}</strong> and <strong>{{ r.b.label }}</strong>.
+        {% if r.total %}Sorted by combined observation count.
+          <a href="/overlap?{{ pair_qs }}&amp;format=csv">Download all as CSV</a>{% endif %}</p>
+    {% else %}
+      <p>No results on this page. <a href="/overlap?{{ pair_qs }}">Back to the first page</a>.</p>
+    {% endif %}
+    {% if r.rows %}
+    <table>
+      <tr><th>Star</th><th>source_id</th><th>RA</th><th>Dec</th><th>G</th>
+        <th>Obs. in {{ r.a.label }}</th><th>Obs. in {{ r.b.label }}</th></tr>
+      {% for row in r.rows %}
+      <tr>
+        <td><a href="/?q={{ row.search_id }}">{{ row.known_as }}</a></td>
+        <td>{{ row.gaia_source_id if row.gaia_source_id is not none else "—" }}</td>
+        <td>{{ "%.5f"|format(row.ra) }}</td>
+        <td>{{ "%.5f"|format(row.dec) }}</td>
+        <td>{{ "%.2f"|format(row.phot_g_mean_mag) if row.phot_g_mean_mag is not none else "—" }}</td>
+        <td>{{ "{:,}".format(row.n_a) }}</td>
+        <td>{{ "{:,}".format(row.n_b) }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+    {% if r.total is not none and r.n_pages > 1 %}
+      <p>Page {{ r.page }} of {{ r.n_pages }}
+        {% if r.page > 1 %} &middot; <a href="/overlap?{{ pair_qs }}&amp;page={{ r.page - 1 }}">&larr; previous</a>{% endif %}
+        {% if r.page < r.n_pages %} &middot; <a href="/overlap?{{ pair_qs }}&amp;page={{ r.page + 1 }}">next &rarr;</a>{% endif %}
+      </p>
+    {% endif %}
+  {% endif %}
+  </div>
+
   <script>
     (function() {
       var buttons = document.querySelectorAll('nav.subtabs button');
       var panels = { star: document.getElementById('tab-star'), batch: document.getElementById('tab-batch'),
-                     instrument: document.getElementById('tab-instrument') };
+                     instrument: document.getElementById('tab-instrument'),
+                     overlap: document.getElementById('tab-overlap') };
       buttons.forEach(function(btn) {
         btn.addEventListener('click', function() {
           var target = btn.getAttribute('data-tab');
@@ -3177,7 +3247,224 @@ def _advanced_search_context() -> dict:
         "adv_res_max": request.values.get("adv_res_max", "").strip(),
         "adv_wave_min": request.values.get("adv_wave_min", "").strip(),
         "adv_wave_max": request.values.get("adv_wave_max", "").strip(),
+        "overlap_side_options": _overlap_side_options()[0],
+        "overlap_a_value": request.args.get("a", "").strip(),
+        "overlap_b_value": request.args.get("b", "").strip(),
     }
+
+
+# Overlap search tab: stars with matched holdings in both of two "sides",
+# where a side is a whole archive ("<archive_code>") or one instrument within
+# it ("<archive_code>::<instrument>"). Instruments are scoped to their
+# archive rather than matched by bare name (unlike the precomputed
+# instrument_overlap table behind /instruments' heatmap) since a few names
+# collide across archives -- see INSTRUMENT_RESOLVING_POWER's comment on
+# "OSIRIS" at Keck vs. GTC.
+#
+# Unlike /instruments' overlap counts, the star list itself can't be
+# precomputed -- that's one row per (star, pair) across every archive and
+# instrument pair, far bigger than the holdings table itself. So this runs
+# live, as one filtered GROUP BY pass over spectroscopy_holdings (the same
+# single-table-scan cost /instrument_holdings.csv already pays), not a
+# self-join: each matched row counts toward side A, side B, or both, and a
+# star is in the overlap when both counts are nonzero. The Parquet file is
+# sorted by star_id, so the archive/instrument filter can't prune row groups
+# -- this always reads the archive_code/instrument/match_status/star_id
+# columns in full, hence the timeout on the HTML path.
+OVERLAP_SIDE_SEPARATOR = "::"
+OVERLAP_PAGE_SIZE = 200
+OVERLAP_TIMEOUT_SECONDS = 120.0
+OVERLAP_EXPORT_FIELDNAMES = [
+    "star_id", "gaia_source_id", "bsc_hr_number", "known_as", "ra", "dec", "phot_g_mean_mag", "n_obs_a", "n_obs_b",
+]
+
+_overlap_side_options_cache: tuple[list[dict], dict[str, dict]] | None = None
+
+
+def _overlap_side_options() -> tuple[list[dict], dict[str, dict]]:
+    """(per-archive option groups for the two <select>s, lookup from each
+    option's value to its parsed side) -- same snapshot-lifetime caching as
+    _advanced_search_options. The lookup doubles as the whitelist a
+    submitted a=/b= value is validated against."""
+    global _overlap_side_options_cache
+    if _overlap_side_options_cache is None:
+        _, instrument_options = _advanced_search_options()
+        instruments_by_code: dict[str, list[str]] = defaultdict(list)
+        for i in instrument_options:
+            instruments_by_code[i["archive_code"]].append(i["instrument"])
+        groups, sides = [], {}
+        for a in _instrument_search_options():
+            code, name = a["archive_code"], a["display_name"]
+            insts = sorted(instruments_by_code.get(code, []))
+            groups.append({"archive_code": code, "display_name": name, "instruments": insts})
+            sides[code] = {"value": code, "archive_code": code, "instrument": None, "label": name}
+            for inst in insts:
+                value = f"{code}{OVERLAP_SIDE_SEPARATOR}{inst}"
+                sides[value] = {"value": value, "archive_code": code, "instrument": inst, "label": f"{name} — {inst}"}
+        _overlap_side_options_cache = (groups, sides)
+    return _overlap_side_options_cache
+
+
+def _overlap_side_sql(side: dict) -> tuple[str, list]:
+    if side["instrument"] is None:
+        return "(archive_code = ?)", [side["archive_code"]]
+    return "(archive_code = ? AND instrument = ?)", [side["archive_code"], side["instrument"]]
+
+
+def _overlap_star_counts_sql(side_a: dict, side_b: dict) -> tuple[str, list]:
+    """SELECT star_id, n_a, n_b for every star in the A/B overlap -- see the
+    comment above OVERLAP_SIDE_SEPARATOR for why this is one pass rather
+    than an INTERSECT/self-join."""
+    cond_a, params_a = _overlap_side_sql(side_a)
+    cond_b, params_b = _overlap_side_sql(side_b)
+    sql = f"""
+        SELECT star_id,
+               count(*) FILTER (WHERE {cond_a}) AS n_a,
+               count(*) FILTER (WHERE {cond_b}) AS n_b
+        FROM spectroscopy_holdings
+        WHERE match_status = 'matched' AND star_id IS NOT NULL AND ({cond_a} OR {cond_b})
+        GROUP BY star_id
+        HAVING n_a > 0 AND n_b > 0
+    """
+    return sql, params_a + params_b + params_a + params_b
+
+
+def _render_overlap(overlap_error=None, overlap_result=None):
+    return render_template_string(
+        PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
+        error=None, resolved_source_id=None,
+        max_name_lookups=MAX_NAME_LOOKUPS,
+        batch_error=None, batch_note=None, batch_results=None,
+        active_tab="search", active_search_tab="overlap",
+        overlap_error=overlap_error, overlap_result=overlap_result,
+        **_advanced_search_context(),
+    )
+
+
+@app.route("/overlap")
+def overlap_search():
+    a_value = request.args.get("a", "").strip()
+    b_value = request.args.get("b", "").strip()
+    if not a_value and not b_value:
+        return _render_overlap()
+    _, sides = _overlap_side_options()
+    if not a_value or not b_value:
+        return _render_overlap(overlap_error="Pick an archive or instrument on both sides.")
+    side_a, side_b = sides.get(a_value), sides.get(b_value)
+    if side_a is None or side_b is None:
+        return _render_overlap(overlap_error="Unknown archive or instrument -- pick one from the lists.")
+    if a_value == b_value:
+        return _render_overlap(overlap_error="Pick two different archives or instruments.")
+
+    counts_sql, params = _overlap_star_counts_sql(side_a, side_b)
+
+    if request.args.get("format", "").strip().lower() == "csv":
+        # Full list, streamed the same way /instrument_holdings.csv is --
+        # the overlap between two big surveys can run to hundreds of
+        # thousands of stars.
+        def generate():
+            export_cur = get_cursor()
+            export_cur.execute(
+                f"""
+                WITH o AS ({counts_sql})
+                SELECT s.star_id, s.gaia_source_id, s.bsc_hr_number, s.input_name, s.name_aliases,
+                       s.ra, s.dec, s.phot_g_mean_mag, o.n_a, o.n_b
+                FROM o JOIN stars s ON s.star_id = o.star_id
+                ORDER BY o.n_a + o.n_b DESC, s.star_id
+                """,
+                params,
+            )
+            columns = [c[0] for c in export_cur.description]
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(OVERLAP_EXPORT_FIELDNAMES)
+            yield buf.getvalue()
+            while True:
+                rows = export_cur.fetchmany(INSTRUMENT_EXPORT_CHUNK_SIZE)
+                if not rows:
+                    break
+                buf.seek(0)
+                buf.truncate(0)
+                for row in rows:
+                    d = dict(zip(columns, row))
+                    writer.writerow([
+                        d["star_id"], d["gaia_source_id"], d["bsc_hr_number"], _star_display_name(d),
+                        d["ra"], d["dec"], d["phot_g_mean_mag"], d["n_a"], d["n_b"],
+                    ])
+                yield buf.getvalue()
+
+        slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", f"{a_value}_vs_{b_value}")
+        return Response(
+            stream_with_context(generate()),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="spectra_pointer_overlap_{slug}.csv"'},
+        )
+
+    try:
+        page = max(1, int(request.args.get("page", "1")))
+    except ValueError:
+        page = 1
+    cur = get_cursor()
+    try:
+        # count(*) OVER () rides along on the page query so the total needs
+        # no second scan -- the price is that an out-of-range page returns
+        # no rows and so no total either (the template handles that).
+        _execute_with_timeout(
+            cur,
+            f"""
+            WITH o AS ({counts_sql})
+            SELECT star_id, n_a, n_b, count(*) OVER () AS total
+            FROM o
+            ORDER BY n_a + n_b DESC, star_id
+            LIMIT ? OFFSET ?
+            """,
+            params + [OVERLAP_PAGE_SIZE, (page - 1) * OVERLAP_PAGE_SIZE],
+            OVERLAP_TIMEOUT_SECONDS,
+        )
+    except TimeoutError:
+        return _render_overlap(
+            overlap_error=f"This search took too long (over {OVERLAP_TIMEOUT_SECONDS:g}s) and was cancelled -- "
+                          "try the CSV download instead, which isn't time-limited."
+        )
+    page_rows = _rows_as_dicts(cur)
+    total = page_rows[0]["total"] if page_rows else (0 if page == 1 else None)
+
+    rows = []
+    if page_rows:
+        star_ids = [r["star_id"] for r in page_rows]
+        cur.execute(
+            "SELECT star_id, gaia_source_id, bsc_hr_number, input_name, name_aliases, ra, dec, phot_g_mean_mag "
+            f"FROM stars WHERE star_id IN ({', '.join('?' for _ in star_ids)})",
+            star_ids,
+        )
+        stars_by_id = {s["star_id"]: s for s in _rows_as_dicts(cur)}
+        for r in page_rows:
+            s = stars_by_id.get(r["star_id"])
+            if s is None:
+                continue
+            rows.append({
+                **s,
+                "known_as": _star_display_name(s),
+                "search_id": s["gaia_source_id"] if s["gaia_source_id"] is not None else s["bsc_hr_number"],
+                "n_a": r["n_a"],
+                "n_b": r["n_b"],
+            })
+
+    return _render_overlap(overlap_result={
+        "a": side_a, "b": side_b,
+        "pair_qs": urlencode({"a": a_value, "b": b_value}),
+        "total": total, "rows": rows,
+        "page": page, "page_size": OVERLAP_PAGE_SIZE,
+        "n_pages": max(1, math.ceil((total or 0) / OVERLAP_PAGE_SIZE)),
+    })
+
+
+def _star_display_name(star: dict) -> str:
+    """_known_as, but also safe for a source_catalog='bsc5' star with no
+    aliases/input_name and a NULL gaia_source_id."""
+    if star.get("name_aliases") or star.get("input_name") or star.get("gaia_source_id") is not None:
+        return _known_as(star)
+    return f"HR {star['bsc_hr_number']}"
 
 
 # Public homepage per archive display_name -- same hand-maintained shape as
