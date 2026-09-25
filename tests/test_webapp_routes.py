@@ -1,4 +1,4 @@
-from tests.conftest import WEBAPP_TEST_STAR_1, WEBAPP_TEST_STAR_2
+from tests.conftest import WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B, WEBAPP_TEST_STAR_1, WEBAPP_TEST_STAR_2
 
 
 def test_search_by_name_returns_grouped_holdings(client):
@@ -204,6 +204,99 @@ def test_batch_search_csv_export(client):
     body = resp.get_data(as_text=True)
     assert "TESTSPEC" in body
     assert body.count("\n") >= 3  # header + 2 holding rows for star1
+
+
+def _csv_data_rows(body):
+    return [line for line in body.strip().splitlines()[1:] if line]
+
+
+def test_batch_search_filters_by_one_picked_archive(client):
+    # star1 has 2 TESTSPEC holdings in WEBAPP_TEST_ARCHIVE_CODE and 1
+    # OTHERSPEC holding in WEBAPP_TEST_ARCHIVE_CODE_B -- only the latter passes.
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n",
+        "adv_source": WEBAPP_TEST_ARCHIVE_CODE_B,
+        "format": "csv",
+    })
+    rows = _csv_data_rows(resp.get_data(as_text=True))
+    assert len(rows) == 1
+    assert "OTHERSPEC" in rows[0]
+
+
+def test_batch_search_matches_any_of_several_picks(client):
+    # An archive-level pick and an instrument-level pick from a different
+    # archive: holdings from either count.
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n",
+        "adv_source": [f"{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC", WEBAPP_TEST_ARCHIVE_CODE_B],
+        "format": "csv",
+    })
+    assert len(_csv_data_rows(resp.get_data(as_text=True))) == 3
+
+
+def test_batch_search_instrument_pick_is_scoped_to_its_archive(client):
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n",
+        "adv_source": f"{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC",
+    })
+    body = resp.get_data(as_text=True)
+    assert "Webapp Test Archive — TESTSPEC" in body
+    results_table = body.split("<table>", 1)[1].split("</table>", 1)[0]
+    assert "OTHERSPEC" not in results_table
+
+
+def test_batch_search_ignores_unknown_picks(client):
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n",
+        "adv_source": "no_such_archive::NOPE",
+    })
+    body = resp.get_data(as_text=True)
+    assert "Matched holdings" not in body  # no valid filter, so no filtered column
+
+
+def test_batch_results_offer_csv_download_above_table(client):
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n{WEBAPP_TEST_STAR_2}\n",
+        "adv_source": WEBAPP_TEST_ARCHIVE_CODE_B,
+        "adv_reduction": "reduced",
+    })
+    body = resp.get_data(as_text=True)
+    download = body.index('class="batch-download"')
+    assert download < body.index("<th>Query</th>")
+    form = body[download:body.index("</form>", download)]
+    assert f"{WEBAPP_TEST_STAR_1}\n{WEBAPP_TEST_STAR_2}</textarea>" in form
+    assert f'name="adv_source" value="{WEBAPP_TEST_ARCHIVE_CODE_B}"' in form
+    assert 'name="adv_reduction" value="reduced"' in form
+    assert 'name="format" value="csv"' in form
+
+
+def test_advanced_panel_lists_picks_and_renders_on_batch_tab(client):
+    resp = client.post("/batch", data={
+        "names": f"{WEBAPP_TEST_STAR_1}\n",
+        "adv_source": f"{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC",
+    })
+    body = resp.get_data(as_text=True)
+    # Rendered inside the batch tab's slot, with the pick kept in the list.
+    batch_tab = body[body.index('id="tab-batch"'):body.index('id="tab-instrument"')]
+    assert 'id="advanced-search"' in batch_tab
+    assert f'name="adv_source" value="{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC" form="star-form"' in batch_tab
+    assert body.count('id="advanced-search"') == 1
+
+
+def test_star_search_page_offers_archive_and_instrument_picks(client):
+    body = client.get("/").get_data(as_text=True)
+    assert f'<option value="{WEBAPP_TEST_ARCHIVE_CODE}">' in body
+    assert f'<option value="{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC">' in body
+
+
+def test_star_search_csv_link_carries_every_pick(client):
+    resp = client.get(
+        f"/?q={WEBAPP_TEST_STAR_1}&adv_source={WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC&adv_source={WEBAPP_TEST_ARCHIVE_CODE_B}"
+    )
+    body = resp.get_data(as_text=True)
+    assert "Showing 3 of 3 observations" in body
+    assert (f"adv_source={WEBAPP_TEST_ARCHIVE_CODE}%3A%3ATESTSPEC&amp;adv_source={WEBAPP_TEST_ARCHIVE_CODE_B}"
+            in body)
 
 
 def test_batch_search_with_no_input_shows_error(client):

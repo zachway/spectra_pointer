@@ -832,6 +832,15 @@ SHARED_STYLE = """
                       gap: 0.6rem 1rem; margin: 0.6rem 0; }
     .advanced-grid label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.9rem; }
     .advanced-grid select, .advanced-grid input { font-family: monospace; padding: 0.2rem; }
+    .adv-source-picker { margin: 0.6rem 0; font-size: 0.9rem; }
+    .adv-source-controls { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-top: 0.2rem; }
+    .adv-source-controls input, .adv-source-controls select { font-family: monospace; padding: 0.2rem; }
+    .adv-source-controls input { flex: 1 1 160px; }
+    .adv-source-controls select { flex: 2 1 260px; min-width: 0; }
+    ul.adv-source-list { list-style: none; padding: 0; margin: 0.4rem 0; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+    ul.adv-source-list li { border: 1px solid #666; padding: 0.1rem 0.2rem 0.1rem 0.5rem; font-family: monospace; }
+    .adv-source-remove { border: none; background: none; cursor: pointer; font-size: 1rem; padding: 0 0.2rem; }
+    form.batch-download { margin: 0.8rem 0; }
     .site-footer { display: flex; flex-direction: column; align-items: center; gap: 0.3rem;
                     margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #000;
                     text-align: center; font-size: 0.85rem; }
@@ -873,8 +882,75 @@ PAGE_TEMPLATE = """
     <button type="button" data-tab="overlap" class="{{ 'active' if active_search_tab == 'overlap' else '' }}">Overlap search</button>
   </nav>
 
+  {#- The advanced-search panel is shared by the Star and Batch tabs: rendered
+      once, into whichever of their .adv-slot divs matches the active tab, and
+      moved between them by the tab-switching script at the bottom, so picks
+      carry over when switching tabs. Every field carries form="star-form" (so
+      it submits with the star/radial search wherever it sits in the DOM); the
+      batch form copies them in on submit instead -- see its own script. -#}
+  {% set adv_slot = "batch" if active_search_tab == "batch" else "star" %}
+  {% macro advanced_panel() %}
+    <details class="advanced-search" id="advanced-search"{{ " open" if adv_pairs else "" }}>
+      <summary>Advanced search</summary>
+      <p class="note">Narrows the star, sky-position, and batch searches to specific archives/instruments,
+        a resolving-power range, a wavelength range, and/or a reduction status.</p>
+      <div class="adv-source-picker">
+        <label for="adv-source-select">Archives / instruments</label>
+        <div class="adv-source-controls">
+          <input type="search" id="adv-source-filter" placeholder="Filter list, e.g. HARPS" aria-label="Filter archives and instruments">
+          <select id="adv-source-select">
+            <option value="">Pick an archive or instrument…</option>
+            {% for arc in overlap_side_options %}
+            <optgroup label="{{ arc.display_name }}">
+              <option value="{{ arc.archive_code }}">{{ arc.display_name }} — all instruments</option>
+              {% for inst in arc.instruments %}
+              <option value="{{ arc.archive_code }}::{{ inst }}">{{ arc.display_name }} — {{ inst }}</option>
+              {% endfor %}
+            </optgroup>
+            {% endfor %}
+          </select>
+          <button type="button" id="adv-source-add">Add to list</button>
+        </div>
+        <ul id="adv-source-list" class="adv-source-list">
+          {% for s in adv_sources %}
+          <li><span>{{ s.label }}{% if s.instrument is none %} — all instruments{% endif %}</span>
+            <input type="hidden" name="adv_source" value="{{ s.value }}" form="star-form">
+            <button type="button" class="adv-source-remove" aria-label="Remove">&times;</button></li>
+          {% endfor %}
+        </ul>
+        <p class="note" id="adv-source-empty"{{ " hidden" if adv_sources else "" }}>No archives or instruments
+          picked -- all of them count. Add several to match holdings from any of them.</p>
+      </div>
+      <div class="advanced-grid">
+        <label>Reduction status
+          <select name="adv_reduction" id="adv-reduction" form="star-form">
+            <option value="">Any</option>
+            {% for choice in reduction_status_choices %}
+            <option value="{{ choice }}"{{ " selected" if adv_reduction == choice else "" }}>{{ choice|capitalize }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Resolving power (R) min
+          <input type="number" name="adv_res_min" id="adv-res-min" value="{{ adv_res_min }}" placeholder="e.g. 20000" form="star-form">
+        </label>
+        <label>Resolving power (R) max
+          <input type="number" name="adv_res_max" id="adv-res-max" value="{{ adv_res_max }}" placeholder="e.g. 100000" form="star-form">
+        </label>
+        <label>Wavelength min (nm)
+          <input type="number" name="adv_wave_min" id="adv-wave-min" value="{{ adv_wave_min }}" placeholder="e.g. 380" form="star-form">
+        </label>
+        <label>Wavelength max (nm)
+          <input type="number" name="adv_wave_max" id="adv-wave-max" value="{{ adv_wave_max }}" placeholder="e.g. 900" form="star-form">
+        </label>
+      </div>
+      <p class="note">Resolving powers are hand-compiled per-instrument typical values from published specs
+        (often spanning several gratings/modes), not per-observation measurements. Treat a match as approximate;
+        see the <a href="/instruments">Instruments</a> tab for each instrument's full range.</p>
+    </details>
+  {% endmacro %}
+
   <div id="tab-star" class="search-tab-panel"{{ "" if active_search_tab == "star" else " hidden" }}>
-  <form method="get" action="">
+  <form method="get" action="/" id="star-form">
     <input type="text" name="q" class="search-input" placeholder="Gaia source_id or star name, e.g. Proxima Centauri" value="{{ query or '' }}" autofocus>
     <button type="submit" name="mode" value="name">Search</button>
     <label class="unmatched-toggle">
@@ -894,74 +970,9 @@ PAGE_TEMPLATE = """
       </label>
     </div>
 
-    <details class="advanced-search">
-      <summary>Advanced search</summary>
-      <p class="note">Narrows either search above to a specific archive, instrument, resolving-power range,
-        wavelength range, and/or reduction status.</p>
-      <div class="advanced-grid">
-        <label>Archive
-          <select name="adv_archive" id="adv-archive">
-            <option value="">Any archive</option>
-            {% for a in archive_options %}
-            <option value="{{ a.archive_code }}"{{ " selected" if adv_archive == a.archive_code else "" }}>{{ a.display_name }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Instrument
-          <select name="adv_instrument" id="adv-instrument">
-            <option value="">Any instrument</option>
-            {% for i in instrument_options %}
-            <option value="{{ i.instrument }}" data-archive="{{ i.archive_code }}"{{ " selected" if adv_instrument == i.instrument else "" }}>{{ i.display_name }} — {{ i.instrument }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Reduction status
-          <select name="adv_reduction" id="adv-reduction">
-            <option value="">Any</option>
-            {% for choice in reduction_status_choices %}
-            <option value="{{ choice }}"{{ " selected" if adv_reduction == choice else "" }}>{{ choice|capitalize }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        <label>Resolving power (R) min
-          <input type="number" name="adv_res_min" id="adv-res-min" value="{{ adv_res_min }}" placeholder="e.g. 20000">
-        </label>
-        <label>Resolving power (R) max
-          <input type="number" name="adv_res_max" id="adv-res-max" value="{{ adv_res_max }}" placeholder="e.g. 100000">
-        </label>
-        <label>Wavelength min (nm)
-          <input type="number" name="adv_wave_min" id="adv-wave-min" value="{{ adv_wave_min }}" placeholder="e.g. 380">
-        </label>
-        <label>Wavelength max (nm)
-          <input type="number" name="adv_wave_max" id="adv-wave-max" value="{{ adv_wave_max }}" placeholder="e.g. 900">
-        </label>
-      </div>
-      <p class="note">Resolving powers are hand-compiled per-instrument typical values from published specs
-        (often spanning several gratings/modes), not per-observation measurements. Treat a match as approximate;
-        see the <a href="/instruments">Instruments</a> tab for each instrument's full range.</p>
-    </details>
+    <div class="adv-slot" data-adv-slot="star">{% if adv_slot == "star" %}{{ advanced_panel() }}{% endif %}</div>
   </form>
   <script>
-    (function() {
-      var archiveSel = document.getElementById('adv-archive');
-      var instrumentSel = document.getElementById('adv-instrument');
-      if (!archiveSel || !instrumentSel) return;
-      var allOptions = Array.prototype.slice.call(instrumentSel.options);
-      function applyArchiveFilter() {
-        var archive = archiveSel.value;
-        var current = instrumentSel.value;
-        instrumentSel.innerHTML = '';
-        allOptions.forEach(function(opt) {
-          if (!archive || opt.value === '' || opt.getAttribute('data-archive') === archive) {
-            instrumentSel.appendChild(opt);
-          }
-        });
-        var stillPresent = Array.prototype.slice.call(instrumentSel.options).some(function(o) { return o.value === current; });
-        instrumentSel.value = stillPresent ? current : '';
-      }
-      archiveSel.addEventListener('change', applyArchiveFilter);
-      applyArchiveFilter();
-    })();
     (function() {
       // .caveat-tip spans live inside a checkbox <label> (see
       // "Search unmatched records" above) -- clicking anywhere in a
@@ -992,7 +1003,7 @@ PAGE_TEMPLATE = """
       <p class="error">Error: {{ radial_error }}</p>
     {% else %}
       <p>{{ radial_results|length }} {{ "record" if search_unmatched else "star" }}{{ "s" if radial_results|length != 1 else "" }} found within {{ '%g'|format(radius_display|float) }}&#39; of RA {{ ra }}, Dec {{ dec }}{% if adv_active %} matching the advanced search filters{% endif %}.
-        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if search_unmatched %}&amp;search_unmatched=1{% endif %}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
+        {% if radial_results %} <a href="?ra={{ ra }}&amp;dec={{ dec }}&amp;radius={{ radius_display }}{% if search_unmatched %}&amp;search_unmatched=1{% endif %}{% if adv_active %}&amp;{{ adv_query }}{% endif %}&amp;format=csv">Download as CSV</a>{% endif %}
       </p>
       {% if radial_results %}
       <table{% if search_unmatched %} class="compact"{% endif %}>
@@ -1402,7 +1413,7 @@ PAGE_TEMPLATE = """
         matching the advanced search filters. <a href="?q={{ star_search_id }}">Clear filters</a></p>
     {% endif %}
     {% if holdings %}
-      <p><a href="?q={{ star_search_id }}{% if adv_active %}&amp;adv_archive={{ adv_archive }}&amp;adv_instrument={{ adv_instrument }}&amp;adv_reduction={{ adv_reduction }}&amp;adv_res_min={{ adv_res_min }}&amp;adv_res_max={{ adv_res_max }}&amp;adv_wave_min={{ adv_wave_min }}&amp;adv_wave_max={{ adv_wave_max }}{% endif %}&amp;format=csv">Download holdings as CSV</a></p>
+      <p><a href="?q={{ star_search_id }}{% if adv_active %}&amp;{{ adv_query }}{% endif %}&amp;format=csv">Download holdings as CSV</a></p>
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary class="summary-row">
@@ -1438,42 +1449,53 @@ PAGE_TEMPLATE = """
   <div id="tab-batch" class="search-tab-panel"{{ "" if active_search_tab == "batch" else " hidden" }}>
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
-    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't.
-    {% if adv_active %}Advanced filters above apply here too -- "Holdings" counts only matching observations.{% endif %}</p>
+    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't. Use Advanced search below to
+    count only holdings from specific archives/instruments.</p>
   <form method="post" action="batch" enctype="multipart/form-data" id="batch-form">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
     <p><input type="file" name="file" accept=".txt,.csv"></p>
-    <input type="hidden" name="adv_archive" id="batch-adv_archive" value="{{ adv_archive }}">
-    <input type="hidden" name="adv_instrument" id="batch-adv_instrument" value="{{ adv_instrument }}">
-    <input type="hidden" name="adv_reduction" id="batch-adv_reduction" value="{{ adv_reduction }}">
-    <input type="hidden" name="adv_res_min" id="batch-adv_res_min" value="{{ adv_res_min }}">
-    <input type="hidden" name="adv_res_max" id="batch-adv_res_max" value="{{ adv_res_max }}">
-    <input type="hidden" name="adv_wave_min" id="batch-adv_wave_min" value="{{ adv_wave_min }}">
-    <input type="hidden" name="adv_wave_max" id="batch-adv_wave_max" value="{{ adv_wave_max }}">
-    <button type="submit">Look up list</button>
-    <button type="submit" name="format" value="csv">Look up and download CSV</button>
+    <div class="adv-slot" data-adv-slot="batch">{% if adv_slot == "batch" %}{{ advanced_panel() }}{% endif %}</div>
+    <p>
+      <button type="submit">Look up list</button>
+      <button type="submit" name="format" value="csv">Look up and download CSV</button>
+    </p>
   </form>
   <script>
     (function() {
-      // The advanced-search panel's fields live in the page's other <form>
-      // (the name/ID + radial search one), so this hidden-field copy is the
-      // only way the batch form's POST sees them -- the panel's <select>/
-      // <input> elements aren't inside this <form>, so the browser would
-      // otherwise submit whatever adv_* values this page was originally
-      // rendered with (e.g. blank, on a fresh page load), not whatever the
-      // user has since picked in the panel above without submitting it.
+      // The advanced-search panel's fields all carry form="star-form" (see
+      // advanced_panel), so even while the panel sits inside this form they
+      // don't submit with it. Copy their current values in as hidden
+      // fields on every submit -- cleared first, so resubmitting after
+      // changing the picks doesn't send stale copies too.
       var batchForm = document.getElementById('batch-form');
-      var fieldIds = ['adv-archive', 'adv-instrument', 'adv-reduction', 'adv-res-min', 'adv-res-max', 'adv-wave-min', 'adv-wave-max'];
       if (!batchForm) return;
       batchForm.addEventListener('submit', function() {
-        fieldIds.forEach(function(id) {
-          var source = document.getElementById(id);
-          var hidden = document.getElementById('batch-' + id.replace(/-/g, '_'));
-          if (source && hidden) hidden.value = source.value;
+        batchForm.querySelectorAll('input.adv-copy').forEach(function(el) { el.remove(); });
+        document.querySelectorAll('[form="star-form"][name^="adv_"]').forEach(function(field) {
+          if (!field.value) return;
+          var copy = document.createElement('input');
+          copy.type = 'hidden';
+          copy.className = 'adv-copy';
+          copy.name = field.name;
+          copy.value = field.value;
+          batchForm.appendChild(copy);
         });
       });
     })();
   </script>
+
+  {% if batch_results %}
+    {#- Re-POSTs the same looked-up list and filters with format=csv, so the
+        results on screen can be downloaded without re-pasting/re-uploading. -#}
+    <h3>Results</h3>
+    <form method="post" action="batch" class="batch-download">
+      <textarea name="names" hidden>{{ batch_names_text }}</textarea>
+      {% for name, value in adv_pairs %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+      <button type="submit" name="format" value="csv">Download these results as CSV</button>
+      <span class="note">One row per holding{% if adv_active %}, filtered the same way{% endif %}. Re-runs the lookup,
+        so name lookups hit SIMBAD again.</span>
+    </form>
+  {% endif %}
 
   {% if batch_error %}
     <p class="error">Error: {{ batch_error }}</p>
@@ -1681,7 +1703,83 @@ PAGE_TEMPLATE = """
           Object.keys(panels).forEach(function(key) {
             if (panels[key]) { panels[key].hidden = key !== target; }
           });
+          // Carry the shared advanced-search panel along (see advanced_panel).
+          var advPanel = document.getElementById('advanced-search');
+          var slot = document.querySelector('[data-adv-slot="' + target + '"]');
+          if (advPanel && slot && advPanel.parentNode !== slot) { slot.appendChild(advPanel); }
         });
+      });
+    })();
+    (function() {
+      // Archive/instrument picker: the <select> lists every archive (as
+      // "all instruments") and each of its instruments, grouped by archive;
+      // the filter box narrows it; "Add to list" appends the pick to the
+      // list below as a removable entry carrying its own adv_source field.
+      var filterBox = document.getElementById('adv-source-filter');
+      var select = document.getElementById('adv-source-select');
+      var addBtn = document.getElementById('adv-source-add');
+      var list = document.getElementById('adv-source-list');
+      var empty = document.getElementById('adv-source-empty');
+      if (!filterBox || !select || !addBtn || !list) return;
+      var placeholder = select.options[0];
+      var groups = Array.prototype.map.call(select.querySelectorAll('optgroup'), function(g) {
+        return { el: g, options: Array.prototype.slice.call(g.querySelectorAll('option')) };
+      });
+      function applyFilter() {
+        var terms = filterBox.value.toLowerCase().split(/\\s+/).filter(Boolean);
+        select.innerHTML = '';
+        select.appendChild(placeholder);
+        var firstMatch = null;
+        groups.forEach(function(g) {
+          g.el.innerHTML = '';
+          g.options.forEach(function(opt) {
+            var text = opt.textContent.toLowerCase();
+            if (terms.every(function(t) { return text.indexOf(t) !== -1; })) {
+              g.el.appendChild(opt);
+              if (!firstMatch) firstMatch = opt;
+            }
+          });
+          if (g.el.children.length) select.appendChild(g.el);
+        });
+        select.value = terms.length && firstMatch ? firstMatch.value : '';
+      }
+      function syncEmpty() { if (empty) empty.hidden = list.children.length > 0; }
+      function addPick() {
+        var opt = select.options[select.selectedIndex];
+        if (!opt || !opt.value) return;
+        var already = Array.prototype.some.call(list.querySelectorAll('input[name="adv_source"]'),
+                                                function(i) { return i.value === opt.value; });
+        if (already) return;
+        var li = document.createElement('li');
+        var label = document.createElement('span');
+        label.textContent = opt.textContent;
+        var input = document.createElement('input');
+        input.type = 'hidden';
+        input.name = 'adv_source';
+        input.value = opt.value;
+        input.setAttribute('form', 'star-form');
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'adv-source-remove';
+        remove.setAttribute('aria-label', 'Remove');
+        remove.innerHTML = '&times;';
+        li.appendChild(label);
+        li.appendChild(input);
+        li.appendChild(remove);
+        list.appendChild(li);
+        syncEmpty();
+      }
+      filterBox.addEventListener('input', applyFilter);
+      filterBox.addEventListener('keydown', function(e) {
+        // Enter adds the top match instead of submitting whichever form
+        // the panel currently sits in.
+        if (e.key === 'Enter') { e.preventDefault(); addPick(); }
+      });
+      addBtn.addEventListener('click', addPick);
+      select.addEventListener('dblclick', addPick);
+      list.addEventListener('click', function(e) {
+        var btn = e.target.closest('.adv-source-remove');
+        if (btn) { btn.closest('li').remove(); syncEmpty(); }
       });
     })();
   </script>
@@ -1721,12 +1819,13 @@ def _not_found_error(source_id) -> tuple[str, float | None, float | None]:
     return error, ra, dec
 
 
-def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_active=False):
+def _blank_batch(batch_error=None, batch_note=None, batch_results=None, adv_active=False, batch_entries=()):
     return render_template_string(
         PAGE_TEMPLATE, query=None, star=None, holdings=None, wavelength_chart=None,
         error=None, resolved_source_id=None,
         max_name_lookups=MAX_NAME_LOOKUPS,
         batch_error=batch_error, batch_note=batch_note, batch_results=batch_results,
+        batch_names_text="\n".join(batch_entries),
         active_tab="search", active_search_tab="batch",
         adv_active=adv_active,
         **_advanced_search_context(),
@@ -3106,24 +3205,45 @@ def _optional_range(min_str: str, max_str: str) -> tuple[float, float] | None:
     return (lo if lo is not None else 0.0, hi if hi is not None else math.inf)
 
 
+# The advanced-search panel's archive/instrument picker builds a list, one
+# repeatable adv_source field per entry, each either a whole archive
+# ("<archive_code>") or one instrument within it ("<archive_code>::<instrument>")
+# -- the same values (and the same validating lookup) as the Overlap tab's
+# sides, see OVERLAP_SIDE_SEPARATOR. A holding passes if it matches ANY
+# listed entry. Values not in that lookup are dropped rather than erroring,
+# so a stale link just filters on whatever's still valid.
+ADV_SCALAR_FIELDS = ("adv_reduction", "adv_res_min", "adv_res_max", "adv_wave_min", "adv_wave_max")
+
+
+def _adv_sources() -> list[dict]:
+    """The request's valid adv_source entries, de-duplicated, in submission
+    order, as _overlap_side_options sides (value/archive_code/instrument/label)."""
+    _, sides = _overlap_side_options()
+    picked: dict[str, dict] = {}
+    for v in request.values.getlist("adv_source"):
+        side = sides.get(v.strip())
+        if side is not None:
+            picked.setdefault(side["value"], side)
+    return list(picked.values())
+
+
 def _parse_advanced_filters() -> dict | None:
     """Read the adv_* fields (the advanced-search panel's fields) off the
     current request into a filter dict, or None if none were supplied --
     lets every caller skip the extra holdings filtering/queries below on an
     ordinary search. request.values (not request.args) so this also picks up
-    the hidden adv_* fields the batch-lookup form POSTs alongside its own
-    name list -- the panel itself always lives in the page's GET form, but
-    its current values need to reach the POST /batch route too."""
-    archive_code = request.values.get("adv_archive", "").strip()
-    instrument = request.values.get("adv_instrument", "").strip()
+    the adv_* fields the batch-lookup form POSTs alongside its own name
+    list -- the panel is shared by the star and batch tabs, and its current
+    values need to reach the POST /batch route too."""
+    sources = _adv_sources()
     reduction_status = request.values.get("adv_reduction", "").strip()
     res_range = _optional_range(request.values.get("adv_res_min", ""), request.values.get("adv_res_max", ""))
     wave_range = _optional_range(request.values.get("adv_wave_min", ""), request.values.get("adv_wave_max", ""))
-    if not (archive_code or instrument or reduction_status or res_range or wave_range):
+    if not (sources or reduction_status or res_range or wave_range):
         return None
     return {
-        "archive_code": archive_code or None,
-        "instrument": instrument or None,
+        "archive_codes": {s["archive_code"] for s in sources if s["instrument"] is None},
+        "instrument_pairs": {(s["archive_code"], s["instrument"]) for s in sources if s["instrument"] is not None},
         "reduction_status": reduction_status or None,
         "res_range": res_range,
         "wave_range": wave_range,
@@ -3134,10 +3254,10 @@ def _holding_matches_advanced_filters(h: dict, filters: dict) -> bool:
     """h needs archive_code, display_name, instrument, reduction_status --
     true of both a spectroscopy_holdings row (joined to archives) and the
     rows _advanced_matches_for_star_ids below builds for the same purpose."""
-    if filters["archive_code"] and h["archive_code"] != filters["archive_code"]:
-        return False
-    if filters["instrument"] and h["instrument"] != filters["instrument"]:
-        return False
+    if filters["archive_codes"] or filters["instrument_pairs"]:
+        if not (h["archive_code"] in filters["archive_codes"]
+                or (h["archive_code"], h["instrument"]) in filters["instrument_pairs"]):
+            return False
     if filters["reduction_status"] and h["reduction_status"] != filters["reduction_status"]:
         return False
     if filters["res_range"] is not None:
@@ -3299,22 +3419,33 @@ def _advanced_search_context() -> dict:
     render of PAGE_TEMPLATE so the panel behaves the same regardless of
     which search path rendered the page. instrument_search_options rides
     along here too rather than needing its own kwarg at every call site."""
-    archive_options, instrument_options = _advanced_search_options()
     return {
-        "archive_options": archive_options,
-        "instrument_options": instrument_options,
         "instrument_search_options": _instrument_search_options(),
         "reduction_status_choices": REDUCTION_STATUS_CHOICES,
-        "adv_archive": request.values.get("adv_archive", "").strip(),
-        "adv_instrument": request.values.get("adv_instrument", "").strip(),
+        "adv_sources": _adv_sources(),
         "adv_reduction": request.values.get("adv_reduction", "").strip(),
         "adv_res_min": request.values.get("adv_res_min", "").strip(),
         "adv_res_max": request.values.get("adv_res_max", "").strip(),
         "adv_wave_min": request.values.get("adv_wave_min", "").strip(),
         "adv_wave_max": request.values.get("adv_wave_max", "").strip(),
+        # Every current adv_* (name, value) pair, adv_source repeated -- for
+        # the CSV download links (adv_query) and the batch results'
+        # resubmit-as-CSV form (adv_pairs), so a download always carries
+        # exactly the filters the page on screen was built with.
+        "adv_pairs": _advanced_pairs(),
+        "adv_query": urlencode(_advanced_pairs()),
         "overlap_side_options": _overlap_side_options()[0],
         **_overlap_form_state(),
     }
+
+
+def _advanced_pairs() -> list[tuple[str, str]]:
+    pairs = [("adv_source", s["value"]) for s in _adv_sources()]
+    for name in ADV_SCALAR_FIELDS:
+        v = request.values.get(name, "").strip()
+        if v:
+            pairs.append((name, v))
+    return pairs
 
 
 # Overlap search tab: stars with matched holdings in several "sides", where
@@ -4990,9 +5121,10 @@ def batch_search():
     if truncated:
         note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
     if adv_filters:
-        note += " Holdings counts are filtered by the advanced search options above."
+        note += " Holdings counts are filtered by the advanced search options."
 
-    return _blank_batch(batch_error=batch_error, batch_note=note, batch_results=results, adv_active=bool(adv_filters))
+    return _blank_batch(batch_error=batch_error, batch_note=note, batch_results=results, adv_active=bool(adv_filters),
+                        batch_entries=entries)
 
 
 # =============================================================================
