@@ -306,18 +306,25 @@ def test_batch_search_with_no_input_shows_error(client):
 
 
 def test_overlap_search_archive_vs_archive_lists_only_shared_star(client):
-    resp = client.get("/overlap?a=webapp_test&b=webapp_test_b")
+    resp = client.get("/overlap?s=webapp_test&s=webapp_test_b")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert "<strong>1</strong> star with matched holdings in both" in body
+    assert "<strong>1</strong> star with matched holdings in" in body
+    assert "both <strong>Webapp Test Archive</strong> and <strong>Webapp Test Archive B</strong>" in body
     assert "TEST STAR ONE" in body
     assert "TEST STAR THREE" not in body  # only in archive B
     # star1: 2 observations in A, 1 in B
-    assert "<td>2</td>\n        <td>1</td>" in body
+    assert "<td>2</td><td>1</td>" in body
+
+
+def test_overlap_search_old_two_side_links_still_work(client):
+    body = client.get("/overlap?a=webapp_test&b=webapp_test_b").get_data(as_text=True)
+    assert "<strong>1</strong> star with matched holdings in" in body
+    assert "TEST STAR ONE" in body
 
 
 def test_overlap_search_instrument_vs_archive(client):
-    resp = client.get("/overlap?a=webapp_test%3A%3ATESTSPEC&b=webapp_test_b")
+    resp = client.get("/overlap?s=webapp_test%3A%3ATESTSPEC&s=webapp_test_b")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
     assert "Webapp Test Archive — TESTSPEC" in body
@@ -325,33 +332,81 @@ def test_overlap_search_instrument_vs_archive(client):
 
 
 def test_overlap_search_selects_stay_selected_and_tab_active(client):
-    body = client.get("/overlap?a=webapp_test&b=webapp_test_b%3A%3AOTHERSPEC").get_data(as_text=True)
+    body = client.get("/overlap?s=webapp_test&s=webapp_test_b%3A%3AOTHERSPEC").get_data(as_text=True)
     assert '<option value="webapp_test" selected>' in body
     assert '<option value="webapp_test_b::OTHERSPEC" selected>' in body
     assert '<div id="tab-overlap" class="search-tab-panel">' in body  # not hidden
+    assert '<details id="overlap-advanced">' in body  # plain two-way search leaves Advanced closed
 
 
-def test_overlap_search_rejects_same_side_and_unknown_values(client):
-    body = client.get("/overlap?a=webapp_test&b=webapp_test").get_data(as_text=True)
-    assert "Pick two different archives or instruments." in body
-    body = client.get("/overlap?a=webapp_test&b=not_an_archive").get_data(as_text=True)
+def test_overlap_search_rejects_duplicate_unknown_and_single_values(client):
+    body = client.get("/overlap?s=webapp_test&s=webapp_test").get_data(as_text=True)
+    assert "Each archive or instrument can only be picked once." in body
+    body = client.get("/overlap?s=webapp_test&s=not_an_archive").get_data(as_text=True)
     assert "Unknown archive or instrument" in body
-    body = client.get("/overlap?a=webapp_test").get_data(as_text=True)
-    assert "Pick an archive or instrument on both sides." in body
+    body = client.get("/overlap?s=webapp_test&s=").get_data(as_text=True)
+    assert "Pick at least two archives or instruments." in body
+
+
+def test_overlap_search_three_way_all_requires_every_side(client):
+    body = client.get(
+        "/overlap?s=webapp_test&s=webapp_test_b&s=webapp_test_c&match=all"
+    ).get_data(as_text=True)
+    assert "<strong>0</strong> stars with matched holdings in" in body
+    assert "all of:" in body
+    assert '<details id="overlap-advanced" open>' in body  # 3 sides re-opens Advanced
+    assert "TEST STAR ONE" not in body and "TEST STAR THREE" not in body
+
+
+def test_overlap_search_three_way_pairs_finds_any_matching_pair(client):
+    body = client.get(
+        "/overlap?s=webapp_test&s=webapp_test_b&s=webapp_test_c&match=pairs"
+    ).get_data(as_text=True)
+    assert "<strong>2</strong> stars with matched holdings in" in body
+    assert "at least two of:" in body
+    assert "TEST STAR ONE" in body and "TEST STAR THREE" in body
+    assert "<td>2 of 3</td>" in body
+    assert '<input type="radio" name="match" value="pairs" checked>' in body
+    # star1 (A=2, B=1, C=0) sorts ahead of star3 (A=0, B=1, C=1) on combined count
+    assert body.index("TEST STAR ONE") < body.index("TEST STAR THREE")
+    assert "<td>2</td><td>1</td><td>—</td>" in body
 
 
 def test_overlap_search_page_past_the_end(client):
-    body = client.get("/overlap?a=webapp_test&b=webapp_test_b&page=5").get_data(as_text=True)
+    body = client.get("/overlap?s=webapp_test&s=webapp_test_b&page=5").get_data(as_text=True)
     assert "No results on this page." in body
-    assert 'href="/overlap?a=webapp_test&amp;b=webapp_test_b"' in body
+    assert 'href="/overlap?s=webapp_test&amp;s=webapp_test_b&amp;match=all"' in body
 
 
 def test_overlap_search_csv_export(client):
-    resp = client.get("/overlap?a=webapp_test&b=webapp_test_b&format=csv")
+    resp = client.get("/overlap?s=webapp_test&s=webapp_test_b&format=csv")
     assert resp.status_code == 200
     assert resp.mimetype == "text/csv"
     lines = resp.get_data(as_text=True).strip().splitlines()
-    assert lines[0].startswith("star_id,gaia_source_id,bsc_hr_number,known_as")
+    assert lines[0] == (
+        "star_id,gaia_source_id,bsc_hr_number,known_as,ra,dec,phot_g_mean_mag,n_sides_matched,"
+        "n_obs_webapp_test,n_obs_webapp_test_b"
+    )
     assert len(lines) == 2
     assert f",{WEBAPP_TEST_STAR_1}," in lines[1]
-    assert lines[1].endswith(",2,1")
+    assert lines[1].endswith(",2,2,1")
+
+
+def test_overlap_search_csv_export_three_way_pairs(client):
+    resp = client.get("/overlap?s=webapp_test&s=webapp_test_b&s=webapp_test_c&match=pairs&format=csv")
+    lines = resp.get_data(as_text=True).strip().splitlines()
+    assert lines[0].endswith(",n_obs_webapp_test,n_obs_webapp_test_b,n_obs_webapp_test_c")
+    assert len(lines) == 3
+    assert lines[1].endswith(",2,2,1,0") and lines[2].endswith(",2,0,1,1")
+
+
+def test_archive_data_releases_match_sync_modules(webapp_module):
+    # Drift guard: each /status release label must still appear in the sync
+    # module it describes, so bumping a module to a new release without
+    # updating ARCHIVE_DATA_RELEASES fails here instead of mislabeling live.
+    import pathlib
+    import re
+    archives_dir = pathlib.Path(__file__).resolve().parent.parent / "sync" / "archives"
+    for code, release in webapp_module.ARCHIVE_DATA_RELEASES.items():
+        src = (archives_dir / f"{code}.py").read_text()
+        assert re.search(rf"\b{release}\b", src, re.IGNORECASE), (code, release)
