@@ -84,6 +84,11 @@ WEBAPP_TEST_ARCHIVE_CODE = "webapp_test"
 # it must NOT show up). Kept separate from WEBAPP_TEST_ARCHIVE_CODE so the
 # other route tests' per-archive counts are unaffected.
 WEBAPP_TEST_ARCHIVE_CODE_B = "webapp_test_b"
+# Third, for the N-way overlap tests: holds only star3. So across A/B/C,
+# star1 is in A+B and star3 in B+C -- no star in all three, two stars in
+# "any two or more".
+WEBAPP_TEST_ARCHIVE_CODE_C = "webapp_test_c"
+WEBAPP_TEST_ARCHIVE_CODES = [WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B, WEBAPP_TEST_ARCHIVE_CODE_C]
 
 
 @pytest.fixture(scope="session")
@@ -102,8 +107,12 @@ def spectra_data_dir(tmp_path_factory):
             (WEBAPP_TEST_ARCHIVE_CODE_B,),
         )
         cur.execute(
-            "DELETE FROM spectroscopy_holdings WHERE archive_code IN (%s, %s)",
-            (WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B),
+            "INSERT INTO archives (archive_code, display_name, access_mechanism) "
+            "VALUES (%s, 'Webapp Test Archive C', 'rest_json') ON CONFLICT DO NOTHING",
+            (WEBAPP_TEST_ARCHIVE_CODE_C,),
+        )
+        cur.execute(
+            "DELETE FROM spectroscopy_holdings WHERE archive_code = ANY(%s)", (WEBAPP_TEST_ARCHIVE_CODES,)
         )
         # Also clears any holdings left over (under any archive_code) from an
         # unrelated prior run against this same local test DB that happen to
@@ -162,6 +171,14 @@ def spectra_data_dir(tmp_path_factory):
             " 'manual', 'matched', 'reduced')",
             (star1_id, WEBAPP_TEST_ARCHIVE_CODE_B, star3_id, WEBAPP_TEST_ARCHIVE_CODE_B),
         )
+        cur.execute(
+            "INSERT INTO spectroscopy_holdings "
+            "(star_id, archive_code, archive_obs_id, archive_url, instrument, obs_date, "
+            " match_method, match_status, reduction_status) VALUES "
+            "(%s, %s, 'test-c-obs-1', 'https://example.invalid/c/1', 'THIRDSPEC', '2024-04-01', "
+            " 'manual', 'matched', 'reduced')",
+            (star3_id, WEBAPP_TEST_ARCHIVE_CODE_C),
+        )
     connection.commit()
 
     try:
@@ -172,17 +189,13 @@ def spectra_data_dir(tmp_path_factory):
     finally:
         with connection.cursor() as cur:
             cur.execute(
-                "DELETE FROM spectroscopy_holdings WHERE archive_code IN (%s, %s)",
-                (WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B),
+                "DELETE FROM spectroscopy_holdings WHERE archive_code = ANY(%s)", (WEBAPP_TEST_ARCHIVE_CODES,)
             )
             cur.execute(
                 "DELETE FROM stars WHERE gaia_source_id BETWEEN %s AND %s",
                 (WEBAPP_TEST_ID_LOW, WEBAPP_TEST_ID_HIGH),
             )
-            cur.execute(
-                "DELETE FROM archives WHERE archive_code IN (%s, %s)",
-                (WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B),
-            )
+            cur.execute("DELETE FROM archives WHERE archive_code = ANY(%s)", (WEBAPP_TEST_ARCHIVE_CODES,))
         connection.commit()
         connection.close()
 
