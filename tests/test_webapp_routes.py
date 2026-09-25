@@ -210,3 +210,15 @@ def test_batch_search_with_no_input_shows_error(client):
     resp = client.post("/batch", data={"names": ""})
     assert resp.status_code == 200
     assert "No names or source_ids found in the upload." in resp.get_data(as_text=True)
+
+
+def test_archive_data_releases_match_sync_modules(webapp_module):
+    # Drift guard: each /status release label must still appear in the sync
+    # module it describes, so bumping a module to a new release without
+    # updating ARCHIVE_DATA_RELEASES fails here instead of mislabeling live.
+    import pathlib
+    import re
+    archives_dir = pathlib.Path(__file__).resolve().parent.parent / "sync" / "archives"
+    for code, release in webapp_module.ARCHIVE_DATA_RELEASES.items():
+        src = (archives_dir / f"{code}.py").read_text()
+        assert re.search(rf"\b{release}\b", src, re.IGNORECASE), (code, release)
