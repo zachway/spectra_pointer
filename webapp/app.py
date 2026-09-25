@@ -4331,6 +4331,25 @@ ARCHIVE_STATUS_CATEGORIES = [
     ("skipped", "Skipped"),
 ]
 
+# Survey data release each archive module is pinned to, shown next to the
+# archive name on /status. Only archives that sync a versioned release
+# belong here -- everything else is a live archive with no release number.
+# Hand-maintained like NOT_YET_TRACKED; tests/test_webapp_routes.py checks
+# each release string still appears in its sync/archives/ module, so
+# repointing a module at a new release without updating this fails loudly.
+ARCHIVE_DATA_RELEASES = {
+    "carmenes": "DR1",
+    "desi": "DR1",
+    "gaia_rvs": "DR3",
+    "galah": "DR4",
+    "lamost": "DR11",
+    "lamost_mrs": "DR11",
+    "rave": "DR6",
+    "sdss_legacy_optical": "DR20",
+    "sdss_v_apogee": "DR20",
+    "sdss_v_optical": "DR20",
+}
+
 # Known instrument-coverage gaps -- unlike everything else on this page,
 # this can't be derived from the database (by definition, nothing not
 # tracked shows up in holdings), so it's hand-maintained here rather than
@@ -4435,7 +4454,11 @@ def archive_status():
 
     archives = [
         {
-            "display_name": by_archive[code]["display_name"],
+            "display_name": (
+                f"{by_archive[code]['display_name']} {ARCHIVE_DATA_RELEASES[code]}"
+                if code in ARCHIVE_DATA_RELEASES
+                else by_archive[code]["display_name"]
+            ),
             "last_run_at": by_archive[code]["last_run_at"],
             "last_run_status": by_archive[code]["last_run_status"],
             "obs_span": (
