@@ -418,9 +418,8 @@ def test_info_access_grid_falls_back_to_no_data_without_its_json(client):
     resp = client.get("/info")
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    assert "Who's using The Spectra Pointer?" in body
-    assert "access-map-plot" not in body
-    assert "No data yet." in body
+    assert "Roughly where" in body
+    assert "access-grid-plot" not in body
 
 
 def test_info_access_grid_renders_published_cells(client, monkeypatch, webapp_module, spectra_data_dir):
@@ -441,9 +440,6 @@ def test_info_access_grid_renders_published_cells(client, monkeypatch, webapp_mo
         os.remove(path)
     assert resp.status_code == 200
     body = resp.get_data(as_text=True)
-    # One combined map now -- the old country choropleth is gone.
-    assert body.count("Plotly.newPlot('access-") == 1
-    assert "access-map-plot" in body
-    assert "20 visitor networks in the past 30 days" in body
-    assert "12 are mapped" in body
+    assert "access-grid-plot" in body
+    assert "12 of 20 visitor networks shown" in body
     assert '"visitors": 7' in body

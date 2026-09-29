@@ -4743,107 +4743,99 @@ INFO_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <h2>Who's using The Spectra Pointer?</h2>
-  <p class="note">Derived from this site's own request logs. Each client IP is placed at a city, then snapped to a {{ access_grid.cell_deg | round(1) }}° × {{ access_grid.cell_deg | round(1) }}° cell, and the IP is discarded in the same step — no IP address is ever written to disk by this project, and the request log itself is trimmed to the same {{ access_grid.window_days }}-day window (see <code>scripts/build_access_grid.py</code> and <code>scripts/trim_access_log.py</code> for the full privacy reasoning). A "visitor" is a network (IPv4 /24 or IPv6 /48), not an individual address, and a cell only counts once at least {{ access_grid.min_visitors }} distinct networks have been seen in it, so no spot on the map can stand for one person. The glow around each cell is a smoothing of those cells, not extra precision — IP geolocation is only good to a city or two. Counts include every client (browsers, crawlers, uptime checks), not just humans; treat this as indicative, not precise analytics.{% if access_grid.generated_at %} Last updated {{ access_grid.generated_at }}.{% endif %}</p>
+  <p class="note">Country-level counts derived from this site's own request logs — client IPs are geocoded to a country and discarded in the same step (see <code>scripts/build_access_heatmap.py</code> for the full privacy reasoning). No IP address is ever written to disk by this project, and the underlying request log itself is trimmed on the same schedule (see <code>scripts/trim_access_log.py</code>); only the aggregate counts below are kept, and only for the trailing window shown. Counts include every client that requested the site (browsers, crawlers, unfiltered uptime checks), not just human visitors — treat this as indicative, not precise analytics.{% if access_heatmap_generated_at %} Last updated {{ access_heatmap_generated_at }}.{% endif %}</p>
+  {% if access_heatmap_countries %}
+    <div id="access-heatmap-plot" style="width: 100%; height: 450px;"></div>
+    <p>{{ "{:,}".format(access_heatmap_total) }} requests across {{ access_heatmap_countries|length }} countries in the past {{ access_heatmap_window_days }} days.</p>
+    <script>
+      (function() {
+        const countries = {{ access_heatmap_countries | tojson }};
+        const maxCount = Math.max(...countries.map(c => c.count));
+        // Same log10(n+1)-with-real-count-ticks treatment as the Archive
+        // Status overlap heatmap below -- request counts by country span
+        // orders of magnitude (the operator's own testing vs. a handful of
+        // hits from elsewhere), so a linear scale would make every country
+        // but the top one look the same near-white shade.
+        const tickVals = [], tickText = [];
+        for (let t = 1; t <= maxCount; t *= 10) {
+          tickVals.push(Math.log10(t + 1));
+          tickText.push(t.toLocaleString());
+        }
+        if (maxCount > 0 && tickVals[tickVals.length - 1] < Math.log10(maxCount + 1)) {
+          tickVals.push(Math.log10(maxCount + 1));
+          tickText.push(maxCount.toLocaleString());
+        }
+        Plotly.newPlot('access-heatmap-plot', [{
+          type: 'choropleth',
+          locationmode: 'country names',
+          locations: countries.map(c => c.country),
+          z: countries.map(c => Math.log10(c.count + 1)),
+          customdata: countries.map(c => c.count),
+          colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
+          marker: { line: { color: '#fff', width: 0.5 } },
+          hovertemplate: '%{location}: %{customdata:,} requests<extra></extra>',
+          colorbar: { title: { text: 'requests' }, tickvals: tickVals, ticktext: tickText },
+        }], {
+          geo: { projection: { type: 'natural earth' }, showframe: false, showcoastlines: false, bgcolor: 'rgba(0,0,0,0)' },
+          margin: { t: 10, b: 10, l: 0, r: 0 },
+        }, { responsive: true });
+      })();
+    </script>
+  {% else %}
+    <p>No data yet.</p>
+  {% endif %}
+
+  <h3>Roughly where</h3>
+  <p class="note">The same log at a finer grain: each visitor is placed at a city by IP, then snapped to a {{ access_grid.cell_deg | round(1) }}° × {{ access_grid.cell_deg | round(1) }}° cell — only cells are shown, never cities. A "visitor" here is a network (IPv4 /24 or IPv6 /48), not an individual address, and a cell only appears once at least {{ access_grid.min_visitors }} distinct networks have been seen in it over the past {{ access_grid.window_days }} days, so no cell can stand for one person. Totals only, no per-day breakdown. See <code>scripts/build_access_grid.py</code> for the reasoning. IP geolocation is approximate — expect cells to be off by a city or two.</p>
   {% if access_grid.cells %}
-    <!-- The heatmap is thousands of abutting raster squares: anti-aliased
-         edges leave a faint white seam grid between them, crisp edges don't. -->
-    <style>#access-map-plot .choroplethlocation { shape-rendering: crispEdges; }</style>
-    <div id="access-map-plot" style="width: 100%; height: 480px;"></div>
-    <p>{{ "{:,}".format(access_grid.total_visitors) }} visitor networks in the past {{ access_grid.window_days }} days{% if access_heatmap_countries %}, from {{ access_heatmap_countries|length }} countries{% endif %}. {{ "{:,}".format(access_grid.shown_visitors) }} are mapped; {{ "{:,}".format(access_grid.suppressed_visitors) }} are in places too sparse to show, and {{ "{:,}".format(access_grid.unplaced_visitors) }} couldn't be placed more precisely than a country (common for cloud and mobile networks).</p>
+    <div id="access-grid-plot" style="width: 100%; height: 450px;"></div>
+    <p>{{ "{:,}".format(access_grid.shown_visitors) }} of {{ "{:,}".format(access_grid.total_visitors) }} visitor networks shown; {{ "{:,}".format(access_grid.suppressed_visitors) }} are in cells too sparse to show, and {{ "{:,}".format(access_grid.unplaced_visitors) }} couldn't be placed more precisely than a country (common for cloud and mobile networks).</p>
     <script>
       (function() {
         const cells = {{ access_grid.cells | tojson }};
         const d = {{ access_grid.cell_deg }};
-        // Gaussian kernel density over the published cells, rasterized
-        // client-side -- a presentation of exactly the suppressed,
-        // cell-level data in access_grid.json, so it can't reveal anything
-        // finer than the cells themselves. sigma = one cell width: wide
-        // enough to read as a heatmap at world scale and to honestly blur
-        // over IP geolocation's own city-or-two error.
-        const sigma = d;
-        const reach = 3 * sigma;
-        // 0.5 deg raster normally; coarser once there are enough cells for
-        // the polygon count (one GeoJSON square per lit pixel) to get heavy.
-        const res = cells.length > 150 ? 1 : 0.5;
-        const nLon = Math.round(360 / res);
-        const density = new Map();
-        for (const c of cells) {
-          const clat = c.south + d / 2, clon = c.west + d / 2;
-          for (let i = Math.floor((clat - reach) / res); i <= Math.floor((clat + reach) / res); i++) {
-            const lat = (i + 0.5) * res;
-            if (lat <= -90 || lat >= 90) continue;
-            const coslat = Math.max(Math.cos(lat * Math.PI / 180), 0.05);
-            const lonReach = Math.min(reach / coslat, 180);
-            for (let j = Math.floor((clon - lonReach + 180) / res); j <= Math.floor((clon + lonReach + 180) / res); j++) {
-              const lon = -180 + (j + 0.5) * res;
-              const dx = (lon - clon) * coslat, dy = lat - clat;
-              const w = c.visitors * Math.exp(-(dx * dx + dy * dy) / (2 * sigma * sigma));
-              const key = i * nLon + (((j % nLon) + nLon) % nLon);
-              density.set(key, (density.get(key) || 0) + w);
-            }
-          }
-        }
-        // Peak density at an isolated cell's center is ~its network count,
-        // so the color scale reads in "networks" like the counts below it.
-        // Pixels under 0.5 (~a tenth of the faintest possible cell's peak)
-        // are left undrawn so each blob fades out onto the land color.
-        const features = [], z = [];
-        let maxVal = 0;
-        density.forEach((v, key) => {
-          if (v < 0.5) return;
-          const i = Math.floor(key / nLon), jw = key - i * nLon;
-          const south = i * res, west = -180 + jw * res;
-          // Ring wound clockwise (SW -> NW -> NE -> SE): d3-geo, under
-          // Plotly's geo layer, treats a counter-clockwise ring as
-          // "everything except this square" and floods the whole globe.
-          features.push({
-            type: 'Feature', id: String(features.length),
+        // Each cell as a GeoJSON square, ring wound clockwise (SW -> NW ->
+        // NE -> SE): d3-geo, under Plotly's geo layer, treats a
+        // counter-clockwise ring as "everything except this square" and
+        // floods the whole globe.
+        const geojson = {
+          type: 'FeatureCollection',
+          features: cells.map((c, i) => ({
+            type: 'Feature', id: String(i),
             geometry: { type: 'Polygon', coordinates: [[
-              [west, south], [west, south + res], [west + res, south + res], [west + res, south], [west, south],
+              [c.west, c.south], [c.west, c.south + d], [c.west + d, c.south + d],
+              [c.west + d, c.south], [c.west, c.south],
             ]] },
-          });
-          z.push(Math.log10(v + 1));
-          maxVal = Math.max(maxVal, v);
-        });
-        // log10(n+1) with real-count ticks, same as the Archive Status
-        // overlap heatmap -- network counts per place span orders of
-        // magnitude, and a linear scale would wash out everything but the
-        // top spot.
+          })),
+        };
+        const maxCount = Math.max(...cells.map(c => c.visitors));
+        // Same log10(n+1) scale with real-count ticks as the country map above.
         const tickVals = [], tickText = [];
-        for (let t = 1; t <= maxVal; t *= 10) {
+        for (let t = 1; t <= maxCount; t *= 10) {
           tickVals.push(Math.log10(t + 1));
           tickText.push(t.toLocaleString());
         }
-        if (tickVals.length && tickVals[tickVals.length - 1] < Math.log10(maxVal + 1) - 0.15) {
-          tickVals.push(Math.log10(maxVal + 1));
-          tickText.push(Math.round(maxVal).toLocaleString());
+        if (maxCount > 0 && tickVals[tickVals.length - 1] < Math.log10(maxCount + 1)) {
+          tickVals.push(Math.log10(maxCount + 1));
+          tickText.push(maxCount.toLocaleString());
         }
         const fmtLat = v => Math.abs(v) + '°' + (v < 0 ? 'S' : 'N');
         const fmtLon = v => Math.abs(v) + '°' + (v < 0 ? 'W' : 'E');
-        Plotly.newPlot('access-map-plot', [{
+        Plotly.newPlot('access-grid-plot', [{
           type: 'choropleth',
-          geojson: { type: 'FeatureCollection', features: features }, featureidkey: 'id',
-          locations: features.map(f => f.id),
-          z: z, zmin: Math.log10(1.5), zmax: Math.log10(maxVal + 1),
-          colorscale: [[0, '#e3eefc'], [0.2, '#9cc3f2'], [0.45, '#4d8fe0'], [0.7, '#2a78d6'], [0.85, '#1c5cab'], [1, '#0d366b']],
-          marker: { line: { width: 0 } },
-          hoverinfo: 'skip',
-          colorbar: { title: { text: 'networks' }, tickvals: tickVals, ticktext: tickText, thickness: 12, outlinewidth: 0 },
-        }, {
-          // Invisible hit targets at each cell's center, so hovering a
-          // blob reports the real published count for its cell rather than
-          // a smoothed pixel value.
-          type: 'scattergeo', mode: 'markers',
-          lat: cells.map(c => c.south + d / 2), lon: cells.map(c => c.west + d / 2),
-          marker: { size: 16, opacity: 0 },
+          geojson: geojson, featureidkey: 'id',
+          locations: cells.map((c, i) => String(i)),
+          z: cells.map(c => Math.log10(c.visitors + 1)),
           customdata: cells.map(c => [c.visitors, fmtLat(c.south) + '–' + fmtLat(c.south + d), fmtLon(c.west) + '–' + fmtLon(c.west + d)]),
+          colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
+          marker: { line: { width: 0 } },
           hovertemplate: '%{customdata[1]}, %{customdata[2]}: %{customdata[0]:,} networks<extra></extra>',
-          showlegend: false,
+          colorbar: { title: { text: 'networks' }, tickvals: tickVals, ticktext: tickText },
         }], {
           geo: {
             projection: { type: 'natural earth' }, showframe: false, bgcolor: 'rgba(0,0,0,0)',
-            showcoastlines: true, coastlinecolor: '#aaa', coastlinewidth: 0.5,
-            showcountries: true, countrycolor: '#d4d4d4', countrywidth: 0.5,
+            showcoastlines: true, coastlinecolor: '#999', coastlinewidth: 0.5,
+            showcountries: true, countrycolor: '#ccc', countrywidth: 0.5,
             showland: true, landcolor: '#f4f4f4',
           },
           margin: { t: 10, b: 10, l: 0, r: 0 },
@@ -4990,11 +4982,11 @@ def info():
     access_heatmap_generated_at, access_heatmap_total, access_heatmap_window_days, access_heatmap_countries = access_heatmap_row
 
     cur.execute(
-        "SELECT generated_at, window_days, cell_deg, min_visitors, total_visitors, shown_visitors, "
+        "SELECT window_days, cell_deg, min_visitors, total_visitors, shown_visitors, "
         "suppressed_visitors, unplaced_visitors, cells FROM access_grid"
     )
     access_grid = dict(zip(
-        ("generated_at", "window_days", "cell_deg", "min_visitors", "total_visitors", "shown_visitors",
+        ("window_days", "cell_deg", "min_visitors", "total_visitors", "shown_visitors",
          "suppressed_visitors", "unplaced_visitors", "cells"),
         cur.fetchone(),
     ))
