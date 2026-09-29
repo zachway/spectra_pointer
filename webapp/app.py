@@ -4763,7 +4763,14 @@ INFO_TEMPLATE = """
           hovertemplate: '%{location}: %{customdata:,} requests<extra></extra>',
           colorbar: { title: { text: 'requests' }, tickvals: tickVals, ticktext: tickText },
         }], {
-          geo: { projection: { type: 'natural earth' }, showframe: false, showcoastlines: false, bgcolor: 'rgba(0,0,0,0)' },
+          // Every country drawn in grey underneath, so countries with no
+          // visitors still read as "none" rather than vanishing from the map.
+          geo: {
+            projection: { type: 'natural earth' }, showframe: false, bgcolor: 'rgba(0,0,0,0)',
+            showcoastlines: true, coastlinecolor: '#aaa', coastlinewidth: 0.5,
+            showcountries: true, countrycolor: '#d4d4d4', countrywidth: 0.5,
+            showland: true, landcolor: '#f4f4f4',
+          },
           margin: { t: 10, b: 10, l: 0, r: 0 },
         }, { responsive: true });
       })();
