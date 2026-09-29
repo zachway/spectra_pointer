@@ -410,3 +410,36 @@ def test_archive_data_releases_match_sync_modules(webapp_module):
     for code, release in webapp_module.ARCHIVE_DATA_RELEASES.items():
         src = (archives_dir / f"{code}.py").read_text()
         assert re.search(rf"\b{release}\b", src, re.IGNORECASE), (code, release)
+
+
+def test_info_access_grid_falls_back_to_no_data_without_its_json(client):
+    # The shared spectra_data_dir fixture never writes access_grid.json, the
+    # same as a fresh out_dir before scripts.build_access_grid has run.
+    resp = client.get("/info")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "Roughly where" in body
+    assert "access-grid-plot" not in body
+
+
+def test_info_access_grid_renders_published_cells(client, monkeypatch, webapp_module, spectra_data_dir):
+    import json
+    import os
+
+    path = os.path.join(spectra_data_dir, "access_grid.json")
+    with open(path, "w") as f:
+        json.dump({
+            "generated_at": "2026-09-29T00:00:00Z", "window_days": 30, "cell_deg": 2.0, "min_visitors": 5,
+            "total_visitors": 20, "shown_visitors": 12, "suppressed_visitors": 3, "unplaced_visitors": 5,
+            "cells": [{"south": 32.0, "west": -86.0, "visitors": 7}, {"south": 50.0, "west": 6.0, "visitors": 5}],
+        }, f)
+    try:
+        monkeypatch.setattr(webapp_module, "_con", webapp_module._make_connection())
+        resp = client.get("/info")
+    finally:
+        os.remove(path)
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "access-grid-plot" in body
+    assert "12 of 20 visitor networks shown" in body
+    assert '"visitors": 7' in body
