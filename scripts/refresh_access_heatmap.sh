@@ -22,16 +22,5 @@ python3 -m scripts.build_access_heatmap \
     --log-file /nfs/morgan/users/way/spectra_pointer_webapp/access.log
 status=$?
 
-# The finer grid map (scripts/build_access_grid.py) -- not incremental, it
-# re-reads the whole 30-day log every run; see its module docstring. Its
-# geolocation data files are cached under ~/.cache/spectra_pointer/geo and
-# re-downloaded monthly. Runs even if the country map above failed, since
-# the two don't depend on each other; either failing fails the script.
-python3 -m scripts.build_access_grid \
-    --out-dir ~/public_html/spectra_data \
-    --log-file /nfs/morgan/users/way/spectra_pointer_webapp/access.log
-grid_status=$?
-[ "$status" -eq 0 ] && status=$grid_status
-
 echo "=== $(date): access heatmap refresh finished (status=$status) ==="
 exit "$status"

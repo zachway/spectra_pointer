@@ -237,19 +237,6 @@ def _make_connection() -> duckdb.DuckDBPyConnection:
             "NULL::VARCHAR AS generated_at, 0::BIGINT AS total_requests, 30::BIGINT AS window_days, "
             "[]::STRUCT(country VARCHAR, country_code VARCHAR, count BIGINT)[] AS countries"
         )
-    # /info's finer "where, roughly" grid map -- same story, published by
-    # scripts.build_access_grid (read its privacy note before touching how
-    # this is displayed), same empty fallback for a fresh out_dir.
-    try:
-        con.execute(f"CREATE VIEW access_grid AS SELECT * FROM read_json_auto('{source}/access_grid.json')")
-    except duckdb.Error:
-        con.execute(
-            "CREATE VIEW access_grid AS SELECT "
-            "NULL::VARCHAR AS generated_at, 30::BIGINT AS window_days, 2.0::DOUBLE AS cell_deg, "
-            "5::BIGINT AS min_visitors, 0::BIGINT AS total_visitors, 0::BIGINT AS shown_visitors, "
-            "0::BIGINT AS suppressed_visitors, 0::BIGINT AS unplaced_visitors, "
-            "[]::STRUCT(south DOUBLE, west DOUBLE, visitors BIGINT)[] AS cells"
-        )
     return con
 
 
@@ -4785,67 +4772,6 @@ INFO_TEMPLATE = """
     <p>No data yet.</p>
   {% endif %}
 
-  <h3>Roughly where</h3>
-  <p class="note">The same log at a finer grain: each visitor is placed at a city by IP, then snapped to a {{ access_grid.cell_deg | round(1) }}° × {{ access_grid.cell_deg | round(1) }}° cell — only cells are shown, never cities. A "visitor" here is a network (IPv4 /24 or IPv6 /48), not an individual address, and a cell only appears once at least {{ access_grid.min_visitors }} distinct networks have been seen in it over the past {{ access_grid.window_days }} days, so no cell can stand for one person. Totals only, no per-day breakdown. See <code>scripts/build_access_grid.py</code> for the reasoning. IP geolocation is approximate — expect cells to be off by a city or two.</p>
-  {% if access_grid.cells %}
-    <div id="access-grid-plot" style="width: 100%; height: 450px;"></div>
-    <p>{{ "{:,}".format(access_grid.shown_visitors) }} of {{ "{:,}".format(access_grid.total_visitors) }} visitor networks shown; {{ "{:,}".format(access_grid.suppressed_visitors) }} are in cells too sparse to show, and {{ "{:,}".format(access_grid.unplaced_visitors) }} couldn't be placed more precisely than a country (common for cloud and mobile networks).</p>
-    <script>
-      (function() {
-        const cells = {{ access_grid.cells | tojson }};
-        const d = {{ access_grid.cell_deg }};
-        // Each cell as a GeoJSON square, ring wound clockwise (SW -> NW ->
-        // NE -> SE): d3-geo, under Plotly's geo layer, treats a
-        // counter-clockwise ring as "everything except this square" and
-        // floods the whole globe.
-        const geojson = {
-          type: 'FeatureCollection',
-          features: cells.map((c, i) => ({
-            type: 'Feature', id: String(i),
-            geometry: { type: 'Polygon', coordinates: [[
-              [c.west, c.south], [c.west, c.south + d], [c.west + d, c.south + d],
-              [c.west + d, c.south], [c.west, c.south],
-            ]] },
-          })),
-        };
-        const maxCount = Math.max(...cells.map(c => c.visitors));
-        // Same log10(n+1) scale with real-count ticks as the country map above.
-        const tickVals = [], tickText = [];
-        for (let t = 1; t <= maxCount; t *= 10) {
-          tickVals.push(Math.log10(t + 1));
-          tickText.push(t.toLocaleString());
-        }
-        if (maxCount > 0 && tickVals[tickVals.length - 1] < Math.log10(maxCount + 1)) {
-          tickVals.push(Math.log10(maxCount + 1));
-          tickText.push(maxCount.toLocaleString());
-        }
-        const fmtLat = v => Math.abs(v) + '°' + (v < 0 ? 'S' : 'N');
-        const fmtLon = v => Math.abs(v) + '°' + (v < 0 ? 'W' : 'E');
-        Plotly.newPlot('access-grid-plot', [{
-          type: 'choropleth',
-          geojson: geojson, featureidkey: 'id',
-          locations: cells.map((c, i) => String(i)),
-          z: cells.map(c => Math.log10(c.visitors + 1)),
-          customdata: cells.map(c => [c.visitors, fmtLat(c.south) + '–' + fmtLat(c.south + d), fmtLon(c.west) + '–' + fmtLon(c.west + d)]),
-          colorscale: [[0, '#cde2fb'], [0.25, '#6da7ec'], [0.5, '#2a78d6'], [0.75, '#1c5cab'], [1, '#0d366b']],
-          marker: { line: { width: 0 } },
-          hovertemplate: '%{customdata[1]}, %{customdata[2]}: %{customdata[0]:,} networks<extra></extra>',
-          colorbar: { title: { text: 'networks' }, tickvals: tickVals, ticktext: tickText },
-        }], {
-          geo: {
-            projection: { type: 'natural earth' }, showframe: false, bgcolor: 'rgba(0,0,0,0)',
-            showcoastlines: true, coastlinecolor: '#999', coastlinewidth: 0.5,
-            showcountries: true, countrycolor: '#ccc', countrywidth: 0.5,
-            showland: true, landcolor: '#f4f4f4',
-          },
-          margin: { t: 10, b: 10, l: 0, r: 0 },
-        }, { responsive: true });
-      })();
-    </script>
-  {% else %}
-    <p>No data yet.</p>
-  {% endif %}
-
   <h2>How matching works</h2>
   <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
   <ol>
@@ -4981,16 +4907,6 @@ def info():
     access_heatmap_row = cur.fetchone()
     access_heatmap_generated_at, access_heatmap_total, access_heatmap_window_days, access_heatmap_countries = access_heatmap_row
 
-    cur.execute(
-        "SELECT window_days, cell_deg, min_visitors, total_visitors, shown_visitors, "
-        "suppressed_visitors, unplaced_visitors, cells FROM access_grid"
-    )
-    access_grid = dict(zip(
-        ("window_days", "cell_deg", "min_visitors", "total_visitors", "shown_visitors",
-         "suppressed_visitors", "unplaced_visitors", "cells"),
-        cur.fetchone(),
-    ))
-
     # The per-archive filter is a rare, deliberate user action (not the
     # default page load), and cheap once narrowed to one archive_code -- kept
     # as a live query rather than precomputing one skipped-records table per
@@ -5021,7 +4937,6 @@ def info():
         skipped=skipped, skipped_by_archive=skipped_by_archive, archive_filter=archive_filter,
         access_heatmap_generated_at=access_heatmap_generated_at, access_heatmap_total=access_heatmap_total,
         access_heatmap_window_days=access_heatmap_window_days, access_heatmap_countries=access_heatmap_countries,
-        access_grid=access_grid,
     )
 
 
