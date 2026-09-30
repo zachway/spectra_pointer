@@ -736,10 +736,11 @@ def _radial_search_unmatched(ra_val: float, dec_val: float, radius_deg: float, r
     rows = _rows_as_dicts(cur)
     for r in rows:
         r["sep_arcsec"] = r["sep_deg"] * 3600.0
+        r["direct_download"] = _direct_download_label(r["archive_code"], r["archive_url"])
 
     if export_csv:
         fieldnames = ["archive_display_name", "raw_target_name", "raw_ra", "raw_dec", "sep_arcsec",
-                      "match_status", "instrument", "obs_date", "archive_url"]
+                      "match_status", "instrument", "obs_date", "direct_download", "archive_url"]
         return _csv_response(
             fieldnames,
             rows,
@@ -1008,7 +1009,7 @@ PAGE_TEMPLATE = """
       {% if radial_results %}
       <table{% if search_unmatched %} class="compact"{% endif %}>
         {% if search_unmatched %}
-        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Status</th><th>Link</th></tr>
+        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Status</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
         {% for r in radial_results %}
         <tr>
           <td>{{ r.archive_display_name }}</td>
@@ -1017,6 +1018,7 @@ PAGE_TEMPLATE = """
           <td>{{ "%.5f"|format(r.raw_dec) }}</td>
           <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
           <td>{{ r.match_status }}</td>
+          <td>{{ r.direct_download or "—" }}</td>
           <td>{% if r.archive_url %}<a href="{{ r.archive_url }}" target="_blank" rel="noopener">open</a>{% else %}—{% endif %}</td>
         </tr>
         {% endfor %}
@@ -1421,13 +1423,14 @@ PAGE_TEMPLATE = """
           <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
         </summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th>Link</th></tr>
+          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
             <td>{{ h.match_status }}</td>
             <td>{{ h.match_method }}</td>
             <td>{{ h.reduction_status }}</td>
+            <td>{{ h.direct_download or "—" }}</td>
             <td><a href="{{ h.archive_url }}" target="_blank" rel="noopener">open</a></td>
           </tr>
           {% endfor %}
@@ -2046,6 +2049,7 @@ def search():
     for h in raw_holdings:
         h["spectrum_viewable"] = is_spectrum_viewable(h)
         h["spectrum_size_hint"] = size_hint_label(h["archive_code"]) if is_heavy(h["archive_code"]) else None
+        h["direct_download"] = _direct_download_label(h["archive_code"], h["archive_url"])
     if adv_filters:
         raw_holdings = [h for h in raw_holdings if _holding_matches_advanced_filters(h, adv_filters)]
 
@@ -2059,7 +2063,8 @@ def search():
             h["archive"] = h["display_name"]
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
+             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status",
+             "direct_download", "archive_url"],
             raw_holdings,
             f"spectra_pointer_holdings_{source_id if source_id is not None else star['star_id']}.csv",
         )
@@ -3356,7 +3361,7 @@ def _instrument_search_options() -> list[dict]:
 
 INSTRUMENT_EXPORT_FIELDNAMES = [
     "archive_code", "archive_obs_id", "instrument", "obs_date", "program_id",
-    "match_status", "match_method", "reduction_status", "archive_url", "star_id",
+    "match_status", "match_method", "reduction_status", "direct_download", "archive_url", "star_id",
 ]
 INSTRUMENT_EXPORT_CHUNK_SIZE = 5_000
 
@@ -3401,7 +3406,11 @@ def instrument_holdings_csv():
                 break
             buf.seek(0)
             buf.truncate(0)
-            writer.writerows(rows)
+            # direct_download slots in just ahead of archive_url (row[8]),
+            # matching INSTRUMENT_EXPORT_FIELDNAMES.
+            writer.writerows(
+                row[:8] + (_direct_download_label(row[0], row[8]),) + row[8:] for row in rows
+            )
             yield buf.getvalue()
 
     return Response(
@@ -3774,6 +3783,79 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)': 'https://archive.stsci.edu/hpol/',
     'Ritter Observatory (PREST)': 'https://astro1.panet.utoledo.edu/~wwritter/archive/',
 }
+
+# Whether an archive's archive_url hands back the spectrum itself (True) or
+# lands on something a person has to click through on the archive's own
+# site first -- a dataset page, a search form, a DataLink link list, a
+# directory listing, a plot image (False). Keyed by archive_code, one entry
+# per row seeded into `archives` in db/schema.sql (pinned by a test so a
+# new archive can't silently fall through). Verified 2026-09-30 by sampling
+# every distinct archive_url shape per archive from the live export and
+# doing a real ranged GET on each, checking the leading bytes rather than
+# trusting the extension or Content-Type. Notes on the less obvious ones:
+#   - gaia_rvs / hermes_mercator: the file is an IVOA SDM VOTable, but it
+#     *is* the spectrum (flux arrays), not a link list.
+#   - polarbase: JSON flux arrays from the site's plot API -- the actual
+#     data, just not FITS (see sync/archives/polarbase.py).
+#   - rave: CDS puts a bot check in front of browsers, but curl/wget get
+#     the FITS straight back.
+#   - gemini_ghost / gemini_igrins: file-shaped archive.gemini.edu/file/
+#     URLs, but the Gemini archive wants a session cookie -- most GHOST
+#     *_calibrated files 400 without one -- so not a plain fetch.
+#   - cfht_cadc / dao / gemini: CADC DataLink VOTable -- one more hop to
+#     reach the file.
+#   - lco_floyds / lco_nres: JSON frame metadata carrying a short-lived
+#     signed download URL, not the file.
+#   - subaru_moircs: JVO requestData.do answers with an error page.
+#   - 4most: nothing synced yet; will ride eso.py, i.e. ESO dataset pages.
+#   - weave: no public data or access path yet -- genuinely unknown (None).
+ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
+    'asiago': True, 'carmenes': True, 'carmenes_caha': True,
+    'carmenes_reiners2018': True, 'carmenes_tac': True, 'desi': True,
+    'elodie': True, 'feros_gavo': True, 'flashheros_gavo': True,
+    'gaia_rvs': True, 'galah': True, 'gtc': True, 'harpsn_tng': True,
+    'hermes_mercator': True, 'heros_ondrejov': True, 'hpol': True,
+    'iacob': True, 'irsa_missions': True, 'irtf_legacy': True, 'koa': True,
+    'lamost': True, 'lamost_mrs': True, 'lick': True, 'mast': True,
+    'mast_jwst': True, 'naoj': True, 'noirlab': True, 'oirsa': True,
+    'ondrejov': True, 'polarbase': True, 'rave': True, 'ritter_prest': True,
+    'salt_hrs': True, 'sdss_legacy_optical': True, 'sdss_v_apogee': True,
+    'sdss_v_optical': True, 'sophie': True, 'svo_cab': True,
+    'vizier_assocdata': True,
+    '4most': False, 'bess': False, 'cfht_cadc': False, 'chandra': False,
+    'dao': False, 'eso': False, 'eso_raw': False, 'gemini': False,
+    'gemini_ghost': False, 'gemini_igrins': False,
+    'ing': False, 'irtf_ishell': False, 'irtf_spex': False, 'lbt': False,
+    'lco_floyds': False, 'lco_nres': False, 'neid': False, 'not_fies': False,
+    'spitzer_sha': False, 'subaru_moircs': False, 'xmm': False,
+    'weave': None,
+}
+
+# Per-URL exceptions inside an otherwise-direct archive, checked first:
+# irsa_missions' ISO SWS/PWS .tbl links redirect to the ISO collection's
+# index page (the IRAS LRS .tbl and SOFIA links next to them are real
+# files), and sdss_legacy_optical's 658 SkyServer rows are explore pages
+# rather than SAS file paths.
+_NOT_DIRECT_URL_PREFIXES = (
+    "https://irsa.ipac.caltech.edu/data/SWS/",
+    "https://skyserver.sdss.org/",
+)
+
+
+def archive_url_is_direct_download(archive_code: str, archive_url: str | None) -> bool | None:
+    """True if archive_url downloads the spectrum itself, False if it goes
+    through a page on the archive's site first, None if there's no URL or
+    the archive's behavior isn't known."""
+    if not archive_url:
+        return None
+    if archive_url.startswith(_NOT_DIRECT_URL_PREFIXES):
+        return False
+    return ARCHIVE_URL_IS_DIRECT_DOWNLOAD.get(archive_code)
+
+
+def _direct_download_label(archive_code: str, archive_url: str | None) -> str:
+    """CSV value for the direct_download column: yes / no / blank."""
+    return {True: "yes", False: "no", None: ""}[archive_url_is_direct_download(archive_code, archive_url)]
 
 INSTRUMENTS_TEMPLATE = """
 <!doctype html>
@@ -4807,6 +4889,8 @@ INFO_TEMPLATE = """
     <li><b>Derived from the file itself</b>: NAOJ inspects the access URL/format of each product to infer raw vs. reduced.</li>
   </ul>
   <p class="note">A handful of archives don't set this field yet, so their holdings sit at <b>unknown</b> even where the true status is actually known with confidence — most notably <b>HARPS-N (TNG)</b>: every record synced from it is a raw exposure (the sync module already dedupes on the raw, unprocessed FITS filename specifically to avoid double-counting each DRS pipeline data product as a separate observation), but that fact isn't yet propagated into the reduction_status field. BeSS is a softer case worth flagging in the other direction: it's marked <b>reduced</b>, but that only means wavelength-calibrated, not flux-calibrated — a real but weaker claim than the "reduced" label implies for e.g. an ESO calib_level-2 spectrum. Treat "unknown" as "not yet recorded," not as "confirmed unclassifiable."</p>
+  <h2>Direct download or via the archive</h2>
+  <p>The "Direct download" column (<code>direct_download</code> in every CSV export) says whether a record's link hands back the spectrum itself — <b>yes</b>: a FITS/table/VOTable file you can fetch with <code>curl</code> or <code>wget</code> — or <b>no</b>: it opens a page on the archive's own site (a dataset page, search form, DataLink list or directory) that you have to go through first, as with ESO, Gemini (its archive needs a login session cookie), CADC-hosted CFHT/DAO, Chandra, XMM, LBT, NEID and the IRSA-hosted IRTF summaries. Blank means the archive's behavior isn't known yet. It's set per archive from real requests against each archive's link formats, so a <b>yes</b> link can still fail for an individual record (e.g. data still under a proprietary period).</p>
   <p class="note"><b>ESO Science Archive</b> (Phase 3, pipeline-reduced) and <b>ESO Archive (Raw)</b> (unreduced exposures) are two separate archive_codes because a substantial slice of ESO's holdings — tens of thousands of raw HARPS/UVES/ESPRESSO frames per well-observed target — has no Phase 3 counterpart at all. Since the two source tables share no join key, a periodic reconciliation pass deletes any raw holding whose instrument and observation date match an already-synced Phase 3 holding for the same star, so a raw exposure disappears once ESO deposits its reduced counterpart rather than double-counting the same observation twice.</p>
 
   <h2>Needs-review queue</h2>
@@ -5106,7 +5190,7 @@ def batch_search():
             if not star_holdings:
                 csv_rows.append({**base, "archive": None, "instrument": None, "obs_date": None,
                                   "match_status": None, "match_method": None, "reduction_status": None,
-                                  "archive_url": None})
+                                  "direct_download": None, "archive_url": None})
             else:
                 for h in star_holdings:
                     csv_rows.append({
@@ -5114,12 +5198,14 @@ def batch_search():
                         "archive": h["display_name"], "instrument": h["instrument"], "obs_date": h["obs_date"],
                         "match_status": h["match_status"], "match_method": h["match_method"],
                         "reduction_status": h["reduction_status"],
+                        "direct_download": _direct_download_label(h["archive_code"], h["archive_url"]),
                         "archive_url": h["archive_url"],
                     })
 
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status", "archive_url"],
+             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status",
+             "direct_download", "archive_url"],
             csv_rows,
             "spectra_pointer_batch_lookup.csv",
         )
