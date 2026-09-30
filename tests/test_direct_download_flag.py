@@ -32,6 +32,9 @@ def test_direct_download_per_url_exceptions(webapp_module):
     assert f("sdss_legacy_optical", "https://data.sdss.org/sas/dr20/spectro/sdss/redux/v5_13_2/spectra/lite/5357/spec-5357-55956-0457.fits") is True
     assert f("sdss_legacy_optical", "https://skyserver.sdss.org/public/VisualTools/explore/summary?sId=1") is False
     assert f("eso", "https://archive.eso.org/dataset/ADP.2014-10-02T10:01:18.603") is False
+    # Gemini's archive needs a session cookie, so file-shaped links still aren't direct.
+    assert f("gemini_ghost", "https://archive.gemini.edu/file/S20240504S0228_red001_calibrated.fits.bz2") is False
+    assert f("gemini_igrins", "https://archive.gemini.edu/file/SDCH_20221018_0046.spec_a0v.fits.bz2") is False
     assert f("desi", None) is None
     assert f("weave", "https://example.org/x") is None
     assert f("not_a_real_archive", "https://example.org/x") is None
