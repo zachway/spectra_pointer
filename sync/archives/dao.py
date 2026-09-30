@@ -12,16 +12,15 @@ Gemini's ~1000-row wall (observed: 10,000 rows in 2.9s, 20,000 in
 TOP+ORDER BY+watermark pagination works, paginated well under that.
 
 No native Gaia column — positional match, same shape as cfht_cadc.py/eso.py.
-Deep link is the standard CADC DataLink resolver URL built from
-obs_publisher_did (observed to return a real DataLink VOTable), same
-as cfht_cadc.py/gemini.py — no separate resolution step needed.
+Deep link is the science FITS itself via CADC's file service, built from
+obs_publisher_did's product id (see FILE_URL below) -- it used to be the
+CADC DataLink resolver URL, as cfht_cadc.py/gemini.py still are.
 
 s_ra/s_dec read via clean_float — can be masked on real rows (confirmed as
 a real pattern via mast.py), and a bare float() would turn that into NaN
 and crash the matcher's KD-tree build outright.
 """
 
-from urllib.parse import quote
 
 from astropy.time import Time
 
@@ -39,7 +38,18 @@ ORDER BY t_min ASC
 # Kept well under the cliff found live (20,000 rows already up to 16.9s).
 PAGE_SIZE = 10000
 
-DATALINK_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID={did}"
+# archive_url is the science FITS itself via CADC's file service, not the
+# caom2ops/datalink resolver it used to be (a VOTable listing the files --
+# one more hop). DAO's science artifact is always cadc:DAO/{product id}.fits:
+# 500/500 CAOM planes checked against caom2.Artifact (2026-09-30), across
+# the c/r/rv/s product-id prefixes. scripts/backfill_direct_archive_urls.py
+# rewrote existing rows.
+FILE_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/raven/files/cadc:DAO/{product_id}.fits"
+
+
+def file_url(did: str) -> str:
+    """ivo://cadc.nrc.ca/DAO?{obs}/{product} -> that product's FITS URL."""
+    return FILE_URL.format(product_id=did.rsplit("/", 1)[1])
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -58,7 +68,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         records.append(
             RawObservation(
                 archive_obs_id=did,
-                archive_url=DATALINK_URL.format(did=quote(did, safe="")),
+                archive_url=file_url(did),
                 instrument=str(row["instrument_name"]),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
                 ra=clean_float(row["s_ra"]),

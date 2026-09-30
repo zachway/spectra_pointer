@@ -29,7 +29,13 @@ ORDER BY t_min ASC
 # correctly, but paginating keeps individual requests bounded regardless.
 PAGE_SIZE = 50000
 
-DATASET_LANDING_PAGE = "https://archive.eso.org/dataset/{dp_id}"
+# archive_url is the file itself on ESO's data portal -- verified
+# 2026-09-30 to return the FITS anonymously for public datasets (401 while
+# still proprietary), rather than the archive.eso.org/dataset/{dp_id}
+# landing page it used to be. Same URL webapp/spectrum_viewer.py's
+# ESO_FILE_URL fetches. scripts/backfill_direct_archive_urls.py rewrote
+# existing rows.
+FILE_URL = "https://dataportal.eso.org/dataportal_new/file/{dp_id}"
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -50,7 +56,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         records.append(
             RawObservation(
                 archive_obs_id=dp_id,
-                archive_url=DATASET_LANDING_PAGE.format(dp_id=dp_id),
+                archive_url=FILE_URL.format(dp_id=dp_id),
                 instrument=str(row["instrument_name"]),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
                 program_id=str(row["proposal_id"]),

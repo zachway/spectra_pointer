@@ -56,7 +56,8 @@ core question (has this star been observed at all), and archive_url will
 simply show XSA's own proprietary-data messaging until each observation's
 release date passes.
 
-archive_url points at `nxsa-web/#obsid=<observation_id>` -- observed
+archive_url used to point at `nxsa-web/#obsid=<observation_id>` (it's now
+a direct AIO download, see AIO_URL below) -- observed
 this isn't a guess: the archive's own web frontend (a GWT single-page app,
 served from nxsa-web/) ships a compiled JS bundle whose History-token parser
 contains the literal branch `f.startsWith('obsid=')` (confirmed by fetching
@@ -110,6 +111,27 @@ ORDER BY e.start_utc ASC
 
 PAGE_SIZE = 50000
 
+# archive_url is a direct download of this exposure's RGS source spectra
+# (a small tar of the order-1 and order-2 SRSPEC products) from NXSA's
+# AIO servlet, verified 2026-09-30 for both S (scheduled) and U
+# (unscheduled) exposures -- replacing the nxsa-web/#obsid=... UI link
+# described above. scripts/backfill_direct_archive_urls.py rewrote
+# existing rows.
+AIO_URL = (
+    "https://nxsa.esac.esa.int/nxsa-sl/servlet/data-action-aio?obsno={obsno}"
+    "&name=SRSPEC&level=PPS&extension=FTZ&instname={instname}&expflag={expflag}&expno={expno}"
+)
+
+
+def file_url(observation_id: str, instrument: str, exposure_id: str) -> str:
+    """("0945020131", "RGS1", "S004") -> the AIO URL for that exposure's spectra."""
+    return AIO_URL.format(
+        obsno=observation_id,
+        instname="R" + instrument[-1],
+        expflag=exposure_id[0],
+        expno=exposure_id[1:],
+    )
+
 # XMM-Newton launched 1999-12-10 -- any fixed sentinel before that covers the
 # full archive on a first run.
 EPOCH = "1999-01-01T00:00:00"
@@ -134,7 +156,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         records.append(
             RawObservation(
                 archive_obs_id=f"{row['observation_id']}_{row['instrument']}_{row['exposure_id']}",
-                archive_url=f"https://nxsa.esac.esa.int/nxsa-web/#obsid={row['observation_id']}",
+                archive_url=file_url(str(row["observation_id"]), str(row["instrument"]), str(row["exposure_id"])),
                 instrument=str(row["instrument"]),
                 obs_date=obs_dt.date(),
                 ra=clean_float(row["ra"]),
