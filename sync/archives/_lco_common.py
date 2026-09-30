@@ -107,6 +107,10 @@ BASE_URL = "https://archive-api.lco.global/frames/"
 # Observed: anonymous requests reject limit > 100 outright (HTTP 400).
 PAGE_SIZE = 100
 
+# Sub-page size used to isolate a frame that makes the API 500 -- see
+# _fetch_one_page.
+PAGE_CHUNK = 10
+
 EPOCH = "2000-01-01T00:00:00.000000Z"
 
 # Internal engineering/commissioning frames, not real observations of a
@@ -153,20 +157,80 @@ def _centroid(area: dict | None) -> tuple[float, float] | None:
     return lon, lat
 
 
-def _fetch_one_page(obstype: str, last_date: str) -> list[dict]:
+def _get_frames(obstype: str, last_date: str, limit: int, offset: int = 0) -> list[dict]:
     resp = requests.get(
         BASE_URL,
         params={
             "public": "true",
             "OBSTYPE": obstype,
             "ordering": "observation_date",
-            "limit": PAGE_SIZE,
+            "limit": limit,
+            "offset": offset,
             "start": last_date,
         },
         timeout=(15, 60),
     )
     resp.raise_for_status()
     return resp.json()["results"]
+
+
+def _is_server_error(exc: requests.HTTPError) -> bool:
+    return exc.response is not None and exc.response.status_code >= 500
+
+
+def _fetch_one_page(obstype: str, last_date: str) -> list[dict]:
+    """One PAGE_SIZE page from `last_date`, stepping around poisoned frames.
+
+    Observed 2026-09: a single public FLOYDS frame (just after
+    2014-11-23T14:13:38Z) makes archive-api.lco.global return HTTP 500 for
+    any request whose page includes it -- `limit=1&offset=76` from the
+    stuck cursor 500s while every neighbouring offset returns 200. The
+    cursor never advanced past it, so lco_floyds failed identically every
+    weekly run from at least 2026-08-22. On a 5xx this re-reads the same
+    window in chunks of PAGE_CHUNK, then row-by-row inside any chunk that
+    still fails, dropping only the rows that can't be served. If the first
+    failing chunk serves nothing even row by row, it's a real outage, not
+    a bad row: re-raise the original error.
+    """
+    try:
+        return _get_frames(obstype, last_date, PAGE_SIZE)
+    except requests.HTTPError as exc:
+        if not _is_server_error(exc):
+            raise
+        page_error = exc
+
+    results: list[dict] = []
+    served_any = False
+    for chunk_offset in range(0, PAGE_SIZE, PAGE_CHUNK):
+        try:
+            chunk = _get_frames(obstype, last_date, PAGE_CHUNK, chunk_offset)
+        except requests.HTTPError as exc:
+            if not _is_server_error(exc):
+                raise
+        else:
+            served_any = True
+            results.extend(chunk)
+            if len(chunk) < PAGE_CHUNK:
+                break
+            continue
+
+        for offset in range(chunk_offset, chunk_offset + PAGE_CHUNK):
+            try:
+                row = _get_frames(obstype, last_date, 1, offset)
+            except requests.HTTPError as exc:
+                if not _is_server_error(exc):
+                    raise
+                logger.warning("LCO %s: skipping unservable frame at offset %d from %s", obstype, offset, last_date)
+                continue
+            served_any = True
+            if not row:
+                return results
+            results.extend(row)
+        if not served_any:
+            # A whole chunk, row by row, with nothing served: outage.
+            raise page_error
+
+    return results
 
 
 def fetch(cursor: dict, obstype: str, instrument: str) -> tuple[list[RawObservation], dict]:
