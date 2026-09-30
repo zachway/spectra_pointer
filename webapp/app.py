@@ -3802,12 +3802,17 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
 #   - gemini_ghost / gemini_igrins: file-shaped archive.gemini.edu/file/
 #     URLs, but the Gemini archive wants a session cookie -- most GHOST
 #     *_calibrated files 400 without one -- so not a plain fetch.
-#   - cfht_cadc / dao / gemini: CADC DataLink VOTable -- one more hop to
-#     reach the file.
+#   - cfht_cadc / gemini: CADC DataLink VOTable -- one more hop to reach
+#     the file. (dao used to be too; see the rewrite note below.)
 #   - lco_floyds / lco_nres: JSON frame metadata carrying a short-lived
 #     signed download URL, not the file.
 #   - subaru_moircs: JVO requestData.do answers with an error page.
-#   - 4most: nothing synced yet; will ride eso.py, i.e. ESO dataset pages.
+#   - eso / eso_raw / dao / xmm: direct since 2026-09-30, when their sync
+#     modules switched to file URLs and scripts/backfill_direct_archive_urls.py
+#     rewrote existing rows. Records still in a proprietary period 401/403
+#     until release -- expected, same as other archives.
+#   - 4most: nothing synced yet; will ride eso.py, but its ESO products
+#     aren't public, so left as not direct until something is synced.
 #   - weave: no public data or access path yet -- genuinely unknown (None).
 ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
     'asiago': True, 'carmenes': True, 'carmenes_caha': True,
@@ -3817,28 +3822,34 @@ ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
     'hermes_mercator': True, 'heros_ondrejov': True, 'hpol': True,
     'iacob': True, 'irsa_missions': True, 'irtf_legacy': True, 'koa': True,
     'lamost': True, 'lamost_mrs': True, 'lick': True, 'mast': True,
+    'eso': True, 'eso_raw': True, 'dao': True, 'xmm': True,
     'mast_jwst': True, 'naoj': True, 'noirlab': True, 'oirsa': True,
     'ondrejov': True, 'polarbase': True, 'rave': True, 'ritter_prest': True,
     'salt_hrs': True, 'sdss_legacy_optical': True, 'sdss_v_apogee': True,
     'sdss_v_optical': True, 'sophie': True, 'svo_cab': True,
     'vizier_assocdata': True,
     '4most': False, 'bess': False, 'cfht_cadc': False, 'chandra': False,
-    'dao': False, 'eso': False, 'eso_raw': False, 'gemini': False,
+    'gemini': False,
     'gemini_ghost': False, 'gemini_igrins': False,
     'ing': False, 'irtf_ishell': False, 'irtf_spex': False, 'lbt': False,
     'lco_floyds': False, 'lco_nres': False, 'neid': False, 'not_fies': False,
-    'spitzer_sha': False, 'subaru_moircs': False, 'xmm': False,
+    'spitzer_sha': False, 'subaru_moircs': False,
     'weave': None,
 }
 
-# Per-URL exceptions inside an otherwise-direct archive, checked first:
-# irsa_missions' ISO SWS/PWS .tbl links redirect to the ISO collection's
-# index page (the IRAS LRS .tbl and SOFIA links next to them are real
-# files), and sdss_legacy_optical's 658 SkyServer rows are explore pages
-# rather than SAS file paths.
+# Per-URL exceptions inside an otherwise-direct archive, checked first --
+# the link shapes those archives used before scripts/
+# backfill_direct_archive_urls.py (2026-09-30), so a row that hasn't been
+# rewritten yet (mid-backfill, or an older parquet export) is still
+# labeled truthfully: irsa_missions' stale /data/SWS/ links redirect to an
+# index page, sdss_legacy_optical's old SkyServer rows are explore pages,
+# and ESO dataset pages / CADC DataLink / the nxsa-web UI aren't files.
 _NOT_DIRECT_URL_PREFIXES = (
     "https://irsa.ipac.caltech.edu/data/SWS/",
     "https://skyserver.sdss.org/",
+    "https://archive.eso.org/dataset/",
+    "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink",
+    "https://nxsa.esac.esa.int/nxsa-web/",
 )
 
 
@@ -4890,7 +4901,7 @@ INFO_TEMPLATE = """
   </ul>
   <p class="note">A handful of archives don't set this field yet, so their holdings sit at <b>unknown</b> even where the true status is actually known with confidence — most notably <b>HARPS-N (TNG)</b>: every record synced from it is a raw exposure (the sync module already dedupes on the raw, unprocessed FITS filename specifically to avoid double-counting each DRS pipeline data product as a separate observation), but that fact isn't yet propagated into the reduction_status field. BeSS is a softer case worth flagging in the other direction: it's marked <b>reduced</b>, but that only means wavelength-calibrated, not flux-calibrated — a real but weaker claim than the "reduced" label implies for e.g. an ESO calib_level-2 spectrum. Treat "unknown" as "not yet recorded," not as "confirmed unclassifiable."</p>
   <h2>Direct download or via the archive</h2>
-  <p>The "Direct download" column (<code>direct_download</code> in every CSV export) says whether a record's link hands back the spectrum itself — <b>yes</b>: a FITS/table/VOTable file you can fetch with <code>curl</code> or <code>wget</code> — or <b>no</b>: it opens a page on the archive's own site (a dataset page, search form, DataLink list or directory) that you have to go through first, as with ESO, Gemini (its archive needs a login session cookie), CADC-hosted CFHT/DAO, Chandra, XMM, LBT, NEID and the IRSA-hosted IRTF summaries. Blank means the archive's behavior isn't known yet. It's set per archive from real requests against each archive's link formats, so a <b>yes</b> link can still fail for an individual record (e.g. data still under a proprietary period).</p>
+  <p>The "Direct download" column (<code>direct_download</code> in every CSV export) says whether a record's link hands back the spectrum itself — <b>yes</b>: a FITS/table/VOTable file you can fetch with <code>curl</code> or <code>wget</code> — or <b>no</b>: it opens a page on the archive's own site (a dataset page, search form, DataLink list or directory) that you have to go through first, as with Gemini (its archive needs a login session cookie), CADC-hosted CFHT, Chandra, LBT, NEID and the IRSA-hosted IRTF summaries. Blank means the archive's behavior isn't known yet. It's set per archive from real requests against each archive's link formats, so a <b>yes</b> link can still fail for an individual record (e.g. data still under a proprietary period).</p>
   <p class="note"><b>ESO Science Archive</b> (Phase 3, pipeline-reduced) and <b>ESO Archive (Raw)</b> (unreduced exposures) are two separate archive_codes because a substantial slice of ESO's holdings — tens of thousands of raw HARPS/UVES/ESPRESSO frames per well-observed target — has no Phase 3 counterpart at all. Since the two source tables share no join key, a periodic reconciliation pass deletes any raw holding whose instrument and observation date match an already-synced Phase 3 holding for the same star, so a raw exposure disappears once ESO deposits its reduced counterpart rather than double-counting the same observation twice.</p>
 
   <h2>Needs-review queue</h2>
@@ -5545,6 +5556,9 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     "www.polarbase.ovgso.fr", "cdsarc.cds.unistra.fr",
     "astro1.panet.utoledo.edu", "svocats.cab.inta-csic.es",
     "nxsa.esac.esa.int",
+    # 2026-09-30: ESO/eso_raw archive_urls now point at the data portal's
+    # file endpoint rather than archive.eso.org's dataset pages.
+    "dataportal.eso.org",
 }
 
 _FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks

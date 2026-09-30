@@ -31,7 +31,17 @@ def test_direct_download_per_url_exceptions(webapp_module):
     assert f("irsa_missions", "https://irsa.ipac.caltech.edu/data/SWS/spectra/sws/37401910_sws.tbl") is False
     assert f("sdss_legacy_optical", "https://data.sdss.org/sas/dr20/spectro/sdss/redux/v5_13_2/spectra/lite/5357/spec-5357-55956-0457.fits") is True
     assert f("sdss_legacy_optical", "https://skyserver.sdss.org/public/VisualTools/explore/summary?sId=1") is False
+    # eso/eso_raw/dao/xmm switched to file URLs on 2026-09-30; rows still
+    # carrying the old landing/resolver shape (pre-backfill, or an older
+    # export) must keep saying "no".
     assert f("eso", "https://archive.eso.org/dataset/ADP.2014-10-02T10:01:18.603") is False
+    assert f("eso", "https://dataportal.eso.org/dataportal_new/file/ADP.2014-10-02T10:01:18.603") is True
+    assert f("eso_raw", "https://dataportal.eso.org/dataportal_new/file/HARPS.2018-02-08T00:14:50.053") is True
+    assert f("dao", "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID=ivo%3A%2F%2Fcadc.nrc.ca%2FDAO%3Fx%2Fx") is False
+    assert f("dao", "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/raven/files/cadc:DAO/dao_c122_2013_018818.fits") is True
+    assert f("xmm", "https://nxsa.esac.esa.int/nxsa-web/#obsid=0107860101") is False
+    assert f("xmm", "https://nxsa.esac.esa.int/nxsa-sl/servlet/data-action-aio?obsno=0107860101&name=SRSPEC") is True
+    assert f("cfht_cadc", "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID=x") is False
     # Gemini's archive needs a session cookie, so file-shaped links still aren't direct.
     assert f("gemini_ghost", "https://archive.gemini.edu/file/S20240504S0228_red001_calibrated.fits.bz2") is False
     assert f("gemini_igrins", "https://archive.gemini.edu/file/SDCH_20221018_0046.spec_a0v.fits.bz2") is False

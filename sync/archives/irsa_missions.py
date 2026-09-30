@@ -224,6 +224,20 @@ def _clean_publisher_did_name(publisher_did: str) -> str:
     return name
 
 
+# IRSA's SSA still hands out ISO SWS/PWS access_urls under /data/SWS/,
+# which now redirects to the ISO collection's index page; the same files
+# live under /data/ISO/SWS/ (verified 2026-09-30). archive_obs_id keeps the
+# SSA's own URL (it's the upsert key); only the clickable link is fixed.
+_STALE_SWS_PREFIX = "https://irsa.ipac.caltech.edu/data/SWS/"
+_CURRENT_SWS_PREFIX = "https://irsa.ipac.caltech.edu/data/ISO/SWS/"
+
+
+def direct_url(access_url: str) -> str:
+    if access_url.startswith(_STALE_SWS_PREFIX):
+        return _CURRENT_SWS_PREFIX + access_url[len(_STALE_SWS_PREFIX):]
+    return access_url
+
+
 def _to_observation(row, instrument: str) -> RawObservation:
     # Indexed by position (col_N), not by real field name, because astropy's
     # parse_single_table(...).array observed to fall back to synthetic
@@ -242,7 +256,7 @@ def _to_observation(row, instrument: str) -> RawObservation:
 
     return RawObservation(
         archive_obs_id=access_url,
-        archive_url=access_url,
+        archive_url=direct_url(access_url),
         instrument=instrument,
         obs_date=obs_date,
         ra=clean_float(row["col_0"]),
