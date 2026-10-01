@@ -130,14 +130,38 @@ PAGE_RETRIES = 3
 RETRY_BACKOFF_SECONDS = 30
 
 
+def _is_transient(exc: BaseException) -> bool:
+    """TRANSIENT_ERRORS, plus the same hiccups as pyvo re-raises them.
+
+    pyvo wraps every HTTP/transport failure of a TAP call in DALServiceError,
+    so none of the requests/urllib3 classes above ever match one directly --
+    seen 2026-09-30: a single IRSA `504 Gateway Time-out` on irtf_spex's first
+    page went unretried and failed that archive's whole weekly reconcile.
+    Retry it when the service answered 5xx, or when the wrapped cause is
+    itself transient (a timeout or dropped connection, which carry no status
+    code). A 4xx is our query being wrong: not retried.
+    """
+    if isinstance(exc, TRANSIENT_ERRORS):
+        return True
+    if isinstance(exc, pyvo.dal.exceptions.DALServiceError):
+        code = getattr(exc, "code", None)
+        if isinstance(code, int) and 500 <= code < 600:
+            return True
+        return isinstance(getattr(exc, "cause", None), TRANSIENT_ERRORS)
+    return False
+
+
 def _run_page_with_retry(conn: psycopg.Connection, archive_code: str, fetch_fn, offline: bool):
-    """run_sync for one page, retried on TRANSIENT_ERRORS with growing backoff.
+    """run_sync for one page, retried on transient errors (see _is_transient)
+    with growing backoff.
     Rolls the connection back first (a deadlock leaves the transaction aborted).
     The cursor only advances on success, so a retry re-fetches the same page."""
     for attempt in range(1, PAGE_RETRIES + 1):
         try:
             return run_sync(conn, archive_code, fetch_fn, "reconcile", offline=offline)
-        except TRANSIENT_ERRORS as exc:
+        except Exception as exc:
+            if not _is_transient(exc):
+                raise
             conn.rollback()
             if attempt == PAGE_RETRIES:
                 raise

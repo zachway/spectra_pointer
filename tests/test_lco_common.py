@@ -110,3 +110,28 @@ def test_fetch_one_page_does_not_retry_client_errors(monkeypatch):
     with pytest.raises(requests.HTTPError):
         _lco_common._fetch_one_page("SPECTRUM", "2014-11-20")
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "raw, cleaned",
+    [
+        # Real target_name values from the live holdings table.
+        ("61_Cyg_A_wcs_LL", "61 Cyg A"),
+        ("sigma_Dra_bri_LL", "sigma Dra"),
+        ("27_Tau_coo_LL", "27 Tau"),
+        ("HD_3765_bri_LL", "HD 3765"),
+        ("HD38858_bri", "HD38858"),
+        ("HD49933_bri_engr", "HD49933"),
+        ("alphaSco_bri_pystrat", "alphaSco"),
+        ("KELT-13b_coo_LL", "KELT-13b"),
+        # No acquisition suffix: only underscores change.
+        ("ESO_511-30", "ESO 511-30"),
+        ("asassn-14jg", "asassn-14jg"),
+        ("Mrk 817", "Mrk 817"),
+        # A real name that merely ends like a tag's second token stays whole.
+        ("NGC1234_LL", "NGC1234 LL"),
+        ("", ""),
+    ],
+)
+def test_clean_name(raw, cleaned):
+    assert _lco_common._clean_name(raw) == cleaned

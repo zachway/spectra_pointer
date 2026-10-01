@@ -93,6 +93,7 @@ below still bounds it defensively rather than trusting that forever.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime
 
 import requests
@@ -121,6 +122,22 @@ INTERNAL_PROPOSAL_ID = "calibrate"
 # past while looking for at least one non-'calibrate' group -- see module
 # docstring for why an all-noise page must not look like "caught up".
 MAX_INNER_PAGES = 300
+
+# Acquisition-mode tags LCO schedulers append to target_name -- observed
+# 2026-10 on real stars: "61_Cyg_A_wcs_LL", "sigma_Dra_bri_LL",
+# "27_Tau_coo_LL" (en03 at sqa, 2016-17, 2,045 rows over 104 names, every
+# one skipped), and NRES's "HD38858_bri", "HD49933_bri_engr",
+# "alphaSco_bri_pystrat" (810 rows). wcs/bri/coo is how the target was
+# acquired, the optional second token an engineering/pipeline label --
+# neither is part of the star's name.
+_ACQUISITION_SUFFIX = re.compile(r"_(wcs|bri|coo)(_(LL|engr|pystrat))?$")
+
+
+def _clean_name(raw: str) -> str:
+    # Underscores stand in for spaces ("HD_3765", "del_UMi"); sync.matcher's
+    # _normalize_name only collapses whitespace, so they have to go here --
+    # same convention as _irtf_common._clean_name.
+    return _ACQUISITION_SUFFIX.sub("", raw.strip()).replace("_", " ").strip()
 
 
 def _resolver_url(frame_id: int) -> str:
@@ -279,7 +296,7 @@ def fetch(cursor: dict, obstype: str, instrument: str) -> tuple[list[RawObservat
                 program_id=best.get("proposal_id"),
                 ra=ra,
                 dec=dec,
-                raw_target_name=best.get("target_name") or None,
+                raw_target_name=_clean_name(best.get("target_name") or "") or None,
                 reduction_status="reduced" if _is_reduced(best) else "raw",
             )
         )
