@@ -45,6 +45,7 @@ from sync.archives import (
     elodie,
     eso,
     eso_raw,
+    fai_kz,
     feros_gavo,
     flashheros_gavo,
     gaia_rvs,
@@ -76,6 +77,7 @@ from sync.archives import (
     neid,
     noirlab,
     not_fies,
+    nova_ar,
     oirsa,
     ondrejov,
     polarbase,
@@ -158,6 +160,8 @@ ARCHIVES = {
     "xmm": xmm.fetch,
     "heros_ondrejov": heros_ondrejov.fetch,
     "vizier_assocdata": vizier_assocdata.fetch,
+    "fai_kz": fai_kz.fetch,
+    "nova_ar": nova_ar.fetch,
 }
 
 
