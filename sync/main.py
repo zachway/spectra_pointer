@@ -32,6 +32,8 @@ import sys
 import psycopg
 
 from sync.archives import (
+    aat,
+    aat_2df,
     asiago,
     bess,
     carmenes,
@@ -154,6 +156,8 @@ ARCHIVES = {
     "svo_cab": svo_cab.fetch,
     "irsa_missions": irsa_missions.fetch,
     "spitzer_sha": spitzer_sha.fetch,
+    "aat": aat.fetch,
+    "aat_2df": aat_2df.fetch,
     "iacob": iacob.fetch,
     "ritter_prest": ritter_prest.fetch,
     "subaru_moircs": subaru_moircs.fetch,

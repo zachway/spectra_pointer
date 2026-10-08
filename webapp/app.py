@@ -3753,6 +3753,8 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'SVO CAB Stellar Libraries': 'http://svo2.cab.inta-csic.es/',
     'IRSA Space-Mission Stellar Collections': 'https://irsa.ipac.caltech.edu/',
     'Spitzer Heritage Archive (IRS + MIPS-SED)': 'https://sha.ipac.caltech.edu/applications/Spitzer/SHA/',
+    'Anglo-Australian Telescope Archive': 'https://archives.datacentral.org.au/',
+    'Anglo-Australian Telescope Archive — AAOmega (2dF)': 'https://archives.datacentral.org.au/',
     'XMM-Newton RGS': 'https://nxsa.esac.esa.int/',
     'HEROS at Ondrejov': 'http://vos2.asu.cas.cz/',
     'HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)': 'https://archive.stsci.edu/hpol/',
@@ -3788,6 +3790,8 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
 #     modules switched to file URLs and scripts/backfill_direct_archive_urls.py
 #     rewrote existing rows. Records still in a proprietary period 401/403
 #     until release -- expected, same as other archives.
+#   - aat / aat_2df: the AAT archive's results page for that night's
+#     frames -- it has no per-frame URL, only a POST download endpoint.
 #   - 4most: nothing synced yet; will ride eso.py, but its ESO products
 #     aren't public, so left as not direct until something is synced.
 #   - weave: no public data or access path yet -- genuinely unknown (None).
@@ -3805,7 +3809,8 @@ ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
     'salt_hrs': True, 'sdss_legacy_optical': True, 'sdss_v_apogee': True,
     'sdss_v_optical': True, 'sophie': True, 'svo_cab': True,
     'vizier_assocdata': True, 'fai_kz': True, 'nova_ar': True,
-    '4most': False, 'bess': False, 'cfht_cadc': False, 'chandra': False,
+    '4most': False, 'aat': False, 'aat_2df': False, 'bess': False,
+    'cfht_cadc': False, 'chandra': False,
     'gemini': False,
     'gemini_ghost': False, 'gemini_igrins': False,
     'ing': False, 'irtf_ishell': False, 'irtf_spex': False, 'lbt': False,
@@ -5545,6 +5550,7 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     "archives.ia2.inaf.it", "caha.sdc.cab.inta-csic.es",
     "ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca", "atlas.obs-hp.fr",
     "archive.eso.org", "dc.g-vo.org", "datacentral.org.au",
+    "archives.datacentral.org.au",
     "archive.gemini.edu", "gtc.sdc.cab.inta-csic.es",
     "mercatorvo.ster.kuleuven.be", "casu.ast.cam.ac.uk",
     "koa.ipac.caltech.edu", "www.lamost.org", "archive.lbto.org",
