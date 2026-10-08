@@ -75,29 +75,30 @@ def backfill(conn: psycopg.Connection, limit: int | None = None) -> tuple[int, i
 
         id_list = ",".join(str(sid) for sid in source_ids)
         table = _launch_gaia_job(GSPPHOT_QUERY.format(top=len(source_ids), id_list=id_list)).get_results()
-        found = [
-            (
+        found = {
+            int(row["source_id"]): (
                 clean_float(row["teff_gspphot"]),
                 clean_float(row["logg_gspphot"]),
                 clean_float(row["mh_gspphot"]),
-                int(row["source_id"]),
             )
             for row in table
-        ]
-        found = [f for f in found if f[0] is not None or f[1] is not None or f[2] is not None]
+        }
+        values = [found.get(sid, (None, None, None)) for sid in source_ids]
 
+        # One statement, one new row version per star: values and the
+        # checked stamp together, for every star in the chunk whether or
+        # not Gaia had anything for it.
         with conn.cursor() as cur:
-            cur.executemany(
-                "UPDATE stars SET teff_gspphot = %s, logg_gspphot = %s, mh_gspphot = %s WHERE gaia_source_id = %s",
-                found,
-            )
             cur.execute(
-                "UPDATE stars SET gspphot_checked_at = now() WHERE gaia_source_id = ANY(%s)",
-                (source_ids,),
+                "UPDATE stars s SET teff_gspphot = v.teff, logg_gspphot = v.logg, mh_gspphot = v.mh, "
+                "gspphot_checked_at = now() "
+                "FROM unnest(%s::bigint[], %s::real[], %s::real[], %s::real[]) AS v(id, teff, logg, mh) "
+                "WHERE s.gaia_source_id = v.id",
+                (source_ids, [v[0] for v in values], [v[1] for v in values], [v[2] for v in values]),
             )
         conn.commit()
         checked += len(source_ids)
-        with_params += len(found)
+        with_params += sum(1 for v in values if any(x is not None for x in v))
         logger.info("checked %d stars so far, %d with GSP-Phot parameters", checked, with_params)
 
     return checked, with_params
