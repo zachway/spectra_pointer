@@ -138,7 +138,7 @@ def test_stats_redirects_to_leaderboard(client):
 def test_citation_page_renders(client):
     resp = client.get("/citation")
     assert resp.status_code == 200
-    assert "does not have a citable DOI" in resp.get_data(as_text=True)
+    assert "10.5281/zenodo.22698835" in resp.get_data(as_text=True)
 
 
 def test_status_page_lists_test_archive_with_correct_total(client):
