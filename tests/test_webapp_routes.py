@@ -1,3 +1,7 @@
+import io
+
+import pytest
+
 from tests.conftest import WEBAPP_TEST_ARCHIVE_CODE, WEBAPP_TEST_ARCHIVE_CODE_B, WEBAPP_TEST_STAR_1, WEBAPP_TEST_STAR_2
 
 
@@ -192,6 +196,55 @@ def test_batch_search_by_source_id_reports_tracked_and_untracked(client):
     # all three distinct outcomes appear on one page.
     assert "tracked" in body
     assert "not tracked" in body
+
+
+@pytest.mark.parametrize("header", ["source_id", "Gaia Source ID", '"source_id"', "﻿source_id", "name"])
+def test_batch_search_skips_column_header_row(client, monkeypatch, webapp_module, header):
+    # Issue #225: a CSV's header row was looked up as if it were a star name.
+    # SIMBAD must never be asked about it.
+    def fail_if_called(names):
+        raise AssertionError(f"header row sent to SIMBAD: {names}")
+    monkeypatch.setattr(webapp_module,"resolve_stellar_gaia_ids_batch", fail_if_called)
+
+    resp = client.post("/batch", data={"names": f"{header}\n{WEBAPP_TEST_STAR_1}\n{WEBAPP_TEST_STAR_2}\n"})
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "2 entries looked up." in body
+    assert "looked like a column header and was skipped" in body
+    assert "not resolved via SIMBAD" not in body
+
+
+def test_batch_search_header_row_from_uploaded_file(client, monkeypatch, webapp_module):
+    monkeypatch.setattr(webapp_module,"resolve_stellar_gaia_ids_batch", lambda names: {})
+    resp = client.post("/batch", data={
+        "file": (io.BytesIO(f"﻿source_id\r\n{WEBAPP_TEST_STAR_1}\r\n".encode("utf-8")), "ids.csv"),
+    }, content_type="multipart/form-data")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "1 entries looked up." in body
+    assert "not resolved via SIMBAD" not in body
+
+
+def test_batch_search_keeps_real_names_and_later_header_like_lines(client, monkeypatch, webapp_module):
+    # Only a recognised label on the *first* line is dropped: a real star
+    # name up top, or a header-like word further down, is still looked up.
+    asked = []
+
+    def fake_resolve(names):
+        asked.extend(names)
+        return {}
+    monkeypatch.setattr(webapp_module,"resolve_stellar_gaia_ids_batch", fake_resolve)
+
+    resp = client.post("/batch", data={"names": "Vega\nsource_id\n"})
+    assert resp.status_code == 200
+    assert asked == ["Vega", "source_id"]
+    assert "looked like a column header" not in resp.get_data(as_text=True)
+
+
+def test_batch_search_with_only_a_header_row_shows_error(client):
+    resp = client.post("/batch", data={"names": "source_id\n"})
+    assert resp.status_code == 200
+    assert "No names or source_ids found in the upload." in resp.get_data(as_text=True)
 
 
 def test_batch_search_csv_export(client):
