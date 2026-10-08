@@ -1484,7 +1484,8 @@ PAGE_TEMPLATE = """
   <div id="tab-batch" class="search-tab-panel"{{ "" if active_search_tab == "batch" else " hidden" }}>
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
-    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't. Use Advanced search below to
+    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't. A column-header first line
+    (e.g. <code>source_id</code> or <code>name</code>) is skipped. Use Advanced search below to
     count only holdings from specific archives/instruments.</p>
   <form method="post" action="batch" enctype="multipart/form-data" id="batch-form">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
@@ -3756,6 +3757,8 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'HEROS at Ondrejov': 'http://vos2.asu.cas.cz/',
     'HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)': 'https://archive.stsci.edu/hpol/',
     'Ritter Observatory (PREST)': 'https://astro1.panet.utoledo.edu/~wwritter/archive/',
+    'Fesenkov Astrophysical Institute (Kazakhstan VO)': 'https://dachs.fai.kz/',
+    'NOVA (Argentine Virtual Observatory)': 'http://nova.fcaglp.unlp.edu.ar/',
 }
 
 # Whether an archive's archive_url hands back the spectrum itself (True) or
@@ -3801,7 +3804,7 @@ ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
     'ondrejov': True, 'polarbase': True, 'rave': True, 'ritter_prest': True,
     'salt_hrs': True, 'sdss_legacy_optical': True, 'sdss_v_apogee': True,
     'sdss_v_optical': True, 'sophie': True, 'svo_cab': True,
-    'vizier_assocdata': True,
+    'vizier_assocdata': True, 'fai_kz': True, 'nova_ar': True,
     '4most': False, 'bess': False, 'cfht_cadc': False, 'chandra': False,
     'gemini': False,
     'gemini_ghost': False, 'gemini_igrins': False,
@@ -4662,6 +4665,7 @@ NOT_YET_TRACKED = [
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
     ("—", "GALEX (via MAST)", "found live (1.5M+ grism-spectroscopy rows) but not ingested -- primary mission was UV imaging, so slitless grism spectra in crowded fields are often low-S/N/blended; needs a data-quality pass before treating it as a clean win like its MAST siblings EUVE/HUT/TUES/BEFS/WUPPE"),
+    ("—", "HEASARC X-ray mission catalogs (XRISM, Suzaku, Hitomi, Swift XRT, RXTE and others)", "registered as VO spectral services and found in the 2026-10-08 registry-wide SSA sweep, but they are whole-mission observation logs of CCD/calorimeter spectra across every source class, not stellar collections -- unlike the Chandra/XMM grating archives already tracked; needs a scope decision before ingesting"),
     ("—", "Euclid", "faint limit will go past Gaia's own, breaking the Gaia-source_id-first cross-match this whole project is built on -- tracked for eventual incorporation, not a quick add"),
     ("—", "Login-gated or no scriptable query tool (STELLA, Mount John/HERCULES, Bosscha, Kottamia, Athens/Kryoneri, MMT, Pico dos Dias, Wise, VATT, TRES, McDonald/HPF, Las Campanas/Magellan, INAOE, Kiso/SMOKA, IAO Hanle, SAO RAS BTA/SCORPIO, OAN-SPM)", "confirmed via direct site checks, not just an undocumented API -- either explicit login required or genuinely no bulk/query interface exists"),
     ("—", "Palomar (Hale 200-inch: DBSP, TripleSpec, WIRC, PARVI)", "no centrally hosted archive with a public query interface -- checked RegTAP, IRSA, NExScI (PARVI has no archive page at all), and KOA (Keck-only); data stays with individual PIs/programs, unlike Keck/ESO"),
@@ -5019,13 +5023,39 @@ def info():
 def _parse_batch_lines(text: str) -> list[str]:
     seen = set()
     entries = []
-    for raw_line in text.splitlines():
+    # A UTF-8 BOM (Excel's "CSV UTF-8" export writes one) would otherwise glue
+    # itself onto the first entry -- turning a numeric source_id into a
+    # "name", or hiding a header row from _is_batch_header_row below.
+    for raw_line in text.lstrip("﻿").splitlines():
         entry = raw_line.strip()
         if not entry or entry in seen:
             continue
         seen.add(entry)
         entries.append(entry)
     return entries
+
+
+# Column-header labels a one-column upload plausibly starts with (compared
+# after _is_batch_header_row's normalization). Deliberately an explicit
+# allowlist rather than a "first line doesn't look like the rest" heuristic:
+# a list of star names legitimately starts with a non-numeric line, so only a
+# label that can't be a real star name or source_id is safe to drop.
+BATCH_HEADER_LABELS = frozenset({
+    "source_id", "sourceid", "source", "source_ids",
+    "gaia_source_id", "gaia_sourceid", "gaia_id", "gaiaid", "gaia_dr3_source_id", "gaia_dr3_id",
+    "dr3_source_id", "dr3_id",
+    "id", "ids", "identifier", "identifiers", "main_id", "designation",
+    "name", "names", "star", "stars", "star_name", "starname", "star_names",
+    "target", "targets", "target_name", "targetname",
+    "object", "objects", "object_name", "objectname", "objname",
+    "query",
+})
+
+
+def _is_batch_header_row(entry: str) -> bool:
+    label = entry.strip().strip("\"'#").strip().lower()
+    label = re.sub(r"[\s\-]+", "_", label)
+    return label in BATCH_HEADER_LABELS
 
 
 @app.route("/batch", methods=["POST"])
@@ -5039,6 +5069,11 @@ def batch_search():
         text = request.form.get("names", "")
 
     entries = _parse_batch_lines(text)
+    # A CSV's column-header row (e.g. "source_id") isn't an entry -- left in,
+    # it gets sent to SIMBAD and reported back as an unresolved star name.
+    skipped_header = None
+    if entries and _is_batch_header_row(entries[0]):
+        skipped_header = entries.pop(0)
     if not entries:
         return _blank_batch(batch_error="No names or source_ids found in the upload.", adv_active=bool(adv_filters))
 
@@ -5196,6 +5231,8 @@ def batch_search():
         )
 
     note = f"{len(entries)} entries looked up."
+    if skipped_header:
+        note += f" The first line ({skipped_header!r}) looked like a column header and was skipped."
     if truncated:
         note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
     if adv_filters:
@@ -5533,6 +5570,9 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     # 2026-09-30: ESO/eso_raw archive_urls now point at the data portal's
     # file endpoint rather than archive.eso.org's dataset pages.
     "dataportal.eso.org",
+    # 2026-10-08: fai_kz, nova_ar, and svo_cab's GAUDI rows (whose links
+    # carry an explicit :80).
+    "dachs.fai.kz", "nova.fcaglp.unlp.edu.ar", "sdc.cab.inta-csic.es:80",
 }
 
 _FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks
