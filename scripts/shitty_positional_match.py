@@ -62,7 +62,7 @@ from collections import defaultdict
 import psycopg
 
 from scripts.reprocess_against_new_stars import _rows_to_records_by_archive
-from sync.positional_fallback import _healpix_cell, run_shitty_positional_match
+from sync.positional_fallback import CEILING_PENDING_ARCHIVES, _healpix_cell, run_shitty_positional_match
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -110,6 +110,11 @@ def _index_candidates_by_cell(
     if only_archives:
         query += " AND archive_code = ANY(%s)"
         params = (only_archives,)
+    elif CEILING_PENDING_ARCHIVES:
+        # Unscoped: skip archives still waiting on a measured faintness
+        # ceiling (see CEILING_PENDING_ARCHIVES).
+        query += " AND archive_code <> ALL(%s)"
+        params = (sorted(CEILING_PENDING_ARCHIVES),)
 
     by_cell: dict[int, list[tuple[str, str]]] = defaultdict(list)
     with conn.cursor() as cur:

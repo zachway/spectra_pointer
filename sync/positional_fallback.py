@@ -186,6 +186,15 @@ ARCHIVE_FAINTNESS_CEILING_MAG: dict[str, float] = {
 }
 DEFAULT_FAINTNESS_CEILING_MAG = 18.0
 
+# Archives whose rows an unscoped pass (no only_archives) must leave alone
+# because their entry above hasn't been measured yet: the ceiling comes from
+# an archive's own confirmed matches, which only exist once its first sync
+# has finished. Without this the monthly reconcile's unscoped pass would
+# match these rows against the placeholder default. Naming an archive
+# explicitly (--only) still runs it. Remove an archive from here in the same
+# change that adds its ceiling.
+CEILING_PENDING_ARCHIVES: frozenset[str] = frozenset({"aat", "aat_2df"})
+
 # HEALPix level (nested scheme) used to bucket both our own pending records
 # and Gaia's own source_id-encoded pixel index -- see module docstring for
 # the source_id encoding this relies on.

@@ -129,3 +129,26 @@ def test_full_pass_includes_both_skipped_and_needs_review_rows(conn, monkeypatch
 
     seen_ids = {obs_id for call in calls for obs_ids in call.values() for obs_id in obs_ids}
     assert seen_ids == {"never-attempted-2", "already-attempted-2"}
+
+
+def test_unscoped_pass_skips_archives_awaiting_a_faintness_ceiling(conn, monkeypatch):
+    """An archive in CEILING_PENDING_ARCHIVES is left alone by an unscoped
+    pass (the monthly reconcile) but still runs when named with --only."""
+    monkeypatch.setattr(shitty_positional_match, "CEILING_PENDING_ARCHIVES", frozenset({"unit_test"}))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO spectroscopy_holdings
+                (archive_code, archive_obs_id, archive_url, raw_ra, raw_dec, obs_date, match_method, match_status)
+            VALUES
+                ('unit_test', 'held', 'http://example.test/held', 10.0, 10.0, '2020-01-01',
+                 'positional_easy_match', 'skipped')
+            """
+        )
+    conn.commit()
+
+    unscoped = shitty_positional_match._index_candidates_by_cell(conn, None)
+    assert not any(code == "unit_test" for keys in unscoped.values() for code, _ in keys)
+
+    scoped = shitty_positional_match._index_candidates_by_cell(conn, ["unit_test"])
+    assert [key for keys in scoped.values() for key in keys] == [("unit_test", "held")]
