@@ -26,6 +26,17 @@ if [ -s "$COOKIE_FILE" ]; then
     GOA_SESSION_COOKIE="$(cat "$COOKIE_FILE")"
 fi
 
+# scripts/run_queue.sh holds this lock for as long as a manual queue of
+# syncs/backfills is running (a new archive's first load can take days).
+# sync.main has no locking of its own, so running alongside one would crawl
+# the same archive twice and compete for morgan's two cores -- skip the week
+# instead; the queue ends with its own export.
+exec 8>/tmp/spectra_sync.lock
+if ! flock -n 8; then
+    echo "$(date): a manual queue holds /tmp/spectra_sync.lock, skipping this week's sync+export"
+    exit 0
+fi
+
 echo "=== $(date): weekly sync+export starting ==="
 
 python3 -m sync.main
