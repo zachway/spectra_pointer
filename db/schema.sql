@@ -37,6 +37,15 @@ CREATE TABLE stars (
     -- Flag only, same free column on the gaia_source row — actual XP spectra
     -- are not ingested/stored (deferred).
     has_xp_continuous   BOOLEAN NOT NULL DEFAULT FALSE,
+    -- Gaia DR3 GSP-Phot (Apsis) stellar parameters, copied as published from
+    -- gaiadr3.gaia_source by scripts.backfill_gaia_gspphot -- not set at
+    -- add_star time. Only a subset of sources have them at all, so NULL is a
+    -- normal final value; gspphot_checked_at (NULL = not looked up yet) is
+    -- what tells the backfill a star is done.
+    teff_gspphot        REAL,                        -- K
+    logg_gspphot        REAL,                        -- log10(cm/s^2)
+    mh_gspphot          REAL,                        -- [M/H], dex
+    gspphot_checked_at  TIMESTAMPTZ,
     -- What the caller actually searched for, when ingestion went through name
     -- resolution (SIMBAD) rather than a known source_id. NULL if added directly.
     input_name          TEXT,

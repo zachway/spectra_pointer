@@ -73,6 +73,10 @@ from ingest.add_star import (
     resolve_gaia_source_id,
     resolve_stellar_gaia_ids_batch,
 )
+from webapp.instrument_resolving_power import (
+    INSTRUMENT_RESOLVING_POWER,
+    parse_resolving_power_range as _parse_resolving_power_range,
+)
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 from webapp.spectrum_viewer import (
     SpectrumUnavailable,
@@ -229,6 +233,24 @@ def _make_connection() -> duckdb.DuckDBPyConnection:
     # export pipeline. A fresh SPECTRA_DATA_DIR/out_dir that hasn't had that
     # script run against it yet won't have this file -- falls back to an
     # empty view instead of crashing app startup on import.
+    # The CMD page's preset tables (see scripts.export_to_parquet's
+    # _export_cmd_presets). A snapshot exported before they existed doesn't
+    # have them -- rather than refuse to start, stand in a single "all"
+    # preset built from cmd_stars, which is what the page showed before.
+    try:
+        for table in ("cmd_presets", "cmd_preset_stars"):
+            con.execute(f"CREATE VIEW {table} AS SELECT * FROM read_parquet('{source}/{table}.parquet')")
+    except duckdb.Error:
+        con.execute("DROP VIEW IF EXISTS cmd_presets")
+        con.execute(
+            "CREATE VIEW cmd_presets AS SELECT 'all' AS preset_key, 'class' AS kind, "
+            "'Most-observed tracked stars' AS label, count(*) AS n_stars, count(*) AS n_plottable FROM cmd_stars"
+        )
+        con.execute(
+            "CREATE VIEW cmd_preset_stars AS SELECT 'all' AS preset_key, row_number() OVER () AS obs_rank, "
+            "NULL::BIGINT AS n_obs, gaia_source_id, label, NULL::REAL AS phot_g_mean_mag, bp_rp, abs_g_mag, "
+            "NULL::REAL AS teff_gspphot, NULL::REAL AS logg_gspphot, NULL::REAL AS mh_gspphot FROM cmd_stars"
+        )
     try:
         con.execute(f"CREATE VIEW access_heatmap AS SELECT * FROM read_json_auto('{source}/access_heatmap.json')")
     except duckdb.Error:
@@ -509,12 +531,15 @@ def _all_instrument_wavelength_bars(rows: list[dict], archive_color_map: dict[st
     return {"bars": bars, "n_rows": max(rows_assign) + 1}
 
 
-# How many stars the CMD plots as individually-clickable points. The
-# underlying list (the CMD_SAMPLE_SIZE most-observed stars with valid
-# photometry) is precomputed by scripts.export_to_parquet, not sampled here
-# — this constant is just for the page's descriptive text; the actual cap is
-# baked into that export's LIMIT.
+# How many stars the CMD plots as individually-clickable points -- the
+# most-observed CMD_SAMPLE_SIZE of whichever preset is picked (see
+# scripts.export_to_parquet's _export_cmd_presets for what a preset is).
 CMD_SAMPLE_SIZE = 30000
+# Must match scripts.export_to_parquet's CMD_PRESET_MAX_STARS -- how many
+# stars per preset the snapshot keeps at all (same "duplicated constant"
+# pattern as INSTRUMENT_HEALPIX_NSIDE below). Only used to tell the reader
+# when a preset's list has been cut off there.
+CMD_PRESET_MAX_STARS = 100000
 
 # Sky Map still uses a genuine random sample (unlike CMD) — the catalog is
 # 1.4M+ and growing toward several million, so shipping every star to the
@@ -706,7 +731,7 @@ def _radial_search_unmatched(ra_val: float, dec_val: float, radius_deg: float, r
             """
             SELECT t.id, t.star_id, t.archive_code, a.display_name AS archive_display_name, t.instrument,
                    t.obs_date, t.match_status, t.raw_target_name, t.raw_ra, t.raw_dec, t.sep_deg,
-                   h.archive_url, h.archive_obs_id
+                   h.archive_url, h.archive_obs_id, h.program_id
             FROM (
                 SELECT id, star_id, archive_code, instrument, obs_date, match_status, raw_target_name, raw_ra, raw_dec,
                     degrees(acos(least(1.0, greatest(-1.0,
@@ -740,7 +765,7 @@ def _radial_search_unmatched(ra_val: float, dec_val: float, radius_deg: float, r
 
     if export_csv:
         fieldnames = ["archive_display_name", "raw_target_name", "raw_ra", "raw_dec", "sep_arcsec",
-                      "match_status", "instrument", "obs_date", "direct_download", "archive_url"]
+                      "match_status", "instrument", "obs_date", "program_id", "direct_download", "archive_url"]
         return _csv_response(
             fieldnames,
             rows,
@@ -944,6 +969,8 @@ PAGE_TEMPLATE = """
           <input type="number" name="adv_wave_max" id="adv-wave-max" value="{{ adv_wave_max }}" placeholder="e.g. 900" form="star-form">
         </label>
       </div>
+      <p class="note">How the wavelength and resolving-power min/max are applied:
+        <span class="caveat-tip" tabindex="0" title="A holding matches if its instrument's published range overlaps yours at all, endpoints included -- so min 500 / max 600 nm returns a 400-600 nm instrument, and a 590-900 nm one too. It does not require the instrument to cover your whole range, or to sit entirely inside it. Leave min or max blank for no limit on that side. The range is the instrument's published envelope across all its modes, not what one particular spectrum covers. Instruments with no published range on file are left out whenever a min or max is set. Resolving power works the same way.">hover/click for details</span></p>
       <p class="note">Resolving powers are hand-compiled per-instrument typical values from published specs
         (often spanning several gratings/modes), not per-observation measurements. Treat a match as approximate;
         see the <a href="/instruments">Instruments</a> tab for each instrument's full range.</p>
@@ -974,8 +1001,11 @@ PAGE_TEMPLATE = """
     <div class="adv-slot" data-adv-slot="star">{% if adv_slot == "star" %}{{ advanced_panel() }}{% endif %}</div>
   </form>
   <script>
-    (function() {
-      // .caveat-tip spans live inside a checkbox <label> (see
+    // On DOMContentLoaded, not inline: the advanced-search panel (which has
+    // a .caveat-tip of its own) may sit in the batch tab's slot further
+    // down the page than this script.
+    document.addEventListener('DOMContentLoaded', function() {
+      // .caveat-tip spans can live inside a checkbox <label> (see
       // "Search unmatched records" above) -- clicking anywhere in a
       // <label>, including this span, normally toggles its checkbox.
       // preventDefault() here stops that default action, so a click reveals
@@ -985,7 +1015,7 @@ PAGE_TEMPLATE = """
         note.className = 'note caveat-text';
         note.textContent = span.getAttribute('title');
         note.hidden = true;
-        (span.closest('label') || span).insertAdjacentElement('afterend', note);
+        (span.closest('label') || span.closest('p') || span).insertAdjacentElement('afterend', note);
         function toggle(e) {
           e.preventDefault();
           e.stopPropagation();
@@ -996,7 +1026,7 @@ PAGE_TEMPLATE = """
           if (e.key === 'Enter' || e.key === ' ') toggle(e);
         });
       });
-    })();
+    });
   </script>
 
   {% if radial_searched %}
@@ -1009,7 +1039,7 @@ PAGE_TEMPLATE = """
       {% if radial_results %}
       <table{% if search_unmatched %} class="compact"{% endif %}>
         {% if search_unmatched %}
-        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Status</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
+        <tr><th>Archive</th><th>Reported name</th><th>RA</th><th>Dec</th><th>Separation</th><th>Status</th><th title="The archive's own proposal/programme identifier for this observation, where the archive reports one">Program</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
         {% for r in radial_results %}
         <tr>
           <td>{{ r.archive_display_name }}</td>
@@ -1018,6 +1048,7 @@ PAGE_TEMPLATE = """
           <td>{{ "%.5f"|format(r.raw_dec) }}</td>
           <td>{{ '%.1f"'|format(r.sep_arcsec) }}</td>
           <td>{{ r.match_status }}</td>
+          <td>{{ r.program_id or "—" }}</td>
           <td>{{ r.direct_download or "—" }}</td>
           <td>{% if r.archive_url %}<a href="{{ r.archive_url }}" target="_blank" rel="noopener">open</a>{% else %}—{% endif %}</td>
         </tr>
@@ -1423,10 +1454,11 @@ PAGE_TEMPLATE = """
           <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
         </summary>
         <table>
-          <tr><th>Date</th><th>Match</th><th>Method</th><th>Reduction</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
+          <tr><th>Date</th><th title="The archive's own proposal/programme identifier for this observation, where the archive reports one">Program</th><th>Match</th><th>Method</th><th>Reduction</th><th title="yes: the link downloads the spectrum file itself; no: it opens a page on the archive's site you have to go through first">Direct download</th><th>Link</th></tr>
           {% for h in g.observations %}
           <tr>
             <td>{{ h.obs_date or "—" }}</td>
+            <td>{{ h.program_id or "—" }}</td>
             <td>{{ h.match_status }}</td>
             <td>{{ h.match_method }}</td>
             <td>{{ h.reduction_status }}</td>
@@ -2064,8 +2096,8 @@ def search():
             h["archive"] = h["display_name"]
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status",
-             "direct_download", "archive_url"],
+             "archive", "instrument", "obs_date", "program_id", "match_status", "match_method",
+             "reduction_status", "direct_download", "archive_url"],
             raw_holdings,
             f"spectra_pointer_holdings_{source_id if source_id is not None else star['star_id']}.csv",
         )
@@ -2312,6 +2344,11 @@ CMD_TEMPLATE = """
   <title>The Spectra Pointer — Spectroscopy CMD</title>
   <style>""" + SHARED_STYLE + """
     #cmd-plot { width: 100%; height: 700px; margin-top: 1rem; }
+    .cmd-form { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; align-items: flex-start; }
+    .cmd-form select { font-family: monospace; padding: 0.3rem; max-width: 100%; }
+    .cmd-form details { flex-basis: 100%; }
+    .cmd-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem 1rem; max-width: 700px; margin-top: 0.5rem; }
+    .cmd-filter-grid input { width: 7rem; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -2320,12 +2357,102 @@ CMD_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">Gaia color-magnitude diagram — the {{ "{:,}".format(sample_size) }} most-observed tracked stars with valid BP-RP color and a positive parallax (needed for absolute magnitude). Click a point to see that star's holdings.</p>
-  {% if bp_rp %}
+  <form method="get" action="/cmd" class="cmd-form">
+    <label>Stars with matched spectra from
+      <select name="preset">
+        <optgroup label="By resolution and wavelength">
+          {% for p in class_presets %}
+          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == preset.preset_key else "" }}>{{ p.label }}</option>
+          {% endfor %}
+        </optgroup>
+        {% for g in archive_preset_groups %}
+        <optgroup label="{{ g.label }}">
+          {% for p in g.presets %}
+          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == preset.preset_key else "" }}>{{ p.label }}{% if p.kind == "archive" %} — all instruments{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+        {% endfor %}
+      </select>
+    </label>
+    <label>View
+      <select name="view">
+        <option value="cmd"{{ " selected" if view == "cmd" else "" }}>Colour–magnitude (BP−RP vs. absolute G)</option>
+        <option value="kiel"{{ " selected" if view == "kiel" else "" }}>Teff–log g (Gaia GSP-Phot)</option>
+      </select>
+    </label>
+    <details{{ " open" if filters_active else "" }}>
+      <summary>Filter by Gaia parameters</summary>
+      <div class="cmd-filter-grid">
+        {% for f in filter_fields %}
+        <label>{{ f.label }} min <input type="number" step="any" name="{{ f.name }}_min" value="{{ f.min }}"></label>
+        <label>{{ f.label }} max <input type="number" step="any" name="{{ f.name }}_max" value="{{ f.max }}"></label>
+        {% endfor %}
+      </div>
+      <p class="note">Min and max are inclusive; leave either blank for no limit. A star with no value for a
+        parameter you filter on is left out.</p>
+    </details>
+    <button type="submit">Show</button>
+  </form>
+  <p class="note">T<sub>eff</sub>, log g and [M/H] are Gaia DR3 GSP-Phot values (<code>teff_gspphot</code>,
+    <code>logg_gspphot</code>, <code>mh_gspphot</code>), copied as published from Gaia's own pipeline — from the
+    low-resolution BP/RP spectra, parallax and G magnitude, not from any spectrum listed here — with no quality
+    cuts or recalibration applied. Trust them as far as you trust GSP-Phot for that kind of star; many stars have
+    none at all.</p>
+  <p class="note">Resolution and wavelength selections use each instrument's published range and include any
+    instrument whose range reaches into the selection, so one covering R&nbsp;≈&nbsp;28,000–90,000 counts as both
+    “high” and “very high” resolution. See the <a href="/instruments">Instruments</a> tab for the ranges.</p>
+  <p><strong>{{ preset.label }}:</strong>
+    {{ "{:,}".format(preset.n_stars) }} star{{ "s" if preset.n_stars != 1 else "" }} with matched spectra{% if preset.n_plottable != preset.n_stars %},
+    {{ "{:,}".format(preset.n_plottable) }} of them with the Gaia photometry or GSP-Phot parameters needed to place them here{% endif %}.
+    {% if truncated %}Only the {{ "{:,}".format(max_stars) }} most-observed of those are kept for this page, so the
+    filters, counts and CSV below cover just those {{ "{:,}".format(max_stars) }}.{% endif %}
+    {% if filters_active %}{{ "{:,}".format(n_match) }} match your filters.{% endif %}
+    {% if n_match %}<a href="?{{ csv_query }}">Download {{ "this list" if not filters_active else "the matching stars" }} as CSV</a>
+    ({{ "{:,}".format(n_match) }} star{{ "s" if n_match != 1 else "" }}: Gaia source_id, name, G, BP−RP, absolute G, T<sub>eff</sub>, log g, [M/H], number of observations).{% endif %}
+  </p>
+  {% if n_in_view > source_ids|length %}
+  <p class="note">Only the {{ "{:,}".format(sample_size) }} most-observed are displayed, of {{ "{:,}".format(n_in_view) }}
+    that could be drawn in this view — the CSV has them all.</p>
+  {% elif source_ids %}
+  <p class="note">Displaying {{ "{:,}".format(source_ids|length) }} star{{ "s" if source_ids|length != 1 else "" }}{% if n_in_view != n_match %}
+    ({{ "{:,}".format(n_match - n_in_view) }} more lack the values this view needs){% endif %}. Click a point to see that star's holdings.</p>
+  {% endif %}
+  {% if source_ids and view == "kiel" %}
     <div id="cmd-plot"></div>
     <script>
-      const bpRp = {{ bp_rp | tojson }};
-      const absGMag = {{ abs_g_mag | tojson }};
+      const teff = {{ xs | tojson }};
+      const logg = {{ ys | tojson }};
+      const mh = {{ colors | tojson }};
+      const sourceIds = {{ source_ids | tojson }};
+      const labels = {{ labels | tojson }};
+      Plotly.newPlot('cmd-plot', [
+        {
+          x: teff,
+          y: logg,
+          text: labels,
+          hovertemplate: '%{text}<br>Teff %{x:.0f} K, log g %{y:.2f}<extra></extra>',
+          mode: 'markers',
+          type: 'scattergl',
+          marker: {
+            size: 5, opacity: 0.75, color: mh, colorscale: 'Viridis', cmin: -2, cmax: 0.5,
+            colorbar: { title: '[M/H] (GSP-Phot)' },
+            line: { width: 0.3, color: 'rgba(0,0,0,0.4)' },
+          },
+        },
+      ], {
+        xaxis: { title: 'Teff (K, Gaia GSP-Phot)', autorange: 'reversed' },
+        yaxis: { title: 'log g (Gaia GSP-Phot)', autorange: 'reversed' },
+        hovermode: 'closest',
+      }, { responsive: true });
+      document.getElementById('cmd-plot').on('plotly_click', function(data) {
+        window.location.href = '/?q=' + sourceIds[data.points[0].pointIndex];
+      });
+    </script>
+  {% elif source_ids %}
+    <div id="cmd-plot"></div>
+    <script>
+      const bpRp = {{ xs | tojson }};
+      const absGMag = {{ ys | tojson }};
       // Gaia source_ids are 19-digit integers, well past JS's 53-bit safe-
       // integer range — serialized as strings (never as JSON numbers) so
       // they can't get silently rounded by the browser.
@@ -2420,8 +2547,10 @@ CMD_TEMPLATE = """
         window.location.href = '/?q=' + sourceIds[idx];
       });
     </script>
+  {% elif view == "kiel" %}
+    <p>No stars in this selection have both a GSP-Phot T<sub>eff</sub> and log g{{ " within your filters" if filters_active else "" }}.</p>
   {% else %}
-    <p>No stars with both BP/RP photometry and a positive parallax yet.</p>
+    <p>No stars in this selection have both BP/RP photometry and a positive parallax{{ " within your filters" if filters_active else "" }}.</p>
   {% endif %}
 """ + FOOTER_HTML + """
 </body>
@@ -2429,24 +2558,127 @@ CMD_TEMPLATE = """
 """
 
 
+# The CMD page's Gaia-parameter filters: (form field prefix, cmd_preset_stars
+# column, label). Each gets an inclusive <prefix>_min / <prefix>_max pair.
+CMD_FILTER_FIELDS = (
+    ("g", "phot_g_mean_mag", "G mag"),
+    ("teff", "teff_gspphot", "Teff (K)"),
+    ("logg", "logg_gspphot", "log g"),
+    ("mh", "mh_gspphot", "[M/H]"),
+)
+# view -> (x column, y column) a star needs both of to be drawn in it.
+CMD_VIEWS = {"cmd": ("bp_rp", "abs_g_mag"), "kiel": ("teff_gspphot", "logg_gspphot")}
+CMD_EXPORT_FIELDNAMES = [
+    "gaia_source_id", "known_as", "phot_g_mean_mag", "bp_rp", "abs_g_mag",
+    "teff_gspphot", "logg_gspphot", "mh_gspphot", "n_obs",
+]
+
+# Same snapshot-lifetime caching as _advanced_search_options.
+_cmd_presets_cache: dict[str, dict] | None = None
+
+
+def _cmd_presets() -> dict[str, dict]:
+    """Every preset in the snapshot by preset_key, in display order."""
+    global _cmd_presets_cache
+    if _cmd_presets_cache is None:
+        cur = get_cursor()
+        cur.execute("SELECT preset_key, kind, label, n_stars, n_plottable FROM cmd_presets")
+        _cmd_presets_cache = {r["preset_key"]: r for r in _rows_as_dicts(cur)}
+    return _cmd_presets_cache
+
+
+def _cmd_archive_preset_groups(presets: dict[str, dict]) -> list[dict]:
+    """Archive and instrument presets as one <optgroup> per archive: the
+    archive's own preset first, then its instruments."""
+    groups: dict[str, dict] = {}
+    for p in presets.values():
+        if p["kind"] == "archive":
+            code = p["preset_key"].removeprefix("archive:")
+            groups.setdefault(code, {"label": p["label"], "presets": []})["presets"].insert(0, p)
+            groups[code]["label"] = p["label"]
+        elif p["kind"] == "instrument":
+            code = p["preset_key"].removeprefix("inst:").split(OVERLAP_SIDE_SEPARATOR, 1)[0]
+            groups.setdefault(code, {"label": code, "presets": []})["presets"].append(p)
+    return sorted(groups.values(), key=lambda g: g["label"].lower())
+
+
 @app.route("/cmd")
 def cmd():
-    # cmd_stars is precomputed by scripts.export_to_parquet — see that
-    # module for why (same reasoning as the Leaderboard: ranking by
-    # observation count needs a join against the ever-growing holdings
-    # table, which shouldn't happen on every request in a memory-capped
-    # container). Already the CMD_SAMPLE_SIZE most-observed stars, in no
-    # particular order beyond that.
+    # Everything here reads cmd_presets / cmd_preset_stars, precomputed by
+    # scripts.export_to_parquet -- working out which stars have spectra
+    # from a given archive/instrument/resolution class needs a pass over
+    # the whole holdings table, which shouldn't happen per request (same
+    # reasoning as the Leaderboard). A request only ever filters one
+    # preset's already-bounded star list.
+    presets = _cmd_presets()
+    preset = presets.get(request.args.get("preset", "").strip()) or presets.get("all")
+    view = request.args.get("view", "").strip()
+    if view not in CMD_VIEWS:
+        view = "cmd"
+    if preset is None:
+        preset = {"preset_key": "all", "kind": "class", "label": "All stars with matched spectra",
+                  "n_stars": 0, "n_plottable": 0}
+
+    where, params = ["preset_key = ?"], [preset["preset_key"]]
+    filter_fields, query_pairs = [], [("preset", preset["preset_key"]), ("view", view)]
+    for name, column, label in CMD_FILTER_FIELDS:
+        shown = {"name": name, "label": label, "min": "", "max": ""}
+        for bound, op in (("min", ">="), ("max", "<=")):
+            raw = request.args.get(f"{name}_{bound}", "").strip()
+            try:
+                value = float(raw) if raw else None
+            except ValueError:
+                value = None
+            if value is not None and math.isfinite(value):
+                where.append(f"{column} {op} ?")
+                params.append(value)
+                shown[bound] = raw
+                query_pairs.append((f"{name}_{bound}", raw))
+        filter_fields.append(shown)
+    filters_active = len(where) > 1
+    where_sql = " AND ".join(where)
+    x_col, y_col = CMD_VIEWS[view]
+    in_view_sql = f"{x_col} IS NOT NULL AND {y_col} IS NOT NULL"
+
     cur = get_cursor()
-    cur.execute("SELECT gaia_source_id, bp_rp, abs_g_mag, label FROM cmd_stars")
+    if request.args.get("format", "").strip().lower() == "csv":
+        cur.execute(
+            "SELECT gaia_source_id, label AS known_as, phot_g_mean_mag, bp_rp, abs_g_mag, "
+            f"teff_gspphot, logg_gspphot, mh_gspphot, n_obs FROM cmd_preset_stars WHERE {where_sql} ORDER BY obs_rank",
+            params,
+        )
+        slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", preset["preset_key"])[:150]
+        return _csv_response(CMD_EXPORT_FIELDNAMES, _rows_as_dicts(cur), f"spectra_pointer_cmd_{slug}.csv")
+
+    cur.execute(
+        f"SELECT count(*), count(*) FILTER (WHERE {in_view_sql}) FROM cmd_preset_stars WHERE {where_sql}", params
+    )
+    n_match, n_in_view = cur.fetchone()
+    cur.execute(
+        f"SELECT gaia_source_id, label, {x_col} AS x, {y_col} AS y, mh_gspphot FROM cmd_preset_stars "
+        f"WHERE {where_sql} AND {in_view_sql} ORDER BY obs_rank LIMIT {CMD_SAMPLE_SIZE}",
+        params,
+    )
     rows = _rows_as_dicts(cur)
     return render_template_string(
         CMD_TEMPLATE,
-        bp_rp=[r["bp_rp"] for r in rows],
-        abs_g_mag=[r["abs_g_mag"] for r in rows],
+        xs=[r["x"] for r in rows],
+        ys=[r["y"] for r in rows],
+        colors=[r["mh_gspphot"] for r in rows],
         source_ids=[str(r["gaia_source_id"]) for r in rows],
         labels=[r["label"] for r in rows],
         sample_size=CMD_SAMPLE_SIZE,
+        max_stars=CMD_PRESET_MAX_STARS,
+        preset=preset,
+        class_presets=[p for p in presets.values() if p["kind"] == "class"],
+        archive_preset_groups=_cmd_archive_preset_groups(presets),
+        view=view,
+        filter_fields=filter_fields,
+        filters_active=filters_active,
+        truncated=preset["n_plottable"] > CMD_PRESET_MAX_STARS,
+        n_match=n_match,
+        n_in_view=n_in_view,
+        csv_query=urlencode(query_pairs + [("format", "csv")]),
         active_tab="cmd",
     )
 
@@ -2909,276 +3141,11 @@ def _known_as(row: dict) -> str:
 # scripts.export_to_parquet since that module talks to live Postgres).
 INSTRUMENT_HEALPIX_NSIDE = 32
 
-# Resolving power (R = lambda/delta-lambda) per (archive display_name,
-# instrument) -- like NOT_YET_TRACKED below, this can't be derived from the
-# database (holdings don't carry it) so it's hand-maintained from each
-# instrument's published specs. Keyed by (display_name, instrument) rather
-# than instrument name alone because a few names collide across archives
-# (e.g. "OSIRIS" is a different instrument at Keck vs. GTC). Many real
-# spectrographs offer several gratings/modes with different R -- shown as a
-# range where that's the common case rather than picking one mode
-# arbitrarily. "n/a" marks instruments that are primarily imagers with no
-# (or only a fixed low-R grism) spectroscopic mode; "—" marks instruments
-# not yet looked up, mostly retired/obscure ones lacking an easily
-# confirmed spec.
-INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
-    ('Asiago Observatory (Echelle)', 'Echelle + Andor iKon DW436-BV'): 'R ≈ 20,000',
-    ('Asiago Observatory (Echelle)', 'echelle hi-res Spectrograph'): 'R ≈ 20,000',
-    ('Asiago Observatory (Echelle)', 'Echelle Hi-Res Spectrograph'): 'R ≈ 20,000',
-    ('Asiago Observatory (Echelle)', 'ECHELLE REOSC'): 'R ≈ 20,000',
-    ('CARMENES', 'CARMENES VIS'): 'R ≈ 94,600',
-    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES NIR'): 'R ≈ 80,600',
-    ('CARMENES (CAHA archive, VIS+NIR)', 'CARMENES VIS'): 'R ≈ 94,600',
-    # Same physical instrument as the two CARMENES entries above -- these are
-    # just different derived data products (a co-added telluric-corrected
-    # template library and a fixed input catalog snapshot) over the same
-    # CAHA-hosted VIS/NIR channels, so the R doesn't change.
-    ('CARMENES Telluric-Corrected Template Library', 'CARMENES VIS'): 'R ≈ 94,600',
-    ('CARMENES Telluric-Corrected Template Library', 'CARMENES NIR'): 'R ≈ 80,600',
-    ('CARMENES Reiners et al. 2018 Input Catalog', 'CARMENES VIS'): 'R ≈ 94,600',
-    ('CARMENES Reiners et al. 2018 Input Catalog', 'CARMENES NIR'): 'R ≈ 80,600',
-    ('CFHT / CADC', 'SPIRou'): 'R ≈ 70,000',
-    ('CFHT / CADC', 'ESPaDOnS'): 'R ≈ 68,000 (spectroscopy mode)',
-    ('CFHT / CADC', 'MegaPrime'): 'n/a (wide-field imager)',
-    ('CFHT / CADC', 'UH8K'): 'n/a (imaging mosaic camera)',
-    ('CFHT / CADC', 'HRCAM'): 'n/a (imaging camera)',
-    ('CFHT / CADC', 'FTS'): 'R ≈ 100,000+ (Fourier Transform Spectrometer, variable)',
-    ('CFHT / CADC', 'GECKO'): 'R ≈ 120,000 (fiber-fed echelle)',
-    ('CFHT / CADC', 'TIGER'): 'R ≈ 1,600–3,600 (integral-field, grism-dependent)',
-    ('CFHT / CADC', 'MOS'): 'R ≈ 400–3,000 (grism-dependent, retired)',
-    ('CFHT / CADC', 'SIS'): 'R ≈ 400–3,000 (grism-dependent, retired)',
-    ('CFHT / CADC', 'OSIS'): '—',
-    ('CFHT / CADC', 'PUMA'): '—',
-    ('CFHT / CADC', 'SISFP'): '—',
-    ('CFHT / CADC', 'HERZBERG'): '—',
-    ('CFHT / CADC', 'ISIS'): '—',
-    ('CFHT / CADC', 'PYTHIAS'): '—',
-    ('DAO (Dominion Astrophysical Observatory)', 'McKellar Spectrograph'): 'R ≈ 10,000–20,000 (grating-dependent)',
-    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectrograph'): 'R ≈ 1,000–12,000 (grating-dependent)',
-    ('DAO (Dominion Astrophysical Observatory)', 'Cassegrain Spectropolarimeter'): 'R ≈ 1,000–5,000 (grating-dependent)',
-    ('DAO (Dominion Astrophysical Observatory)', 'Radial-Velocity Scanner'): '—',
-    ('DESI', 'DESI'): 'R ≈ 2,000–5,500 (wavelength-dependent)',
-    ('ELODIE (OHP)', 'ELODIE'): 'R ≈ 42,000',
-    ('ESO Science Archive', 'GIRAFFE'): 'R ≈ 6,000–30,000 (mode-dependent)',
-    ('ESO Science Archive', 'HARPS'): 'R ≈ 115,000',
-    ('ESO Science Archive', 'XSHOOTER'): 'R ≈ 3,000–17,000 (arm/slit-dependent)',
-    ('ESO Science Archive', 'VIMOS'): 'R ≈ 200–2,500 (grism-dependent)',
-    ('ESO Science Archive', 'FORS2'): 'R ≈ 260–2,600 (grism-dependent)',
-    ('ESO Science Archive', 'UVES'): 'R ≈ 40,000–110,000 (slit-dependent)',
-    ('ESO Science Archive', 'FEROS'): 'R ≈ 48,000',
-    ('ESO Science Archive', 'NIRPS'): 'R ≈ 100,000',
-    ('ESO Science Archive', 'ESPRESSO'): 'R ≈ 70,000–190,000 (mode-dependent)',
-    ('ESO Science Archive', 'EFOSC'): 'R ≈ 600–2,500 (grism-dependent)',
-    ('ESO Science Archive', 'KMOS'): 'R ≈ 1,500–4,000 (grating-dependent)',
-    ('ESO Science Archive', 'CRIRES'): 'R ≈ 50,000–100,000+ (slit-dependent)',
-    ('ESO Science Archive', 'SOFI'): 'R ≈ 600–1,800 (grism-dependent)',
-    ('ESO Science Archive', 'APEXHET'): '—',
-    ('ESO Science Archive', 'FORS1'): 'R ≈ 260–2,600 (grism-dependent, retired)',
-    ('ESO Science Archive', ''): '—',
-    ('ESO Science Archive', 'MUSE'): 'R ≈ 1,700–4,000',
-    ('ESO Science Archive', 'SINFONI'): 'R ≈ 1,500–4,000 (grating-dependent)',
-    # Raw-archive counterparts to the ESO Science Archive entries above --
-    # same physical instrument, same resolving power, whether the spectrum
-    # is a Phase 3 reduced product or straight off the telescope. Only the
-    # instruments already vetted above are repeated here; VISIR, CES, EMMI,
-    # GRAVITY, SPHERE, NAOS+CONICA, TIMMI2, ISAAC, ERIS, SOXS, and SHOOT are
-    # real spectrographs in the raw data too but left out rather than
-    # guessed at, same graceful-degradation convention as elsewhere in this
-    # dict -- a missing key just means that instrument's bar doesn't render.
-    ('ESO Archive (Raw)', 'HARPS'): 'R ≈ 115,000',
-    ('ESO Archive (Raw)', 'XSHOOTER'): 'R ≈ 3,000–17,000 (arm/slit-dependent)',
-    ('ESO Archive (Raw)', 'FORS2'): 'R ≈ 260–2,600 (grism-dependent)',
-    ('ESO Archive (Raw)', 'FORS1'): 'R ≈ 260–2,600 (grism-dependent, retired)',
-    ('ESO Archive (Raw)', 'UVES'): 'R ≈ 40,000–110,000 (slit-dependent)',
-    ('ESO Archive (Raw)', 'FEROS'): 'R ≈ 48,000',
-    ('ESO Archive (Raw)', 'NIRPS'): 'R ≈ 100,000',
-    ('ESO Archive (Raw)', 'ESPRESSO'): 'R ≈ 70,000–190,000 (mode-dependent)',
-    ('ESO Archive (Raw)', 'EFOSC'): 'R ≈ 600–2,500 (grism-dependent)',
-    ('ESO Archive (Raw)', 'CRIRES'): 'R ≈ 50,000–100,000+ (slit-dependent)',
-    ('ESO Archive (Raw)', 'SOFI'): 'R ≈ 600–1,800 (grism-dependent)',
-    ('FEROS Public Spectra (GAVO)', 'FEROS'): 'R ≈ 48,000',
-    ('Flash/Heros Public Spectra (GAVO)', 'Flash/Heros'): 'R ≈ 20,000',
-    ('GALAH', 'GALAH (HERMES)'): 'R ≈ 28,000',
-    ('GTC (Gran Telescopio CANARIAS)', 'EMIR'): 'R ≈ 4,000–5,000 (MOS mode)',
-    ('GTC (Gran Telescopio CANARIAS)', 'OSIRIS'): 'R ≈ 300–2,500 (grism-dependent)',
-    ('GTC (Gran Telescopio CANARIAS)', 'MEGARA'): 'R ≈ 6,000–20,000 (LR/MR/HR modes)',
-    ('GTC (Gran Telescopio CANARIAS)', 'HORuS'): 'R ≈ 25,000',
-    ('GTC (Gran Telescopio CANARIAS)', 'CANARICAM'): 'R ≈ 175–1,300 (mode-dependent)',
-    ('Gaia RVS', 'Gaia RVS'): 'R ≈ 11,500',
-    ('Gemini Observatory Archive', 'GNIRS'): 'R ≈ 500–18,000 (mode-dependent)',
-    ('Gemini Observatory Archive', 'GMOS-N'): 'R ≈ 400–5,000 (grating-dependent)',
-    ('Gemini Observatory Archive', 'GMOS-S'): 'R ≈ 400–5,000 (grating-dependent)',
-    ('Gemini Observatory Archive', 'PHOENIX'): 'R ≈ 50,000',
-    ('Gemini Observatory Archive', 'GPI'): 'R ≈ 35–90 (IFS mode)',
-    ('Gemini Observatory Archive', 'NIRI'): 'R ≈ 500–1,300 (grism mode)',
-    ('Gemini Observatory Archive', 'NIFS'): 'R ≈ 5,290',
-    ('Gemini Observatory Archive', 'F2'): 'R ≈ 900–3,600 (grating-dependent)',
-    ('Gemini Observatory Archive', 'GRACES'): 'R ≈ 40,000–67,500 (mode-dependent)',
-    ('Gemini Observatory Archive', 'MAROON-X'): 'R ≈ 85,000',
-    ('Gemini Observatory Archive', 'michelle'): 'R ≈ up to 30,000 (echelle mode, retired)',
-    ('Gemini Observatory Archive', 'TEXES'): 'R ≈ up to 100,000',
-    ('Gemini Observatory Archive', 'TReCS'): 'R ≈ 100–1,000 (retired)',
-    ('Gemini Observatory Archive', 'GHOST'): 'R ≈ 50,000 / 75,000 (standard/high-res mode)',
-    ('Gemini Observatory Archive', 'FLAMINGOS'): 'R ≈ 1,300 (low-res, retired)',
-    ('Gemini Observatory Archive', 'CIRPASS'): '—',
-    ('Gemini Observatory Archive', 'bHROS'): 'R ≈ 150,000 (retired)',
-    ('Gemini Observatory Archive', 'OSCIR'): '—',
-    ('Gemini Observatory Archive — GHOST', 'GHOST'): 'R ≈ 50,000 / 75,000 (standard/high-res mode)',
-    ('Gemini Observatory Archive — IGRINS', 'IGRINS'): 'R ≈ 45,000',
-    ('HARPS-N (TNG)', 'HARPS-N'): 'R ≈ 115,000',
-    ('HERMES (Mercator Telescope, KU Leuven)', 'HERMES'): 'R ≈ 25,000–86,000 (mode-dependent)',
-    ('HEROS at Ondrejov', 'HEROS (Ondrejov)'): 'R ≈ 20,000',
-    ('HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)', 'HPOL'): 'R ≈ 130–1,050 (era/channel-dependent; Reticon 1989-94, CCD 1995+)',
-    ('IACOB Spectroscopic Database (IAC)', 'MERCATOR'): 'R ≈ 85,000',
-    ('IACOB Spectroscopic Database (IAC)', 'NOT'): 'R ≈ 25,000–67,000 (FIES mode-dependent)',
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS red arm'): 'R ≈ 600–8,000 (grating-dependent)',
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS blue arm'): 'R ≈ 600–8,000 (grating-dependent)',
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS RED ARM'): 'R ≈ 600–8,000 (grating-dependent)',
-    ('ING Archive (WHT/ISIS)', 'WHT/ISIS BLUE ARM'): 'R ≈ 600–8,000 (grating-dependent)',
-    ('Spitzer Heritage Archive (IRS + MIPS-SED)', 'Spitzer/IRS (Stare)'): 'R ≈ 60–130 (SL/LL) or R ≈ 600 (SH/LH), by module',
-    ('Spitzer Heritage Archive (IRS + MIPS-SED)', 'Spitzer/IRS (Map)'): 'R ≈ 60–130 (SL/LL) or R ≈ 600 (SH/LH), by module',
-    ('Spitzer Heritage Archive (IRS + MIPS-SED)', 'Spitzer/MIPS-SED'): 'R ≈ 15–25 (low-res SED mode)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (SASS)'): 'R ≈ 60–130 (SL/LL low-res modules)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (Std Stars)'): 'R ≈ 60–130 (SL/LL low-res modules)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (FEPS)'): 'R ≈ 60–130 (SL/LL low-res modules)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (FEPS high-res)'): 'R ≈ 600 (SH/LH high-res modules)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (Disks SH)'): 'R ≈ 600 (SH high-res module)',
-    ('IRSA Space-Mission Stellar Collections', 'Spitzer/IRS (c2d)'): 'R ≈ 60–130 (SL/LL low-res) + R ≈ 600 (SH/LH)',
-    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS'): 'R ≈ 1,000–2,500 (grating mode)',
-    ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): 'R ≈ 20–60',
-    ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): 'R ≈ 3,000–100,000 (mode-dependent)',
-    ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
-    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FLITECAM'): 'R ≈ 1,100–1,300 (grism)',
-    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FORCAST'): 'R ≈ 110–260 (grism), ≈ 1,200 cross-dispersed',
-    ('IRSA Space-Mission Stellar Collections', 'Herschel/HIFI (HIFISTARS)'): 'R ≈ 10⁷ (heterodyne)',
-    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS (Atlas)'): 'R ≈ 1,000–2,500 (grating mode)',
-    ('IRSA Space-Mission Stellar Collections', 'CTIO Blanco/Hydra (BRAVA)'): 'R ≈ 4,200',
-    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'TCO eShel'): 'R ≈ 7,400–8,400',
-    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'FAI AZT-8 (PN archive)'): 'R ≈ 1,300–23,000 (setup-dependent)',
-    ('NOVA (Argentine Virtual Observatory)', 'FIRE-LCO'): 'R ≈ 6,000 (echelle)',
-    ('NOVA (Argentine Virtual Observatory)', 'GNIRS-GEMINI'): 'R ≈ 500–18,000 (mode-dependent)',
-    ('IRTF SpeX (via IRSA)', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
-    ('IRTF iSHELL (via IRSA)', 'iSHELL'): 'R ≈ 80,000 (0.375" slit)',
-    ('IRTF Legacy Archive', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
-    ('IRTF Legacy Archive', 'CSHELL'): 'R ≈ 5,000–43,000 (slit-dependent)',
-    ('Keck Observatory Archive', 'NIRSPEC'): 'R ≈ 2,000–25,000 (mode-dependent)',
-    ('Keck Observatory Archive', 'HIRES'): 'R ≈ 25,000–85,000 (slit-dependent)',
-    ('Keck Observatory Archive', 'MOSFIRE'): 'R ≈ 3,600',
-    ('Keck Observatory Archive', 'LRIS'): 'R ≈ 300–2,500 (grism/grating-dependent)',
-    ('Keck Observatory Archive', 'NIRES'): 'R ≈ 2,700',
-    ('Keck Observatory Archive', 'OSIRIS'): 'R ≈ 3,800 (near-IR IFU)',
-    ('Keck Observatory Archive', 'DEIMOS'): 'R ≈ 1,000–6,000 (grating-dependent)',
-    ('Keck Observatory Archive', 'KPF'): 'R ≈ 98,000 (also 35,000 simultaneous mode)',
-    ('Keck Observatory Archive', 'ESI'): 'R ≈ 1,000–8,000 (mode-dependent)',
-    ('LAMOST', 'LAMOST'): 'R ≈ 1,800',
-    ('LAMOST — MRS', 'LAMOST-MRS'): 'R ≈ 7,500',
-    ('LBT — PEPSI', 'MODS'): 'R ≈ 1,000–3,000 (grating-dependent)',
-    ('LBT — PEPSI', 'LUCI'): 'R ≈ 4,000–8,000 (mode-dependent)',
-    ('LBT — PEPSI', 'PEPSI'): 'R ≈ 43,000–320,000 (mode-dependent)',
-    ('Las Cumbres Observatory -- FLOYDS', 'FLOYDS'): 'R ≈ 400–700 (order-dependent)',
-    ('Las Cumbres Observatory -- NRES', 'NRES'): 'R ≈ 48,000–53,000',
-    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick APF'): 'R ≈ 100,000',
-    ('Lick / Mt. Hamilton (Shane + APF)', 'Lick shane'): 'R ≈ 600–2,000 (Kast, grating-dependent)',
-    ('MAST', 'LWP'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE)',
-    ('MAST', 'SWP'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE)',
-    ('MAST', 'LWR'): 'R ≈ 250–300 (low dispersion) or 10,000–15,000 (high dispersion, IUE — LWP\'s pre-1983 predecessor camera, same optics)',
-    ('MAST', 'ASTRO-1 WUPPE'): 'R ≈ 230–530 (~6 Å resolution element, Astro-1 shuttle mission)',
-    ('MAST', 'ASTRO-2 WUPPE'): 'R ≈ 230–530 (~6 Å resolution element, Astro-2 shuttle mission)',
-    ('MAST', 'BEFS'): 'R ≈ 3,000 (ORFEUS-SPAS)',
-    ('MAST', 'TUES'): 'R ≈ 10,000–13,000 (ORFEUS-SPAS echelle)',
-    ('MAST', 'FUV'): 'R ≈ 300–620 (~3 Å resolution element, HUT)',
-    ('MAST', 'DS/S'): 'R ≈ 200–400 (EUVE Deep Survey/Spectrometer, SW/MW/LW channels combined)',
-    ('MAST', 'WFC3/IR'): 'R ≈ 130 (grism mode)',
-    ('MAST', 'COS/FUV'): 'R ≈ 2,400–24,000 (grating-dependent)',
-    ('MAST', 'STIS/CCD'): 'R ≈ 500–114,000 (mode-dependent)',
-    ('MAST', 'NICMOS/NIC3'): 'R ≈ 200 (grism mode)',
-    ('MAST', 'HRS/2'): 'R ≈ 2,000–100,000 (grating-dependent, retired GHRS)',
-    ('MAST', 'FOS/RD'): 'R ≈ 250–1,300 (grating-dependent, retired)',
-    ('MAST', 'STIS/FUV-MAMA'): 'R ≈ 500–114,000 (mode-dependent)',
-    ('MAST', 'FOS/BL'): 'R ≈ 250–1,300 (grating-dependent, retired)',
-    ('MAST', 'COS/NUV'): 'R ≈ 2,400–24,000 (grating-dependent)',
-    ('MAST', 'STIS/NUV-MAMA'): 'R ≈ 500–114,000 (mode-dependent)',
-    ('MAST', 'COS'): 'R ≈ 2,400–24,000 (grating-dependent)',
-    ('MAST', 'STIS'): 'R ≈ 500–114,000 (mode-dependent)',
-    ('MAST', 'WFC3/UVIS'): 'n/a (imaging, no grism)',
-    ('MAST', 'ACS/HRC'): 'R ≈ 100 (grism/prism mode, retired)',
-    ('MAST', 'HRS/1'): 'R ≈ 2,000–100,000 (grating-dependent, retired GHRS)',
-    ('MAST', 'ACS/WFC'): 'R ≈ 100 (grism mode)',
-    ('MAST', 'ACS/SBC'): 'R ≈ 100 (grism mode)',
-    ('MAST', 'COS-STIS'): '—',
-    ('MAST', 'FOC/96'): 'n/a (imaging camera)',
-    ('MAST', 'FOC/48'): 'n/a (imaging camera)',
-    ('MAST', 'FOC/288'): 'n/a (imaging camera)',
-    ('MAST — JWST', 'NIRSPEC/MSA'): 'R ≈ 100–2,700 (mode-dependent)',
-    ('MAST — JWST', 'NIRCAM/GRISM'): 'R ≈ 1,600',
-    ('MAST — JWST', 'NIRSPEC/SLIT'): 'R ≈ 100–2,700 (mode-dependent)',
-    ('MAST — JWST', 'NIRISS/WFSS'): 'R ≈ 150',
-    ('MAST — JWST', 'MIRI/SLIT'): 'R ≈ 40–160 (LRS)',
-    ('MAST — JWST', 'NIRSPEC'): 'R ≈ 100–2,700 (mode-dependent)',
-    ('MAST — JWST', 'MIRI/SLITLESS'): 'R ≈ 40–160 (LRS)',
-    ('MAST — JWST', 'NIRCAM/IMAGE'): 'n/a (imaging)',
-    ('MAST — JWST', 'NIRCAM/TARGACQ'): 'n/a (target acquisition)',
-    ('MAST — JWST', 'MIRI/IMAGE'): 'n/a (imaging)',
-    ('MAST — JWST', 'NIRISS/SOSS'): 'R ≈ 700',
-    ('NAOJ (Subaru HDS, via JVO)', 'HDS'): 'R ≈ 45,000–160,000 (slit-dependent)',
-    ('NAOJ (Subaru MOIRCS, via JVO)', 'MOIRCS'): 'R ≈ 460–3,500 (grism-dependent: zJ_500/HK_500 low-res, LS_J/LS_H/VB_K/VPH-Y moderate-res)',
-    ('NEID (WIYN, Kitt Peak)', 'NEID (HR)'): 'R ≈ 110,000 (High Resolution mode)',
-    ('NEID (WIYN, Kitt Peak)', 'NEID (HE)'): 'R ≈ 70,000–90,000 (High Efficiency mode)',
-    ('NOT (Nordic Optical Telescope) — FIES', 'FIES'): 'R ≈ 25,000–67,000 (fiber-dependent)',
-    ('NOIRLab Astro Data Archive', 'goodman'): 'R ≈ 300–4,500 (grating-dependent)',
-    ('NOIRLab Astro Data Archive', 'echelle'): 'R ≈ 40,000–45,000 (CTIO echelle)',
-    ('NOIRLab Astro Data Archive', 'chiron'): 'R ≈ 28,000–90,000 (mode-dependent)',
-    ('NOIRLab Astro Data Archive', 'triplespec'): 'R ≈ 2,700–3,500',
-    ('NOIRLab Astro Data Archive', 'sami'): '—',
-    ('NOIRLab Astro Data Archive', 'ghts_red'): 'R ≈ 300–4,500 (grating-dependent)',
-    ('NOIRLab Astro Data Archive', 'arcoiris'): 'R ≈ 3,500',
-    ('NOIRLab Astro Data Archive', 'cosmos'): 'R ≈ 300–3,000 (grating-dependent)',
-    ('NOIRLab Astro Data Archive', 'kosmos'): 'R ≈ 500–5,000 (grating-dependent)',
-    ('NOIRLab Astro Data Archive', 'ghts_blue'): 'R ≈ 300–4,500 (grating-dependent)',
-    ('OIRSA (CfA)', 'Hectospec'): 'R ≈ 1,000–2,500 (grating-dependent)',
-    ('OIRSA (CfA)', 'Hectochelle'): 'R ≈ 20,000–40,000 (order-dependent)',
-    ('OIRSA (CfA)', 'echelle'): 'R ≈ 25,000–44,000 (FLWO 1.5m echelle)',
-    ('OIRSA (CfA)', 'FAST'): 'R ≈ 1,000–4,000 (grating-dependent)',
-    ('Ondrejov Observatory (CCD700)', 'COUDE700'): 'R ≈ 13,000 (twice that near Hbeta)',
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'ESPaDOnS'): 'R ≈ 65,000 (spectropolarimetric mode)',
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'Narval'): 'R ≈ 65,000 (spectropolarimetric mode)',
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'neo-Narval'): 'R ≈ 65,000 (spectropolarimetric mode)',
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'SPIRou'): 'R ≈ 70,000',
-    ('PolarBase (ESPaDOnS/Narval/SPIRou/HARPSpol spectropolarimetry)', 'HARPSpol'): 'R ≈ 115,000',
-    ('RAVE', 'RAVE'): 'R ≈ 7,500',
-    ('Ritter Observatory (PREST)', 'Ritter Echelle'): 'R ≈ 26,000 (H-alpha region, both CCD camera generations; briefly R ≈ 50,000 in 1997 with a narrower slit)',
-    ('Ritter Observatory (PREST)', 'Ritter LDS'): 'R ≈ 1,000–6,000 (grating-dependent; R ≈ 6,000 default)',
-    ('SALT HRS (SAAO SSDA)', 'HRS'): 'R ≈ 15,000–65,000 (LR/MR/HR/HS mode)',
-    ('SDSS Legacy Optical', 'SDSS/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
-    ('SDSS-V — APOGEE', 'APOGEE'): 'R ≈ 22,500',
-    ('SDSS-V — Optical', 'SDSS-V/BOSS'): 'R ≈ 1,300–2,600 (wavelength-dependent)',
-    ('SOPHIE (OHP)', 'SOPHIE'): 'R ≈ 39,000–75,000 (HE/HR mode)',
-    ('SVO CAB Stellar Libraries', 'MILES'): 'R ≈ 2,000 (2.50 Å FWHM)',
-    ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
-    ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
-    ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
-    ('SVO CAB Stellar Libraries', 'SpeX Prism Library'): 'R ≈ 75–200',
-    ('SVO CAB Stellar Libraries', 'Keck/HIRES (Yee 2017)'): 'R ≈ 60,000',
-    ('SVO CAB Stellar Libraries', 'Keck/NIRSPEC (BDSS)'): 'R ≈ 2,000',
-    ('SVO CAB Stellar Libraries', 'GAUDI (Elodie)'): 'R ≈ 42,000',
-    ('SVO CAB Stellar Libraries', 'GAUDI (FEROS)'): 'R ≈ 48,000',
-    ('SVO CAB Stellar Libraries', 'GAUDI (Coralie)'): 'R ≈ 50,000',
-    ('SVO CAB Stellar Libraries', 'GAUDI (SARG)'): 'R ≈ 29,000–164,000 (slit-dependent)',
-    # X-ray transmission gratings -- resolving power is set by the grating,
-    # not the detector recording the dispersed light, so all detector
-    # combinations of a given grating share one value. Deliberately absent
-    # from INSTRUMENT_WAVELENGTH_RANGE_NM below -- see that dict's own
-    # comment on why.
-    ('Chandra X-ray Observatory', 'HETG (ACIS-S)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'HETG (ACIS-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'HETG (HRC-I)'): 'R ≈ 1,000 (High Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'LETG (HRC-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'LETG (ACIS-S)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'LETG (ACIS-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
-    ('Chandra X-ray Observatory', 'LETG (HRC-I)'): 'R ≈ 1,000–2,000 (Low Energy Transmission Grating)',
-    ('XMM-Newton RGS', 'RGS1'): 'R ≈ 150–800 (first order, wavelength-dependent)',
-    ('XMM-Newton RGS', 'RGS2'): 'R ≈ 150–800 (first order, wavelength-dependent)',
-}
+# Hand-maintained per-(archive, instrument) resolving power -- moved to its
+# own module (webapp/instrument_resolving_power.py), along with the parser
+# that turns its display strings into numeric ranges, so
+# scripts/export_to_parquet.py can import both too, for the CMD page's
+# resolution presets -- see that module's own docstring.
 
 # Hand-maintained per-(archive, instrument) published wavelength range --
 # moved to its own module (webapp/instrument_wavelengths.py) so
@@ -3193,18 +3160,9 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
 # them from at runtime.
 REDUCTION_STATUS_CHOICES = ("raw", "reduced", "unknown")
 
-# Pulls every number out of an INSTRUMENT_RESOLVING_POWER string, e.g.
-# "R ≈ 40,000–110,000 (slit-dependent)" -> [40000.0, 110000.0]. Good enough
-# for a range-overlap filter, not for display -- the min/max of whatever
-# numbers appear, regardless of what qualifier text surrounds them (a
-# trailing "100,000+" still contributes 100000.0). This is exactly why the
-# advanced-search panel spells out that these are approximate.
-_RESOLVING_POWER_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
-
-
-def _parse_resolving_power_range(text: str) -> tuple[float, float] | None:
-    nums = [float(n.replace(",", "")) for n in _RESOLVING_POWER_NUM_RE.findall(text)]
-    return (min(nums), max(nums)) if nums else None
+# _parse_resolving_power_range (imported above) turns an
+# INSTRUMENT_RESOLVING_POWER string into the numeric range these filters
+# compare against.
 
 
 def _ranges_overlap(a: tuple[float, float], b: tuple[float, float]) -> bool:
@@ -5176,7 +5134,7 @@ def batch_search():
             # for why that distinction matters).
             cur.execute(
                 f"""
-                SELECT s.gaia_source_id, a.archive_code, a.display_name, h.instrument, h.obs_date,
+                SELECT s.gaia_source_id, a.archive_code, a.display_name, h.instrument, h.obs_date, h.program_id,
                        h.match_status, h.match_method, h.reduction_status, h.archive_url
                 FROM spectroscopy_holdings h
                 JOIN stars s ON s.star_id = h.star_id
@@ -5250,7 +5208,7 @@ def batch_search():
             base = {"query": r["query"], "source_id": r["source_id"], "status": r["status"], "known_as": r["known_as"]}
             star_holdings = holdings_by_source_id.get(r["source_id"], []) if r["source_id"] is not None else []
             if not star_holdings:
-                csv_rows.append({**base, "archive": None, "instrument": None, "obs_date": None,
+                csv_rows.append({**base, "archive": None, "instrument": None, "obs_date": None, "program_id": None,
                                   "match_status": None, "match_method": None, "reduction_status": None,
                                   "direct_download": None, "archive_url": None})
             else:
@@ -5258,7 +5216,7 @@ def batch_search():
                     csv_rows.append({
                         **base,
                         "archive": h["display_name"], "instrument": h["instrument"], "obs_date": h["obs_date"],
-                        "match_status": h["match_status"], "match_method": h["match_method"],
+                        "program_id": h["program_id"], "match_status": h["match_status"], "match_method": h["match_method"],
                         "reduction_status": h["reduction_status"],
                         "direct_download": _direct_download_label(h["archive_code"], h["archive_url"]),
                         "archive_url": h["archive_url"],
@@ -5266,8 +5224,8 @@ def batch_search():
 
         return _csv_response(
             ["query", "source_id", "status", "known_as",
-             "archive", "instrument", "obs_date", "match_status", "match_method", "reduction_status",
-             "direct_download", "archive_url"],
+             "archive", "instrument", "obs_date", "program_id", "match_status", "match_method",
+             "reduction_status", "direct_download", "archive_url"],
             csv_rows,
             "spectra_pointer_batch_lookup.csv",
         )

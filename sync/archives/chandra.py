@@ -18,7 +18,7 @@ reasoning as excluding calibration frames elsewhere in this project).
 
 instrument records grating and detector together, e.g. "HETG (ACIS-S)" --
 grating is what actually sets the spectral resolving power (the thing
-INSTRUMENT_RESOLVING_POWER in webapp/app.py keys off), but the detector
+webapp/instrument_resolving_power.py's INSTRUMENT_RESOLVING_POWER keys off), but the detector
 (ACIS-S/ACIS-I/HRC-S/HRC-I) is real, distinct metadata worth keeping rather
 than discarding.
 

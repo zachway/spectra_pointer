@@ -463,3 +463,115 @@ def test_archive_data_releases_match_sync_modules(webapp_module):
     for code, release in webapp_module.ARCHIVE_DATA_RELEASES.items():
         src = (archives_dir / f"{code}.py").read_text()
         assert re.search(rf"\b{release}\b", src, re.IGNORECASE), (code, release)
+
+
+def test_star_page_and_csv_show_program_id(client):
+    body = client.get("/?q=TEST+STAR+ONE").get_data(as_text=True)
+    assert ">Program</th>" in body
+    assert "<td>TEST-PROG-0001</td>" in body
+    csv_body = client.get("/?q=TEST+STAR+ONE&format=csv").get_data(as_text=True)
+    assert "program_id" in csv_body.splitlines()[0]
+    assert "TEST-PROG-0001" in csv_body
+
+
+def test_batch_csv_export_includes_program_id(client):
+    resp = client.post("/batch", data={"names": str(WEBAPP_TEST_STAR_1), "format": "csv"})
+    body = resp.get_data(as_text=True)
+    assert "program_id" in body.splitlines()[0]
+    assert "TEST-PROG-0001" in body
+
+
+def test_unmatched_radial_search_shows_program_id(client):
+    query = "/?ra=10.68458&dec=41.26906&radius=1&search_unmatched=1"
+    assert "<td>TEST-PROG-0001</td>" in client.get(query).get_data(as_text=True)
+    csv_body = client.get(query + "&format=csv").get_data(as_text=True)
+    assert "program_id" in csv_body.splitlines()[0]
+    assert "TEST-PROG-0001" in csv_body
+
+
+def test_advanced_panel_explains_how_min_max_ranges_match(client):
+    for resp in (client.get("/"), client.post("/batch", data={"names": str(WEBAPP_TEST_STAR_1)})):
+        body = resp.get_data(as_text=True)
+        assert "hover/click for details" in body
+        assert "published range overlaps yours at all, endpoints included" in body
+
+
+def test_cmd_page_defaults_to_all_stars_preset(client):
+    resp = client.get("/cmd")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "All stars with matched spectra:" in body
+    assert "TEST STAR ONE" in body
+    assert "GSP-Phot" in body
+    # Unknown preset/view values fall back rather than erroring.
+    assert "All stars with matched spectra:" in client.get("/cmd?preset=nope&view=nope").get_data(as_text=True)
+
+
+def test_cmd_archive_preset_counts_stars_with_and_without_photometry(client):
+    # star1 (full photometry) and star3 (no BP/RP, no GSP-Phot) are both in
+    # archive B -- both counted, only star1 placeable.
+    body = client.get(f"/cmd?preset=archive:{WEBAPP_TEST_ARCHIVE_CODE_B}").get_data(as_text=True)
+    assert "Webapp Test Archive B:" in body
+    assert "2 stars with matched spectra" in body
+    assert "1 of them with the Gaia photometry" in body
+    assert 'const labels = ["TEST STAR ONE"]' in body
+
+
+def test_cmd_instrument_and_resolution_class_presets(client, webapp_module):
+    presets = webapp_module._cmd_presets()
+    # TESTSPEC is R ~ 80,000 at 400-700 nm for the export (see conftest).
+    assert f"inst:{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC" in presets
+    for key in ("class:high:any", "class:veryhigh:any", "class:veryhigh:optical", "class:any:optical"):
+        assert presets[key]["n_stars"] == 1, key
+    for key in ("class:low:any", "class:medium:any", "class:any:infrared", "class:veryhigh:infrared"):
+        assert key not in presets, key
+    body = client.get("/cmd?preset=class:veryhigh:optical").get_data(as_text=True)
+    assert "Very high resolution (R ≥ 70,000), optical (380–1,000 nm):" in body
+    assert "1 star with matched spectra" in body
+
+
+def test_cmd_teff_logg_view_and_parameter_filters(client):
+    body = client.get("/cmd?view=kiel").get_data(as_text=True)
+    assert "const teff = [5200.0]" in body
+    body = client.get("/cmd?view=kiel&teff_min=5000&teff_max=5500&logg_min=4").get_data(as_text=True)
+    assert "1 match your filters" in body
+    assert "const teff = [5200.0]" in body
+    body = client.get("/cmd?teff_min=6000").get_data(as_text=True)
+    assert "0 match your filters" in body
+    assert '<div id="cmd-plot">' not in body
+
+
+def test_cmd_page_works_against_snapshot_without_preset_tables(spectra_data_dir, tmp_path):
+    # A snapshot exported before cmd_presets/cmd_preset_stars existed must
+    # not stop the app from starting (webapp.app._make_connection's
+    # fallback). Own process: webapp.app opens its data source at import.
+    import os
+    import shutil
+    import subprocess
+    import sys
+    for name in os.listdir(spectra_data_dir):
+        if name not in ("cmd_presets.parquet", "cmd_preset_stars.parquet"):
+            shutil.copy(os.path.join(spectra_data_dir, name), tmp_path / name)
+    script = (
+        "from webapp import app as m\n"
+        "body = m.app.test_client().get('/cmd').get_data(as_text=True)\n"
+        "assert 'Most-observed tracked stars:' in body, body[:2000]\n"
+        "assert 'TEST STAR ONE' in body\n"
+    )
+    env = {**os.environ, "SPECTRA_DATA_DIR": str(tmp_path)}
+    env.pop("SPECTRA_DATA_URL", None)
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-3000:]
+
+
+def test_cmd_csv_export_lists_stars_with_gaia_parameters(client):
+    resp = client.get("/cmd?preset=all&format=csv")
+    assert resp.mimetype == "text/csv"
+    lines = resp.get_data(as_text=True).splitlines()
+    assert lines[0] == (
+        "gaia_source_id,known_as,phot_g_mean_mag,bp_rp,abs_g_mag,teff_gspphot,logg_gspphot,mh_gspphot,n_obs"
+    )
+    row = next(line for line in lines if line.startswith(str(WEBAPP_TEST_STAR_1)))
+    assert "5200.0" in row
+    assert row.endswith(",3")  # 2 holdings in archive A + 1 in archive B
+    assert len(client.get("/cmd?teff_min=6000&format=csv").get_data(as_text=True).splitlines()) == 1

@@ -106,7 +106,7 @@ VOTable (a PARAM declares datatype="long" with value "Multiformat", which
 astropy refuses to parse), so its rows are read with a plain <TR>/<TD> scan
 instead -- see _parse_gaudi.
 
-webapp/app.py's INSTRUMENT_RESOLVING_POWER/INSTRUMENT_WAVELENGTH_RANGE_NM
+webapp's INSTRUMENT_RESOLVING_POWER/INSTRUMENT_WAVELENGTH_RANGE_NM
 deliberately have no entry for Gaia FGK Benchmark Stars -- its own per-row
 "instrument" field (visible in the raw SSA response, e.g. "ESPaDOnS_tauCet",
 "HARPS.Archive_tauCet", "NARVAL_tauCet") shows this collection is itself a
