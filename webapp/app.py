@@ -1452,7 +1452,8 @@ PAGE_TEMPLATE = """
   <div id="tab-batch" class="search-tab-panel"{{ "" if active_search_tab == "batch" else " hidden" }}>
   <h2>Batch lookup</h2>
   <p class="note">Paste or upload Gaia source_ids and/or star names, one per line. Name lookups (non-numeric)
-    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't. Use Advanced search below to
+    are capped at {{ max_name_lookups }} per batch; source_id lookups aren't. A column-header first line
+    (e.g. <code>source_id</code> or <code>name</code>) is skipped. Use Advanced search below to
     count only holdings from specific archives/instruments.</p>
   <form method="post" action="batch" enctype="multipart/form-data" id="batch-form">
     <textarea name="names" rows="8" placeholder="4472832130942575872&#10;Proxima Centauri&#10;Barnard's Star"></textarea>
@@ -5045,13 +5046,39 @@ def info():
 def _parse_batch_lines(text: str) -> list[str]:
     seen = set()
     entries = []
-    for raw_line in text.splitlines():
+    # A UTF-8 BOM (Excel's "CSV UTF-8" export writes one) would otherwise glue
+    # itself onto the first entry -- turning a numeric source_id into a
+    # "name", or hiding a header row from _is_batch_header_row below.
+    for raw_line in text.lstrip("﻿").splitlines():
         entry = raw_line.strip()
         if not entry or entry in seen:
             continue
         seen.add(entry)
         entries.append(entry)
     return entries
+
+
+# Column-header labels a one-column upload plausibly starts with (compared
+# after _is_batch_header_row's normalization). Deliberately an explicit
+# allowlist rather than a "first line doesn't look like the rest" heuristic:
+# a list of star names legitimately starts with a non-numeric line, so only a
+# label that can't be a real star name or source_id is safe to drop.
+BATCH_HEADER_LABELS = frozenset({
+    "source_id", "sourceid", "source", "source_ids",
+    "gaia_source_id", "gaia_sourceid", "gaia_id", "gaiaid", "gaia_dr3_source_id", "gaia_dr3_id",
+    "dr3_source_id", "dr3_id",
+    "id", "ids", "identifier", "identifiers", "main_id", "designation",
+    "name", "names", "star", "stars", "star_name", "starname", "star_names",
+    "target", "targets", "target_name", "targetname",
+    "object", "objects", "object_name", "objectname", "objname",
+    "query",
+})
+
+
+def _is_batch_header_row(entry: str) -> bool:
+    label = entry.strip().strip("\"'#").strip().lower()
+    label = re.sub(r"[\s\-]+", "_", label)
+    return label in BATCH_HEADER_LABELS
 
 
 @app.route("/batch", methods=["POST"])
@@ -5065,6 +5092,11 @@ def batch_search():
         text = request.form.get("names", "")
 
     entries = _parse_batch_lines(text)
+    # A CSV's column-header row (e.g. "source_id") isn't an entry -- left in,
+    # it gets sent to SIMBAD and reported back as an unresolved star name.
+    skipped_header = None
+    if entries and _is_batch_header_row(entries[0]):
+        skipped_header = entries.pop(0)
     if not entries:
         return _blank_batch(batch_error="No names or source_ids found in the upload.", adv_active=bool(adv_filters))
 
@@ -5222,6 +5254,8 @@ def batch_search():
         )
 
     note = f"{len(entries)} entries looked up."
+    if skipped_header:
+        note += f" The first line ({skipped_header!r}) looked like a column header and was skipped."
     if truncated:
         note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
     if adv_filters:
