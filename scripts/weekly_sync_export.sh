@@ -49,8 +49,17 @@ if [ "$backfill_status" -ne 0 ]; then
     echo "$(date): scripts.backfill_gaia_astrometry exited $backfill_status"
 fi
 
+# Gaia GSP-Phot Teff/logg/[M/H] for stars added since the last run -- this
+# script is those columns' only writer (ingest.add_star doesn't set them),
+# and like the backfill above it's a fast no-op when nothing is pending.
+python3 -m scripts.backfill_gaia_gspphot
+gspphot_status=$?
+if [ "$gspphot_status" -ne 0 ]; then
+    echo "$(date): scripts.backfill_gaia_gspphot exited $gspphot_status"
+fi
+
 python3 -m scripts.export_to_parquet --out-dir ~/public_html/spectra_data
 export_status=$?
 
-echo "=== $(date): weekly sync+export finished (sync=$sync_status backfill=$backfill_status export=$export_status) ==="
+echo "=== $(date): weekly sync+export finished (sync=$sync_status backfill=$backfill_status gspphot=$gspphot_status export=$export_status) ==="
 exit "$export_status"

@@ -6,7 +6,7 @@ that module's own comment on STAR_NAME_INDEX_NORMALIZE_SQL). This file has no
 side effects and no Flask/DB imports, so both can import it freely.
 
 Same hand-maintained-dict risk flagged in the wavelength-coverage-chart-gaps
-audit (webapp.app's INSTRUMENT_RESOLVING_POWER docstring, PR #109): a new
+audit (webapp.instrument_resolving_power's INSTRUMENT_RESOLVING_POWER docstring, PR #109): a new
 archive/instrument that never gets a key here just silently doesn't render
 on the search page's wavelength chart, and now also silently doesn't
 contribute to the leaderboard's diversity/coverage metrics
@@ -24,7 +24,7 @@ from __future__ import annotations
 # template), so X-ray gratings sit fine on the same chart as optical/IR
 # instruments, just far to the left of everything else -- Chandra's
 # HETG/LETG and XMM-Newton's RGS1/RGS2 are included below for that reason.
-# Deliberately a strict subset of webapp.app's INSTRUMENT_RESOLVING_POWER
+# Deliberately a strict subset of webapp.instrument_resolving_power's INSTRUMENT_RESOLVING_POWER
 # keys: n/a (imaging-only) entries are omitted outright, and a handful of
 # obscure/retired instruments this project couldn't confirm a real published
 # range for (e.g. CFHT's PYTHIAS, HERZBERG, OSIS, PUMA, SISFP, ISIS;
