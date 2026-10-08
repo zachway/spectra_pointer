@@ -31,6 +31,7 @@ import healpy
 import numpy as np
 import psycopg
 
+from webapp.instrument_resolving_power import INSTRUMENT_RESOLVING_POWER, parse_resolving_power_range
 from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -625,6 +626,220 @@ LIMIT {CMD_SAMPLE_SIZE}
 """
 
 
+# The CMD page's selectable star sets (issue #229): "which stars have spectra
+# at this resolution / in this band / from this archive or instrument, and
+# where do they sit on the CMD". The star list for an arbitrary filter can't
+# be computed live -- it's a GROUP BY over all of spectroscopy_holdings, the
+# same scan webapp.app's Overlap search needs a 120s timeout for -- so a fixed
+# menu of presets is precomputed here instead:
+#
+#   all                       every star with a matched holding
+#   class:<res>:<band>        a resolution class and/or wavelength band
+#   archive:<archive_code>    one archive
+#   inst:<archive_code>::<instrument>   one instrument within an archive
+#
+# Two tables: cmd_presets (one row per preset: label + star counts) and
+# cmd_preset_stars (per preset, its most-observed stars with the Gaia
+# columns the page plots, filters on, and offers as a CSV). cmd_stars above
+# is the "all" preset's predecessor -- still exported so a webapp process
+# started against a snapshot from before these tables existed keeps working
+# (see webapp.app._make_connection's fallback).
+#
+# Resolution classes and bands are assigned per instrument from the same two
+# hand-maintained dicts, with the same overlap test, as webapp.app's
+# advanced search: an instrument belongs to every class its published range
+# reaches into (so a 28,000-90,000 echelle is in both "high" and "very
+# high"), not to one class picked for it. An instrument missing from either
+# dict is in no class/band preset; it still has its own inst: preset.
+#
+# (key, label, lowest R, highest R) -- half-open [lo, hi).
+CMD_RESOLUTION_CLASSES = [
+    ("low", "Low resolution (R < 5,000)", 0.0, 5000.0),
+    ("medium", "Medium resolution (R 5,000–30,000)", 5000.0, 30000.0),
+    ("high", "High resolution (R ≥ 30,000)", 30000.0, float("inf")),
+    ("veryhigh", "Very high resolution (R ≥ 70,000)", 70000.0, float("inf")),
+]
+# (key, label, shortest nm, longest nm) -- half-open (lo, hi], so an
+# instrument whose red limit is exactly 1,000 nm isn't "infrared".
+CMD_WAVELENGTH_BANDS = [
+    ("optical", "optical (380–1,000 nm)", 380.0, 1000.0),
+    ("infrared", "infrared (> 1,000 nm)", 1000.0, float("inf")),
+]
+
+# Per preset, how many stars cmd_preset_stars keeps (most-observed first).
+# Well above what the page draws at once (webapp.app's CMD_SAMPLE_SIZE) so
+# its parameter filters and CSV download have more to work with than what's
+# on screen; a preset with more stars than this is flagged as truncated on
+# the page.
+CMD_PRESET_MAX_STARS = 100000
+
+
+def _cmd_class_presets() -> list[dict]:
+    """Every resolution-class x wavelength-band combination, "any" included
+    on both axes -- (any, any) being the "all" preset."""
+    presets = [{"preset_key": "all", "label": "All stars with matched spectra", "res": None, "band": None}]
+    for res in [None] + CMD_RESOLUTION_CLASSES:
+        for band in [None] + CMD_WAVELENGTH_BANDS:
+            if res is None and band is None:
+                continue
+            if res is None:
+                label = f"Any resolution, {band[1]}"
+            elif band is None:
+                label = res[1]
+            else:
+                label = f"{res[1]}, {band[1]}"
+            presets.append({
+                "preset_key": f"class:{res[0] if res else 'any'}:{band[0] if band else 'any'}",
+                "label": label, "res": res, "band": band,
+            })
+    return presets
+
+
+def _export_cmd_presets(con: duckdb.DuckDBPyConnection, presets_path: str, stars_path: str) -> None:
+    # Matched holdings per (star, archive, instrument) -- the one pass over
+    # the holdings table everything below is built from.
+    con.execute(_localize("""
+        CREATE OR REPLACE TEMP TABLE cmd_star_inst AS
+        SELECT h.star_id, h.archive_code, a.display_name, COALESCE(h.instrument, '') AS instrument, count(*) AS n
+        FROM pg.spectroscopy_holdings h
+        JOIN pg.archives a ON a.archive_code = h.archive_code
+        WHERE h.match_status = 'matched' AND h.star_id IS NOT NULL
+        GROUP BY ALL
+    """))
+    # Stars that can be drawn in at least one of the page's two views.
+    con.execute(_localize("""
+        CREATE OR REPLACE TEMP TABLE cmd_star_params AS
+        SELECT star_id, bp_rp, abs_g_mag, phot_g_mean_mag, teff_gspphot, logg_gspphot, mh_gspphot
+        FROM (
+            SELECT star_id, phot_g_mean_mag, teff_gspphot, logg_gspphot, mh_gspphot,
+                   phot_bp_mean_mag - phot_rp_mean_mag AS bp_rp,
+                   CASE WHEN parallax > 0 THEN phot_g_mean_mag + 5 * log10(parallax) - 10 END AS abs_g_mag
+            FROM pg.stars
+            WHERE gaia_source_id IS NOT NULL
+        )
+        WHERE (bp_rp IS NOT NULL AND abs_g_mag IS NOT NULL)
+           OR (teff_gspphot IS NOT NULL AND logg_gspphot IS NOT NULL)
+    """))
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE cmd_inst_class (
+            display_name VARCHAR, instrument VARCHAR, r_lo DOUBLE, r_hi DOUBLE, w_lo DOUBLE, w_hi DOUBLE
+        )
+    """)
+    class_rows = []
+    for key in set(INSTRUMENT_RESOLVING_POWER) | set(INSTRUMENT_WAVELENGTH_RANGE_NM):
+        r = parse_resolving_power_range(INSTRUMENT_RESOLVING_POWER.get(key, "")) or (None, None)
+        w = INSTRUMENT_WAVELENGTH_RANGE_NM.get(key) or (None, None)
+        class_rows.append((key[0], key[1], r[0], r[1], w[0], w[1]))
+    con.executemany("INSERT INTO cmd_inst_class VALUES (?, ?, ?, ?, ?, ?)", class_rows)
+
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE cmd_presets_out (
+            preset_key VARCHAR, kind VARCHAR, label VARCHAR, sort_order INTEGER,
+            n_stars BIGINT, n_plottable BIGINT
+        )
+    """)
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE cmd_members (preset_key VARCHAR, star_id BIGINT, n_obs BIGINT, rnk BIGINT)
+    """)
+
+    # cmd_grouped(preset_key, star_id, n_obs) is rebuilt per preset family,
+    # then counted and top-N'd by the same two statements each time.
+    def _flush_grouped() -> None:
+        con.execute("""
+            INSERT INTO cmd_presets_out (preset_key, n_stars, n_plottable)
+            SELECT g.preset_key, count(*), count(p.star_id)
+            FROM cmd_grouped g LEFT JOIN cmd_star_params p ON p.star_id = g.star_id
+            GROUP BY g.preset_key
+        """)
+        con.execute(f"""
+            INSERT INTO cmd_members
+            SELECT g.preset_key, g.star_id, g.n_obs,
+                   row_number() OVER (PARTITION BY g.preset_key ORDER BY g.n_obs DESC, g.star_id) AS rnk
+            FROM cmd_grouped g JOIN cmd_star_params p ON p.star_id = g.star_id
+            QUALIFY rnk <= {CMD_PRESET_MAX_STARS}
+        """)
+
+    for order, preset in enumerate(_cmd_class_presets()):
+        conds, params = [], []
+        if preset["res"] is not None:
+            _, _, lo, hi = preset["res"]
+            conds.append("c.r_hi >= ? AND c.r_lo < ?")
+            params += [lo, hi]
+        if preset["band"] is not None:
+            _, _, lo, hi = preset["band"]
+            conds.append("c.w_hi > ? AND c.w_lo <= ?")
+            params += [lo, hi]
+        join = (
+            "JOIN cmd_inst_class c ON c.display_name = si.display_name AND c.instrument = si.instrument "
+            f"WHERE {' AND '.join(conds)}" if conds else ""
+        )
+        con.execute(
+            f"""
+            CREATE OR REPLACE TEMP TABLE cmd_grouped AS
+            SELECT ?::VARCHAR AS preset_key, si.star_id, sum(si.n) AS n_obs
+            FROM cmd_star_inst si {join}
+            GROUP BY si.star_id
+            """,
+            [preset["preset_key"]] + params,
+        )
+        _flush_grouped()
+        con.execute(
+            "UPDATE cmd_presets_out SET kind = 'class', label = ?, sort_order = ? WHERE preset_key = ?",
+            [preset["label"], order, preset["preset_key"]],
+        )
+
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE cmd_grouped AS
+        SELECT 'archive:' || archive_code AS preset_key, star_id, sum(n) AS n_obs
+        FROM cmd_star_inst GROUP BY ALL
+    """)
+    _flush_grouped()
+    # '::' is webapp.app's OVERLAP_SIDE_SEPARATOR -- the part after "inst:"
+    # is deliberately the same value its archive/instrument pickers use.
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE cmd_grouped AS
+        SELECT 'inst:' || archive_code || '::' || instrument AS preset_key, star_id, sum(n) AS n_obs
+        FROM cmd_star_inst WHERE instrument != '' GROUP BY ALL
+    """)
+    _flush_grouped()
+    con.execute("""
+        UPDATE cmd_presets_out o SET kind = 'archive', label = n.display_name
+        FROM (SELECT DISTINCT archive_code, display_name FROM cmd_star_inst) n
+        WHERE o.preset_key = 'archive:' || n.archive_code
+    """)
+    con.execute("""
+        UPDATE cmd_presets_out o SET kind = 'instrument', label = n.display_name || ' — ' || n.instrument
+        FROM (SELECT DISTINCT archive_code, display_name, instrument FROM cmd_star_inst) n
+        WHERE o.preset_key = 'inst:' || n.archive_code || '::' || n.instrument
+    """)
+
+    _atomic_copy(
+        con,
+        "SELECT preset_key, kind, label, n_stars, n_plottable "
+        "FROM cmd_presets_out ORDER BY kind, sort_order, label, preset_key",
+        presets_path,
+    )
+    # Sorted by preset_key so the page's one-preset-at-a-time filter can
+    # prune row groups; ROW_GROUP_SIZE small enough that a single preset
+    # doesn't drag several unrelated ones in with it.
+    tmp_path = stars_path + ".tmp"
+    con.execute(_localize(f"""
+        COPY (
+            SELECT m.preset_key, m.rnk AS obs_rank, m.n_obs, s.gaia_source_id,
+                   {_common_name_expr('s.name_aliases', 's.input_name', 's.gaia_source_id')} AS label,
+                   p.phot_g_mean_mag, p.bp_rp, p.abs_g_mag, p.teff_gspphot, p.logg_gspphot, p.mh_gspphot
+            FROM cmd_members m
+            JOIN cmd_star_params p ON p.star_id = m.star_id
+            JOIN pg.stars s ON s.star_id = m.star_id
+            ORDER BY m.preset_key, m.rnk
+        ) TO '{tmp_path}' (FORMAT PARQUET, ROW_GROUP_SIZE 20000)
+    """))
+    os.chmod(tmp_path, 0o644)
+    os.rename(tmp_path, stars_path)
+    for table in ("cmd_star_inst", "cmd_star_params", "cmd_inst_class", "cmd_presets_out", "cmd_members", "cmd_grouped"):
+        con.execute(f"DROP TABLE IF EXISTS {table}")
+
+
 # /leaderboard (formerly /timeplots, and /stats before that) used to run eight separate full (or
 # near-full) scans per request -- most-observed, trending, a bare count(*),
 # by-archive, by-method against spectroscopy_holdings, plus nearest,
@@ -1214,6 +1429,11 @@ def export_tables(database_url: str, out_dir: str) -> None:
         cmd_stars_path = os.path.join(out_dir, "cmd_stars.parquet")
         _atomic_copy(con, _localize(CMD_STARS_QUERY), cmd_stars_path)
         logger.info("exported cmd_stars -> %s", cmd_stars_path)
+
+        cmd_presets_path = os.path.join(out_dir, "cmd_presets.parquet")
+        cmd_preset_stars_path = os.path.join(out_dir, "cmd_preset_stars.parquet")
+        _export_cmd_presets(con, cmd_presets_path, cmd_preset_stars_path)
+        logger.info("exported cmd_presets -> %s, cmd_preset_stars -> %s", cmd_presets_path, cmd_preset_stars_path)
 
         sky_sample_path = os.path.join(out_dir, "sky_sample.parquet")
         _atomic_copy(con, _localize(SKY_SAMPLE_QUERY), sky_sample_path)

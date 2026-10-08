@@ -6,7 +6,7 @@ that module's own comment on STAR_NAME_INDEX_NORMALIZE_SQL). This file has no
 side effects and no Flask/DB imports, so both can import it freely.
 
 Same hand-maintained-dict risk flagged in the wavelength-coverage-chart-gaps
-audit (webapp.app's INSTRUMENT_RESOLVING_POWER docstring, PR #109): a new
+audit (webapp.instrument_resolving_power's INSTRUMENT_RESOLVING_POWER docstring, PR #109): a new
 archive/instrument that never gets a key here just silently doesn't render
 on the search page's wavelength chart, and now also silently doesn't
 contribute to the leaderboard's diversity/coverage metrics
@@ -24,7 +24,7 @@ from __future__ import annotations
 # template), so X-ray gratings sit fine on the same chart as optical/IR
 # instruments, just far to the left of everything else -- Chandra's
 # HETG/LETG and XMM-Newton's RGS1/RGS2 are included below for that reason.
-# Deliberately a strict subset of webapp.app's INSTRUMENT_RESOLVING_POWER
+# Deliberately a strict subset of webapp.instrument_resolving_power's INSTRUMENT_RESOLVING_POWER
 # keys: n/a (imaging-only) entries are omitted outright, and a handful of
 # obscure/retired instruments this project couldn't confirm a real published
 # range for (e.g. CFHT's PYTHIAS, HERZBERG, OSIS, PUMA, SISFP, ISIS;
@@ -146,6 +146,16 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): (7700, 22600),
     ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): (4500, 28300),
     ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): (700, 5300),
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FLITECAM'): (1675, 4074),
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FORCAST'): (4900, 37100),
+    ('IRSA Space-Mission Stellar Collections', 'Herschel/HIFI (HIFISTARS)'): (160555, 538964),
+    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS (Atlas)'): (2400, 45200),
+    ('IRSA Space-Mission Stellar Collections', 'CTIO Blanco/Hydra (BRAVA)'): (689, 885),
+    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'TCO eShel'): (375, 847),
+    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'FAI AZT-8 (PN archive)'): (316, 850),
+    ('NOVA (Argentine Virtual Observatory)', 'REOSC'): (350, 720),
+    ('NOVA (Argentine Virtual Observatory)', 'FIRE-LCO'): (930, 2254),
+    ('NOVA (Argentine Virtual Observatory)', 'GNIRS-GEMINI'): (930, 2254),
     ('IRTF SpeX (via IRSA)', 'SpeX'): (700, 5300),
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): (1060, 5300),
     ('IRTF Legacy Archive', 'SpeX'): (700, 5300),
@@ -237,6 +247,14 @@ INSTRUMENT_WAVELENGTH_RANGE_NM: dict[tuple[str, str], tuple[float, float]] = {
     ('SVO CAB Stellar Libraries', 'STELIB'): (320.0, 950.0),
     ('SVO CAB Stellar Libraries', 'XSL'): (300.0, 2480.0),
     ('SVO CAB Stellar Libraries', 'CaT'): (834.8, 882.8),
+    ('SVO CAB Stellar Libraries', 'SpeX Prism Library'): (634, 2571),
+    ('SVO CAB Stellar Libraries', 'Keck/HIRES (Yee 2017)'): (499, 641),
+    ('SVO CAB Stellar Libraries', 'Keck/NIRSPEC (BDSS)'): (940, 2355),
+    ('SVO CAB Stellar Libraries', 'VLT/UVES (M subdwarfs)'): (644, 1025),
+    ('SVO CAB Stellar Libraries', 'GAUDI (Elodie)'): (390, 680),
+    ('SVO CAB Stellar Libraries', 'GAUDI (FEROS)'): (350, 920),
+    ('SVO CAB Stellar Libraries', 'GAUDI (Coralie)'): (380, 690),
+    ('SVO CAB Stellar Libraries', 'GAUDI (SARG)'): (370, 1000),
     ('XMM-Newton RGS', 'RGS1'): (0.5, 3.8),
     ('XMM-Newton RGS', 'RGS2'): (0.5, 3.8),
 }

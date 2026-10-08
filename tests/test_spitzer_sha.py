@@ -7,7 +7,7 @@ import requests
 from sync.archives import spitzer_sha
 from pathlib import Path
 
-from webapp import instrument_wavelengths
+from webapp import instrument_resolving_power, instrument_wavelengths
 
 DISPLAY_NAME = "Spitzer Heritage Archive (IRS + MIPS-SED)"
 
@@ -217,10 +217,10 @@ def test_search_pages_until_a_short_page(monkeypatch):
 def test_every_instrument_label_has_wavelength_and_resolving_power_entries():
     labels = {label for keep in spitzer_sha.QUERIES.values() for label in keep.values()}
     assert labels == {"Spitzer/IRS (Stare)", "Spitzer/IRS (Map)", "Spitzer/MIPS-SED"}
-    # webapp.app can't be imported without a configured data source, so its two
-    # hand-maintained dicts are checked against the file's own text.
+    # webapp.app can't be imported without a configured data source, so its
+    # hand-maintained homepage dict is checked against the file's own text.
     app_source = (Path(__file__).resolve().parent.parent / "webapp" / "app.py").read_text()
     for label in labels:
         assert (DISPLAY_NAME, label) in instrument_wavelengths.INSTRUMENT_WAVELENGTH_RANGE_NM
-        assert f"('{DISPLAY_NAME}', '{label}'):" in app_source  # resolving-power dict
+        assert (DISPLAY_NAME, label) in instrument_resolving_power.INSTRUMENT_RESOLVING_POWER
     assert f"'{DISPLAY_NAME}': 'https://" in app_source  # archive homepage dict

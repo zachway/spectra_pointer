@@ -129,8 +129,9 @@ def spectra_data_dir(tmp_path_factory):
         )
         cur.execute(
             "INSERT INTO stars (gaia_source_id, ra, dec, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag, "
-            "parallax, input_name, name_aliases) VALUES "
-            "(%s, 10.68458, 41.26906, 8.5, 9.0, 8.0, 5.0, 'TEST STAR ONE', ARRAY['TEST STAR ONE', 'HD 999001'])",
+            "parallax, teff_gspphot, logg_gspphot, mh_gspphot, input_name, name_aliases) VALUES "
+            "(%s, 10.68458, 41.26906, 8.5, 9.0, 8.0, 5.0, 5200.0, 4.4, -0.3, "
+            " 'TEST STAR ONE', ARRAY['TEST STAR ONE', 'HD 999001'])",
             (WEBAPP_TEST_STAR_1,),
         )
         cur.execute(
@@ -147,11 +148,11 @@ def spectra_data_dir(tmp_path_factory):
         # holdings need this populated for the export to succeed at all.
         cur.execute(
             "INSERT INTO spectroscopy_holdings "
-            "(star_id, archive_code, archive_obs_id, archive_url, instrument, obs_date, "
+            "(star_id, archive_code, archive_obs_id, archive_url, instrument, obs_date, program_id, "
             " match_method, match_status, reduction_status, raw_ra, raw_dec) VALUES "
-            "(%s, %s, 'test-obs-1', 'https://example.invalid/obs/1', 'TESTSPEC', '2024-01-01', "
+            "(%s, %s, 'test-obs-1', 'https://example.invalid/obs/1', 'TESTSPEC', '2024-01-01', 'TEST-PROG-0001', "
             " 'manual', 'matched', 'reduced', 10.68458, 41.26906), "
-            "(%s, %s, 'test-obs-2', 'https://example.invalid/obs/2', 'TESTSPEC', '2024-02-01', "
+            "(%s, %s, 'test-obs-2', 'https://example.invalid/obs/2', 'TESTSPEC', '2024-02-01', NULL, "
             " 'manual', 'matched', 'reduced', 10.68458, 41.26906)",
             (star1_id, WEBAPP_TEST_ARCHIVE_CODE, star1_id, WEBAPP_TEST_ARCHIVE_CODE),
         )
@@ -183,8 +184,19 @@ def spectra_data_dir(tmp_path_factory):
 
     try:
         out_dir = tmp_path_factory.mktemp("spectra_data")
+        from unittest import mock
+
         from scripts.export_to_parquet import export_tables
-        export_tables(database_url, str(out_dir))
+        from webapp.instrument_resolving_power import INSTRUMENT_RESOLVING_POWER
+        from webapp.instrument_wavelengths import INSTRUMENT_WAVELENGTH_RANGE_NM
+        # Only for the export: gives TESTSPEC a published R and wavelength
+        # range so the CMD page's resolution/band presets have something in
+        # them. Not left in place afterward -- the advanced-search tests
+        # rely on the test instruments being absent from both dicts.
+        testspec = ("Webapp Test Archive", "TESTSPEC")
+        with mock.patch.dict(INSTRUMENT_RESOLVING_POWER, {testspec: "R ≈ 80,000"}), \
+                mock.patch.dict(INSTRUMENT_WAVELENGTH_RANGE_NM, {testspec: (400.0, 700.0)}):
+            export_tables(database_url, str(out_dir))
         yield str(out_dir)
     finally:
         with connection.cursor() as cur:

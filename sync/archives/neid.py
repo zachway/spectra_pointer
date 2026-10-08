@@ -65,7 +65,7 @@ pipeline's final wavelength-calibrated, RV-ready extracted-spectrum tier
 (datalvl=2 on literally every row, observed), unlike naoj.py's single
 table mixing raw/reduced product tiers that need disambiguating.
 
-INSTRUMENT_RESOLVING_POWER / INSTRUMENT_WAVELENGTH_RANGE_NM (webapp/app.py)
+INSTRUMENT_RESOLVING_POWER / INSTRUMENT_WAVELENGTH_RANGE_NM (webapp/)
 deliberately do NOT gain entries for NEID here, despite the task brief's own
 suggested range (R ~ 110,000-190,000) -- multiple live lookups attempted
 this session (NEID/PSU/NOIRLab/Wikipedia pages, the arXiv and Semantic

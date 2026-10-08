@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Stellar spectra found in a registry-wide sweep of VO Simple Spectral
+  Access (SSA) services (issue #223):
+  - two new archives, `fai_kz` (Fesenkov Astrophysical Institute,
+    Kazakhstan VO) and `nova_ar` (NOVA, the Argentine Virtual Observatory);
+    run `db/migrations/0013_fai_kz_nova_ar_archives.sql` before their first
+    sync;
+  - `svo_cab`: the SpeX Prism Library, Yee 2017 (Keck/HIRES), Chiu 2006,
+    NIRSPEC BDSS, UVES M-subdwarf libraries and the GAUDI archive;
+  - `irsa_missions`: SOFIA/FLITECAM and SOFIA/FORCAST grism spectra, the
+    ISO/SWS atlas, Herschel HIFISTARS and the BRAVA bulge survey.
+
 ## [1.0.0] - <TODO: release date>
 
 ### Added
