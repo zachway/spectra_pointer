@@ -107,10 +107,64 @@ calib_level is real and present on every row across all six collections
 (observed) -- fed through reduction_status_from_calib_level as usual;
 sofia_exes in particular has a genuine mix (2/1/masked observed live),
 unlike the other five which are uniformly a single value.
+
+Added 2026-10-08, found in a registry-wide SSA sweep (all observed live):
+
+  - sofia_flitecam -- SOFIA/FLITECAM near-IR grism spectra, whole-sky in one
+    page, same schema and same per-file shape as sofia_exes. Real tmid on
+    every row. Of its 5,844 FITS rows roughly half are not spectra: FLITECAM
+    is also an imager and its filter frames are in the same collection with
+    spec_rp of 6 (K band), 89 (Paschen alpha) or masked. Only rows with
+    spec_rp >= 500 (the grisms, R ~1,100-1,300) are kept; png previews are
+    dropped by format as usual.
+  - iso_sws_atlas  -- "An Improved Atlas of Full-Scan Spectra from ISO/SWS":
+    2,070 text tables for 817 targets under /data/ISO/SWS_Atlas/, a
+    reprocessing distinct from iso_sws's files. Unlike iso_sws it returns
+    whole-sky in one page and carries a real tmid on every row.
+  - herschel_hifistars -- Herschel/HIFI heterodyne spectra (0.16-0.54 mm) of
+    38 evolved stars: 732 FITS files (plus a gif and a text row each,
+    dropped), whole-sky in one page. target_name is blank and tmid masked on
+    every row, and the publisherdid tail is an obsid, so the name comes from
+    the file's directory (".../spectra/IRAS_15194_5115/1342202052-...fits")
+    and these match by name only.
+  - sofia_forcast  -- SOFIA/FORCAST mid-IR grism spectra (5-37 um): 72,804
+    distinct FITS files for 484 targets, the largest collection here. Every
+    FITS row sampled is a grism product (spec_rp 110-260, 1,170
+    cross-dispersed), dated, with a unique access_url, so no resolving-power
+    floor is needed. Whole-sky SIZE=180 times out, so it rides the grid crawl
+    with iso_sws/iras_lrs: all 17 cells timed at 56-108 s (8k-19k rows each)
+    against the 150 s read timeout. Cells overlap heavily; re-seen files are
+    plain upserts. Many targets are not stars (asteroids, planets, comets,
+    galaxies) and fall out downstream like any other unresolvable name.
+  - BRAVA (Bulge Radial Velocity Assay, CTIO Blanco/Hydra) -- not on the SSA
+    path at all in practice (its SSA collection returns no rows); the catalog
+    is the TAP table brava.bravacat, 8,585 M giants. Quirks, all observed:
+      * No observation date and no target name in the table. The date is
+        real in each file's FITS header (DATE-OBS), so it is read from there
+        with a ranged request for the first header blocks -- without a date
+        these records could never be matched positionally. Many rows share
+        one multi-aperture file (e.g. 1004.2.ms.fits, 103 rows), so header
+        dates are cached per file.
+      * fits_spectra_1/_2 are HTML anchors, not paths. 173 rows have two
+        observations (n_obs=2), the second file in fits_spectra_2.
+      * The fixed-width ingest split the 2MASS designation across two
+        columns for single-observation rows: fits_spectra_2 reads
+        "x ... 183" and tmass_id "75172-1503482", i.e. 2MASS
+        J18375172-1503482. Rejoined when the result has the right shape
+        (SIMBAD knows only a minority of them); rows with two observations
+        have no designation.
+    archive_obs_id is "brava:<cntr>:<n>" (cntr is the table's own row
+    counter), since a file URL is not unique per star. Paged by cntr,
+    BRAVA_PAGE_SIZE rows per fetch() call, because of the per-file request.
 """
 
+from __future__ import annotations
+
+import functools
 import io
 import math
+import re
+from datetime import date
 
 import requests
 from astropy.io.votable import parse_single_table
@@ -156,14 +210,34 @@ WHOLE_SKY_COLLECTIONS = {
     "spitzer_irs_std": {"instrument": "Spitzer/IRS (Std Stars)", "format": "application/fits"},
     "sofia_exes": {"instrument": "SOFIA/EXES", "format": "image/fits"},
     "irtf_mearth": {"instrument": "IRTF/MEarth", "format": "application/fits"},
+    # min_resolving_power: FLITECAM is also an imager, and its filter frames
+    # sit in the same SSA collection with spec_rp of 6-89 (or masked).
+    "sofia_flitecam": {"instrument": "SOFIA/FLITECAM", "format": "image/fits", "min_resolving_power": 500},
+    "iso_sws_atlas": {"instrument": "ISO/SWS (Atlas)", "format": "text/plain"},
+    # name_from_url_dir: target_name is blank and curation_publisherdid ends
+    # in an obsid, but each file sits in a directory named for its star.
+    "herschel_hifistars": {"instrument": "Herschel/HIFI (HIFISTARS)", "format": "application/fits",
+                           "name_from_url_dir": True},
 }
+# The collections a cursor with only the old "whole_sky_done" flag has pulled.
+LEGACY_WHOLE_SKY = ("spitzer_sass", "spitzer_irs_std", "sofia_exes", "irtf_mearth")
 WHOLE_SKY_QUERY_SIZE = 180
+
+IRSA_URL = "https://irsa.ipac.caltech.edu"
+BRAVA_INSTRUMENT = "CTIO Blanco/Hydra (BRAVA)"
+BRAVA_PAGE_SIZE = 500
+# DATE-OBS sits within the first block or two of every header sampled; ten
+# blocks leaves a wide margin without fetching a ~1MB multi-aperture file.
+BRAVA_HEADER_BYTES = 28800
 
 # Collections that time out server-side at that SIZE and are crawled via
 # GRID_CELLS instead -- see module docstring.
 GRID_COLLECTIONS = {
     "iso_sws": {"instrument": "ISO/SWS", "format": "text/plain"},
     "iras_lrs": {"instrument": "IRAS/LRS", "format": "text/plain"},
+    # Must stay last: GRID_TASKS is positional, and a cursor that finished
+    # the two collections above resumes exactly where this one starts.
+    "sofia_forcast": {"instrument": "SOFIA/FORCAST", "format": "application/fits"},
 }
 GRID_CELL_SIZE = 45
 GRID_STEP_DEG = 50
@@ -302,15 +376,98 @@ def _fetch_tap_spectra() -> list[RawObservation]:
     return records
 
 
-def _fetch_whole_sky() -> list[RawObservation]:
+def _fetch_whole_sky(collections) -> list[RawObservation]:
     records = []
-    for collection, meta in WHOLE_SKY_COLLECTIONS.items():
+    for collection in collections:
+        meta = WHOLE_SKY_COLLECTIONS[collection]
         rows = _query(collection, pos=(180, 0), size=WHOLE_SKY_QUERY_SIZE)
+        min_rp = meta.get("min_resolving_power")
         for row in rows:
             if str(row["col_19"]) != meta["format"]:
                 continue
-            records.append(_to_observation(row, meta["instrument"]))
+            if min_rp is not None:
+                # col_11 is spec_rp, same positional indexing as _to_observation.
+                resolving_power = clean_float(row["col_11"])
+                if resolving_power is None or resolving_power < min_rp:
+                    continue
+            record = _to_observation(row, meta["instrument"])
+            if meta.get("name_from_url_dir"):
+                record.raw_target_name = record.archive_obs_id.rstrip("/").split("/")[-2].replace("_", " ")
+            records.append(record)
     return records
+
+
+def _whole_sky_done(cursor: dict) -> set[str]:
+    if "whole_sky_collections" in cursor:
+        return set(cursor["whole_sky_collections"])
+    return set(LEGACY_WHOLE_SKY) if cursor.get("whole_sky_done") else set()
+
+
+_HREF = re.compile(r"""href=["']([^"']+)["']""")
+_DATE_OBS = re.compile(rb"DATE-OBS= '(\d{4}-\d{2}-\d{2})")
+_TMASS_PREFIX = re.compile(r"^x\s+(\d{3})$")
+_TMASS_DESIGNATION = re.compile(r"^\d{8}[+-]\d{7}$")
+
+
+def _brava_file_url(cell) -> str | None:
+    match = _HREF.search(str(cell))
+    return IRSA_URL + match.group(1) if match else None
+
+
+@functools.lru_cache(maxsize=None)
+def _brava_obs_date(url: str) -> date | None:
+    try:
+        resp = _session.get(url, headers={"Range": f"bytes=0-{BRAVA_HEADER_BYTES - 1}"}, timeout=(15, 60))
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    match = _DATE_OBS.search(resp.content[:BRAVA_HEADER_BYTES])
+    try:
+        return date.fromisoformat(match.group(1).decode()) if match else None
+    except ValueError:
+        return None
+
+
+def _brava_name(row) -> str | None:
+    prefix = _TMASS_PREFIX.match(str(row["fits_spectra_2"]).strip())
+    if not prefix:
+        return None
+    designation = prefix.group(1) + str(row["tmass_id"]).strip()
+    return f"2MASS J{designation}" if _TMASS_DESIGNATION.match(designation) else None
+
+
+def _fetch_brava_page(after_cntr: int) -> tuple[list[RawObservation], int, bool]:
+    """One page of brava.bravacat past `after_cntr`; returns (records, last
+    cntr seen, whether the table is exhausted)."""
+    service = make_tap_service(TAP_URL)
+    rows = service.run_sync(
+        f"SELECT TOP {BRAVA_PAGE_SIZE} cntr, ra, dec, fits_spectra_1, fits_spectra_2, tmass_id "
+        f"FROM brava.bravacat WHERE cntr > {int(after_cntr)} ORDER BY cntr"
+    ).to_table()
+
+    records = []
+    last_cntr = after_cntr
+    for row in rows:
+        last_cntr = int(row["cntr"])
+        ra, dec = clean_float(row["ra"]), clean_float(row["dec"])
+        name = _brava_name(row)
+        for n, column in enumerate(("fits_spectra_1", "fits_spectra_2"), start=1):
+            url = _brava_file_url(row[column])
+            if url is None:
+                continue
+            records.append(
+                RawObservation(
+                    archive_obs_id=f"brava:{last_cntr}:{n}",
+                    archive_url=url,
+                    instrument=BRAVA_INSTRUMENT,
+                    obs_date=_brava_obs_date(url),
+                    ra=ra,
+                    dec=dec,
+                    raw_target_name=name,
+                    reduction_status="reduced",
+                )
+            )
+    return records, last_cntr, len(rows) < BRAVA_PAGE_SIZE
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -322,9 +479,24 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         new_cursor["tap_done"] = True
         return _fetch_tap_spectra(), new_cursor
 
-    if not cursor.get("whole_sky_done"):
-        records = _fetch_whole_sky()
-        new_cursor = {"whole_sky_done": True, "grid_index": 0}
+    done = _whole_sky_done(cursor)
+    pending = [name for name in WHOLE_SKY_COLLECTIONS if name not in done]
+    if pending:
+        # Only the collections this cursor hasn't pulled yet -- for a cursor
+        # from before sofia_flitecam/iso_sws_atlas were added, just those two.
+        records = _fetch_whole_sky(pending)
+        new_cursor = dict(cursor)
+        new_cursor["whole_sky_done"] = True
+        new_cursor["whole_sky_collections"] = sorted(WHOLE_SKY_COLLECTIONS)
+        new_cursor.setdefault("grid_index", 0)
+        return records, new_cursor
+
+    if not cursor.get("brava_done"):
+        records, last_cntr, exhausted = _fetch_brava_page(cursor.get("brava_cntr", 0))
+        new_cursor = dict(cursor)
+        new_cursor["brava_cntr"] = last_cntr
+        if exhausted:
+            new_cursor["brava_done"] = True
         return records, new_cursor
 
     grid_index = cursor.get("grid_index", 0)

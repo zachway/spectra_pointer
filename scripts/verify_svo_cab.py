@@ -2,7 +2,7 @@
 
 Run: python3 scripts/verify_svo_cab.py
 
-Confirms fetch({}) returns real records spanning all 5 sub-collections, and
+Confirms fetch({}) returns real records spanning every sub-collection, and
 that calling fetch() again with the returned cursor converges to 0 new
 records (svo_cab is a one-shot static-catalog pull, same shape as
 rave.py/feros_gavo.py -- the cursor short-circuits the second call entirely).
@@ -21,7 +21,9 @@ def main() -> None:
     for instrument, count in sorted(by_instrument.items()):
         print(f"  {instrument}: {count}")
 
-    assert len(by_instrument) == 5, f"expected all 5 sub-collections, got {sorted(by_instrument)}"
+    # 10 SVOCat libraries + GAUDI's 5 per-spectrograph labels.
+    assert len(by_instrument) == 15, f"expected all 15 instrument labels, got {sorted(by_instrument)}"
+    assert len({r.archive_obs_id for r in records}) == len(records), "archive_obs_id must be unique"
 
     with_date = sum(1 for r in records if r.obs_date is not None)
     print(f"records with a real obs_date: {with_date} (expected: XSL only, partial)")

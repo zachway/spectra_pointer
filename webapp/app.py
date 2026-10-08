@@ -3047,6 +3047,15 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('IRSA Space-Mission Stellar Collections', 'IRAS/LRS'): 'R ≈ 20–60',
     ('IRSA Space-Mission Stellar Collections', 'SOFIA/EXES'): 'R ≈ 3,000–100,000 (mode-dependent)',
     ('IRSA Space-Mission Stellar Collections', 'IRTF/MEarth'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FLITECAM'): 'R ≈ 1,100–1,300 (grism)',
+    ('IRSA Space-Mission Stellar Collections', 'SOFIA/FORCAST'): 'R ≈ 110–260 (grism), ≈ 1,200 cross-dispersed',
+    ('IRSA Space-Mission Stellar Collections', 'Herschel/HIFI (HIFISTARS)'): 'R ≈ 10⁷ (heterodyne)',
+    ('IRSA Space-Mission Stellar Collections', 'ISO/SWS (Atlas)'): 'R ≈ 1,000–2,500 (grating mode)',
+    ('IRSA Space-Mission Stellar Collections', 'CTIO Blanco/Hydra (BRAVA)'): 'R ≈ 4,200',
+    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'TCO eShel'): 'R ≈ 7,400–8,400',
+    ('Fesenkov Astrophysical Institute (Kazakhstan VO)', 'FAI AZT-8 (PN archive)'): 'R ≈ 1,300–23,000 (setup-dependent)',
+    ('NOVA (Argentine Virtual Observatory)', 'FIRE-LCO'): 'R ≈ 6,000 (echelle)',
+    ('NOVA (Argentine Virtual Observatory)', 'GNIRS-GEMINI'): 'R ≈ 500–18,000 (mode-dependent)',
     ('IRTF SpeX (via IRSA)', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
     ('IRTF iSHELL (via IRSA)', 'iSHELL'): 'R ≈ 80,000 (0.375" slit)',
     ('IRTF Legacy Archive', 'SpeX'): 'R ≈ 200 (prism) – 2,500 (cross-dispersed)',
@@ -3147,6 +3156,13 @@ INSTRUMENT_RESOLVING_POWER: dict[tuple[str, str], str] = {
     ('SVO CAB Stellar Libraries', 'STELIB'): 'R ≈ 2,000 (~3 Å FWHM)',
     ('SVO CAB Stellar Libraries', 'XSL'): 'R ≈ 8,000–11,000 (arm-dependent)',
     ('SVO CAB Stellar Libraries', 'CaT'): 'R ≈ 5,000–6,000 (1.5 Å FWHM)',
+    ('SVO CAB Stellar Libraries', 'SpeX Prism Library'): 'R ≈ 75–200',
+    ('SVO CAB Stellar Libraries', 'Keck/HIRES (Yee 2017)'): 'R ≈ 60,000',
+    ('SVO CAB Stellar Libraries', 'Keck/NIRSPEC (BDSS)'): 'R ≈ 2,000',
+    ('SVO CAB Stellar Libraries', 'GAUDI (Elodie)'): 'R ≈ 42,000',
+    ('SVO CAB Stellar Libraries', 'GAUDI (FEROS)'): 'R ≈ 48,000',
+    ('SVO CAB Stellar Libraries', 'GAUDI (Coralie)'): 'R ≈ 50,000',
+    ('SVO CAB Stellar Libraries', 'GAUDI (SARG)'): 'R ≈ 29,000–164,000 (slit-dependent)',
     # X-ray transmission gratings -- resolving power is set by the grating,
     # not the detector recording the dispersed light, so all detector
     # combinations of a given grating share one value. Deliberately absent
@@ -3782,6 +3798,8 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'HEROS at Ondrejov': 'http://vos2.asu.cas.cz/',
     'HPOL (Wisconsin H-alpha/HPOL spectropolarimeter, STScI)': 'https://archive.stsci.edu/hpol/',
     'Ritter Observatory (PREST)': 'https://astro1.panet.utoledo.edu/~wwritter/archive/',
+    'Fesenkov Astrophysical Institute (Kazakhstan VO)': 'https://dachs.fai.kz/',
+    'NOVA (Argentine Virtual Observatory)': 'http://nova.fcaglp.unlp.edu.ar/',
 }
 
 # Whether an archive's archive_url hands back the spectrum itself (True) or
@@ -3827,7 +3845,7 @@ ARCHIVE_URL_IS_DIRECT_DOWNLOAD: dict[str, bool | None] = {
     'ondrejov': True, 'polarbase': True, 'rave': True, 'ritter_prest': True,
     'salt_hrs': True, 'sdss_legacy_optical': True, 'sdss_v_apogee': True,
     'sdss_v_optical': True, 'sophie': True, 'svo_cab': True,
-    'vizier_assocdata': True,
+    'vizier_assocdata': True, 'fai_kz': True, 'nova_ar': True,
     '4most': False, 'bess': False, 'cfht_cadc': False, 'chandra': False,
     'gemini': False,
     'gemini_ghost': False, 'gemini_igrins': False,
@@ -4688,6 +4706,7 @@ NOT_YET_TRACKED = [
     ("—", "WEAVE, 4MOST", "surveys not yet public"),
     ("—", "JUST (Lenghu, China)", "not yet public -- site's own Data page still reads \"Coming soon\""),
     ("—", "GALEX (via MAST)", "found live (1.5M+ grism-spectroscopy rows) but not ingested -- primary mission was UV imaging, so slitless grism spectra in crowded fields are often low-S/N/blended; needs a data-quality pass before treating it as a clean win like its MAST siblings EUVE/HUT/TUES/BEFS/WUPPE"),
+    ("—", "HEASARC X-ray mission catalogs (XRISM, Suzaku, Hitomi, Swift XRT, RXTE and others)", "registered as VO spectral services and found in the 2026-10-08 registry-wide SSA sweep, but they are whole-mission observation logs of CCD/calorimeter spectra across every source class, not stellar collections -- unlike the Chandra/XMM grating archives already tracked; needs a scope decision before ingesting"),
     ("—", "Euclid", "faint limit will go past Gaia's own, breaking the Gaia-source_id-first cross-match this whole project is built on -- tracked for eventual incorporation, not a quick add"),
     ("—", "Login-gated or no scriptable query tool (STELLA, Mount John/HERCULES, Bosscha, Kottamia, Athens/Kryoneri, MMT, Pico dos Dias, Wise, VATT, TRES, McDonald/HPF, Las Campanas/Magellan, INAOE, Kiso/SMOKA, IAO Hanle, SAO RAS BTA/SCORPIO, OAN-SPM)", "confirmed via direct site checks, not just an undocumented API -- either explicit login required or genuinely no bulk/query interface exists"),
     ("—", "Palomar (Hale 200-inch: DBSP, TripleSpec, WIRC, PARVI)", "no centrally hosted archive with a public query interface -- checked RegTAP, IRSA, NExScI (PARVI has no archive page at all), and KOA (Keck-only); data stays with individual PIs/programs, unlike Keck/ESO"),
@@ -5559,6 +5578,9 @@ _ARCHIVE_URL_ALLOWED_HOSTS = {
     # 2026-09-30: ESO/eso_raw archive_urls now point at the data portal's
     # file endpoint rather than archive.eso.org's dataset pages.
     "dataportal.eso.org",
+    # 2026-10-08: fai_kz, nova_ar, and svo_cab's GAUDI rows (whose links
+    # carry an explicit :80).
+    "dachs.fai.kz", "nova.fcaglp.unlp.edu.ar", "sdc.cab.inta-csic.es:80",
 }
 
 _FITS_BLOCK_SIZE = 2880  # FITS header cards come in fixed 80-char x 36-card blocks
