@@ -4969,8 +4969,8 @@ CITATION_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p>This page is currently under development and does not have a citable DOI. Once created, this page will link to the direct citation.</p>
-  <p>If you make use of this page for your research, please use the following acknowledgement:</p>
+  <p>There will eventually be a journal article for this app, but in the meanwhile you can use the Zenodo DOI for acknowledging The Spectra Pointer: <a href="https://doi.org/10.5281/zenodo.22698835">https://doi.org/10.5281/zenodo.22698835</a></p>
+  <p>If you make use of this page for your research, please use the following acknowledgement: "This research has made use of The Spectra Pointer database, operated at Georgia State University, Atlanta, Georgia"</p>
   <p>Source code: <a href="https://github.com/zachway/spectra_pointer" target="_blank" rel="noopener">github.com/zachway/spectra_pointer</a></p>
 """ + FOOTER_HTML + """
 </body>
