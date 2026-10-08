@@ -11,6 +11,7 @@ duckdb
 scipy
 aiohttp
 fsspec[http]
+h5py
 pytz
 paramiko
 geoip2fast
