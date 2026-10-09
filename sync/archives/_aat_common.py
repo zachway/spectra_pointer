@@ -14,7 +14,14 @@ answers with a one-element list holding `uuid`, `count`, `next` and up to
 
 - Dates: `[start_date, end_date)`, except start_date == end_date, which
   means that one night. A whole-archive or whole-instrument query times out
-  (150s+), and so does a cone search, so the walk is one night at a time.
+  (150s+), and so does a cone search, so the walk is by date. A range of
+  several nights costs the same as one (observed 2026-10-08: a 31-night
+  range answered in 1.7s, same as a single night, with later pages of 200
+  rows in ~2.2s each), so the cost is per request, not per row -- a module
+  can walk several nights per query (see fetch's window_nights).
+- No rate limit has been observed, but none is documented either: _post
+  backs off on 429 / 5xx / connection errors and slows every later request
+  once a 429 has been seen.
 - Paging: re-POST `{"uuid", "next", "previous"}` with the previous page's
   `next.aat_id`. Later pages are not a fixed size (observed 100, 200, 20 for
   a 320-row query) and `next` is still set on the last one -- the stop
@@ -48,10 +55,12 @@ hours later -- how long Data Central keeps them is not known.
 Frames younger than 18 months are proprietary: listed here like any other,
 but only the observing team can download them.
 
-Cursor: just the next night to walk. A fetch() call returns one night's
-records, skipping forward over nights with none (other instruments on the
-telescope, weather) -- sync.runner treats an empty return as "caught up",
-so an empty night must not be returned as-is. The walk stops INGEST_LAG_DAYS
+Cursor: just the next night to walk. A fetch() call returns one window's
+records (window_nights nights, one by default), skipping forward over
+windows with none (other instruments on the telescope, weather) --
+sync.runner treats an empty return as "caught up", so an empty window must
+not be returned as-is. With a window of several nights, archive_url is the
+results page for that whole window's query rather than one night's. The walk stops INGEST_LAG_DAYS
 short of today so a night isn't passed before its frames have been loaded;
 neither module is in sync.reconcile's AT_RISK_ARCHIVES because one night per
 page makes a full re-walk far longer than that job's page budget.
@@ -62,6 +71,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from collections import Counter
 from collections.abc import Callable
 from datetime import date, timedelta
@@ -110,18 +120,78 @@ _GAIA_CHECK_NSIDE = 2**_GAIA_CHECK_LEVEL
 _GAIA_CHECK_SHIFT = 35 + 2 * (12 - _GAIA_CHECK_LEVEL)
 
 
+# Waits before each retry of a request that failed in a way worth retrying
+# (429, 5xx, connection error). A read timeout is only retried once: on this
+# service it usually means a query shape that never answers, and fetch()
+# deals with that by asking for fewer nights instead.
+RETRY_WAITS_SECONDS = (30, 60, 120, 300, 600)
+TIMEOUT_RETRIES = 1
+# Upper bound on a server-supplied Retry-After, and on the pause below.
+MAX_RETRY_AFTER_SECONDS = 900
+MAX_PAUSE_SECONDS = 30.0
+
+# Pause before every request, for the rest of this process, once the server
+# has answered 429: starts at 1s and doubles on each further 429.
+_pause_seconds = 0.0
+
+
+def _retry_after(resp: requests.Response) -> float | None:
+    try:
+        return min(float(resp.headers["Retry-After"]), MAX_RETRY_AFTER_SECONDS)
+    except (KeyError, ValueError):
+        return None
+
+
 def _post(body: dict) -> dict | None:
-    resp = requests.post(QUERY_URL, json=body, headers={"Accept": "application/json"}, timeout=TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    # Observed: a query the server can't satisfy answers 200 with a bare [].
-    return data[0] if data else None
+    global _pause_seconds
+    timeouts = 0
+    last_attempt = len(RETRY_WAITS_SECONDS)
+    for attempt in range(last_attempt + 1):
+        if _pause_seconds:
+            time.sleep(_pause_seconds)
+        wait = RETRY_WAITS_SECONDS[min(attempt, last_attempt - 1)]
+        try:
+            resp = requests.post(QUERY_URL, json=body, headers={"Accept": "application/json"}, timeout=TIMEOUT)
+        except requests.Timeout:
+            timeouts += 1
+            if timeouts > TIMEOUT_RETRIES or attempt == last_attempt:
+                raise
+            reason = "timed out"
+        except requests.ConnectionError:
+            if attempt == last_attempt:
+                raise
+            reason = "connection error"
+        else:
+            if resp.status_code == 429:
+                _pause_seconds = min(max(1.0, _pause_seconds * 2), MAX_PAUSE_SECONDS)
+                wait = _retry_after(resp) or wait
+                reason = f"HTTP 429, now pausing {_pause_seconds:.0f}s before every request"
+            elif resp.status_code >= 500:
+                wait = _retry_after(resp) or wait
+                reason = f"HTTP {resp.status_code}"
+            else:
+                resp.raise_for_status()
+                data = resp.json()
+                # Observed: a query the server can't satisfy answers 200 with a bare [].
+                return data[0] if data else None
+            if attempt == last_attempt:
+                resp.raise_for_status()
+        logger.warning("aat: %s, retrying in %ds (attempt %d)", reason, wait, attempt + 1)
+        time.sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def fetch_night(night: date, filters: dict) -> tuple[list[dict], str | None]:
     """Every row for one night under `filters`, plus that query's uuid."""
-    iso = night.isoformat()
-    first = _post({"start_date": iso, "end_date": iso, **filters})
+    return fetch_range(night, night + timedelta(days=1), filters)
+
+
+def fetch_range(first_night: date, stop: date, filters: dict) -> tuple[list[dict], str | None]:
+    """Every row for the nights from first_night up to but not including
+    `stop` under `filters`, plus that query's uuid."""
+    # One night is asked for as start == end (see module docstring).
+    end = first_night if stop - first_night == timedelta(days=1) else stop
+    first = _post({"start_date": first_night.isoformat(), "end_date": end.isoformat(), **filters})
     if not first or not first.get("results"):
         return [], None
 
@@ -192,32 +262,70 @@ def gaia_source_id_from_name(name: str, ra: float | None, dec: float | None) -> 
     return source_id if (source_id >> _GAIA_CHECK_SHIFT) in nearby else None
 
 
-def _night_records(night: date, queries: list[Query], to_records: ToRecords) -> list[RawObservation]:
+def _row_night(row: dict, fallback: date) -> date:
+    """The night a row belongs to, from its aat_id (YYYYMMDD + CCD digit +
+    run number)."""
+    try:
+        text = str(row["aat_id"])
+        return date(int(text[:4]), int(text[4:6]), int(text[6:8]))
+    except (KeyError, TypeError, ValueError):
+        return fallback
+
+
+def _fetch_window(first_night: date, stop: date, filters: dict) -> list[tuple[date, list[dict], str]]:
+    """(night, that night's rows, results uuid) for every night with rows
+    in [first_night, stop). A range that fails after _post's own retries is
+    split in half and tried again, down to single nights."""
+    nights = (stop - first_night).days
+    try:
+        if nights == 1:
+            rows, uuid = fetch_night(first_night, filters)
+        else:
+            rows, uuid = fetch_range(first_night, stop, filters)
+    except requests.RequestException:
+        if nights == 1:
+            raise
+        middle = first_night + timedelta(days=nights // 2)
+        logger.warning("aat: %s to %s failed as one query, splitting at %s", first_night, stop, middle)
+        return _fetch_window(first_night, middle, filters) + _fetch_window(middle, stop, filters)
+    # Grouped by night because run numbers restart each night: exposures()
+    # merges arms by run number, so it must only ever see one night's rows.
+    by_night: dict[date, list[dict]] = {}
+    for row in rows:
+        by_night.setdefault(_row_night(row, first_night), []).append(row)
+    return [(night, by_night[night], uuid) for night in sorted(by_night)]
+
+
+def _window_records(first_night: date, stop: date, queries: list[Query], to_records: ToRecords) -> list[RawObservation]:
     by_id: dict[str, RawObservation] = {}
     for start, end, filters in queries:
-        if night < date.fromisoformat(start) or (end is not None and night >= date.fromisoformat(end)):
+        query_first = max(first_night, date.fromisoformat(start))
+        query_stop = stop if end is None else min(stop, date.fromisoformat(end))
+        if query_first >= query_stop:
             continue
-        rows, uuid = fetch_night(night, filters)
-        if not rows:
-            continue
-        for record in to_records(rows, results_url(uuid), night):
-            by_id.setdefault(record.archive_obs_id, record)
+        for night, rows, uuid in _fetch_window(query_first, query_stop, filters):
+            for record in to_records(rows, results_url(uuid), night):
+                by_id.setdefault(record.archive_obs_id, record)
     return list(by_id.values())
 
 
-def fetch(cursor: dict, queries: list[Query], to_records: ToRecords) -> tuple[list[RawObservation], dict]:
+def fetch(
+    cursor: dict, queries: list[Query], to_records: ToRecords, window_nights: int = 1,
+) -> tuple[list[RawObservation], dict]:
     night = date.fromisoformat(cursor.get("next_date", min(start for start, _, _ in queries)))
     last_night = date.today() - timedelta(days=INGEST_LAG_DAYS)
 
     records: list[RawObservation] = []
-    for _ in range(MAX_EMPTY_NIGHTS):
-        if night > last_night:
+    walked = 0
+    while night <= last_night:
+        if walked >= MAX_EMPTY_NIGHTS:
+            logger.warning("aat: stepped over MAX_EMPTY_NIGHTS (%d) empty nights, now at %s", MAX_EMPTY_NIGHTS, night)
             break
-        records = _night_records(night, queries, to_records)
-        night += timedelta(days=1)
+        stop = min(night + timedelta(days=window_nights), last_night + timedelta(days=1))
+        records = _window_records(night, stop, queries, to_records)
+        walked += (stop - night).days
+        night = stop
         if records:
             break
-    else:
-        logger.warning("aat: stepped over MAX_EMPTY_NIGHTS (%d) empty nights, now at %s", MAX_EMPTY_NIGHTS, night)
 
     return records, {"next_date": night.isoformat()}

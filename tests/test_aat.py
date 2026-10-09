@@ -182,6 +182,166 @@ def test_fetch_gives_up_after_max_empty_nights_but_keeps_its_place(monkeypatch):
     assert cursor == {"next_date": "2000-01-04"}
 
 
+# --- several nights per query ---------------------------------------------
+
+
+def test_fetch_window_asks_once_per_query_and_groups_rows_by_night(monkeypatch):
+    asked = []
+
+    def fake_fetch_range(first_night, stop, filters):
+        asked.append((first_night, stop, filters))
+        # Same run number and OBJECT on two nights: two exposures, not arms
+        # of one, so they must not be merged.
+        return [_frame(20190302100007), _frame(20190305100007), _frame(20190305200007)], "week"
+
+    monkeypatch.setattr(_aat_common, "fetch_range", fake_fetch_range)
+    queries = [("1990-01-01", "2019-03-04", {"a": 1}), ("2019-03-03", None, {"b": 2})]
+    records, cursor = _aat_common.fetch({"next_date": "2019-03-01"}, queries, _one_record, window_nights=7)
+
+    # Each query is asked only for the part of the window inside its range.
+    assert asked == [
+        (date(2019, 3, 1), date(2019, 3, 4), {"a": 1}),
+        (date(2019, 3, 3), date(2019, 3, 8), {"b": 2}),
+    ]
+    assert sorted(r.archive_obs_id for r in records) == ["20190302100007", "20190305100007"]
+    assert all(r.archive_url.endswith("/results/week") for r in records)
+    assert cursor == {"next_date": "2019-03-08"}
+
+
+def test_fetch_window_steps_over_empty_windows_and_stops_at_the_ingest_lag(monkeypatch):
+    asked = []
+
+    def fake_fetch_range(first_night, stop, filters):
+        asked.append((first_night, stop))
+        return [], None
+
+    monkeypatch.setattr(_aat_common, "fetch_range", fake_fetch_range)
+    last_night = date.today() - timedelta(days=_aat_common.INGEST_LAG_DAYS)
+    start = last_night - timedelta(days=9)
+    records, cursor = _aat_common.fetch({"next_date": start.isoformat()}, [("1990-01-01", None, {})], _one_record, window_nights=7)
+
+    assert records == []
+    # Second window is cut short so it never reaches inside the ingest lag.
+    assert asked == [(start, start + timedelta(days=7)), (start + timedelta(days=7), last_night + timedelta(days=1))]
+    assert cursor == {"next_date": (last_night + timedelta(days=1)).isoformat()}
+
+
+def test_a_window_that_fails_is_split_down_to_single_nights(monkeypatch):
+    asked = []
+
+    def fake_fetch_range(first_night, stop, filters):
+        asked.append(("range", first_night, stop))
+        if (stop - first_night).days > 2:
+            raise _aat_common.requests.Timeout("too big")
+        return [_frame(int(first_night.strftime("%Y%m%d")) * 1_000_000 + 100001)], f"u{first_night.day}"
+
+    def fake_fetch_night(night, filters):
+        asked.append(("night", night))
+        return [_frame(int(night.strftime("%Y%m%d")) * 1_000_000 + 100002)], f"n{night.day}"
+
+    monkeypatch.setattr(_aat_common, "fetch_range", fake_fetch_range)
+    monkeypatch.setattr(_aat_common, "fetch_night", fake_fetch_night)
+    records, cursor = _aat_common.fetch({"next_date": "2019-03-01"}, [("1990-01-01", None, {})], _one_record, window_nights=5)
+
+    assert asked == [
+        ("range", date(2019, 3, 1), date(2019, 3, 6)),
+        ("range", date(2019, 3, 1), date(2019, 3, 3)),
+        ("range", date(2019, 3, 3), date(2019, 3, 6)),
+        ("night", date(2019, 3, 3)),
+        ("range", date(2019, 3, 4), date(2019, 3, 6)),
+    ]
+    assert len(records) == 3
+    assert cursor == {"next_date": "2019-03-06"}
+
+
+def test_only_aat_walks_several_nights_per_query(monkeypatch):
+    seen = {}
+
+    def fake_fetch(cursor, queries, to_records, window_nights=1):
+        seen[to_records.__module__] = window_nights
+        return [], cursor
+
+    monkeypatch.setattr(_aat_common, "fetch", fake_fetch)
+    aat.fetch({})
+    aat_2df.fetch({})
+    assert seen == {"sync.archives.aat": 7, "sync.archives.aat_2df": 1}
+
+
+# --- back-off -------------------------------------------------------------
+
+
+class _Response:
+    def __init__(self, status, payload=None, headers=None):
+        self.status_code = status
+        self._payload = payload
+        self.headers = headers or {}
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise _aat_common.requests.HTTPError(f"HTTP {self.status_code}")
+
+
+@pytest.fixture
+def backoff(monkeypatch):
+    """Scripted answers for requests.post, with sleeps recorded, not slept."""
+    state = {"answers": [], "sleeps": [], "posts": 0}
+
+    def fake_post(url, **kwargs):
+        state["posts"] += 1
+        answer = state["answers"].pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(_aat_common.requests, "post", fake_post)
+    monkeypatch.setattr(_aat_common.time, "sleep", state["sleeps"].append)
+    monkeypatch.setattr(_aat_common, "_pause_seconds", 0.0)
+    return state
+
+
+def test_post_backs_off_on_429_and_then_paces_every_request(backoff):
+    ok = _Response(200, [{"uuid": "u", "count": 0, "results": []}])
+    backoff["answers"] = [_Response(429), _Response(429, headers={"Retry-After": "45"}), ok, ok]
+
+    assert _aat_common._post({})["uuid"] == "u"
+    # First retry waits the schedule's first step; the pause before every
+    # request starts at 1s and doubles; a Retry-After header wins.
+    assert backoff["sleeps"] == [30, 1.0, 45.0, 2.0]
+
+    backoff["sleeps"].clear()
+    _aat_common._post({})
+    assert backoff["sleeps"] == [2.0]
+
+
+def test_post_retries_server_and_connection_errors_then_gives_up(backoff):
+    ok = _Response(200, [{"uuid": "u", "count": 0, "results": []}])
+    backoff["answers"] = [_Response(503), _aat_common.requests.ConnectionError("reset"), ok]
+    assert _aat_common._post({})["uuid"] == "u"
+    assert backoff["sleeps"] == [30, 60]
+
+    backoff["sleeps"].clear()
+    backoff["answers"] = [_Response(500)] * (len(_aat_common.RETRY_WAITS_SECONDS) + 1)
+    with pytest.raises(_aat_common.requests.HTTPError):
+        _aat_common._post({})
+    assert backoff["sleeps"] == list(_aat_common.RETRY_WAITS_SECONDS)
+
+
+def test_post_retries_a_timeout_once_and_does_not_retry_a_bad_request(backoff):
+    backoff["answers"] = [_aat_common.requests.Timeout("slow"), _aat_common.requests.Timeout("slow")]
+    with pytest.raises(_aat_common.requests.Timeout):
+        _aat_common._post({})
+    assert backoff["posts"] == 2
+
+    backoff["posts"] = 0
+    backoff["answers"] = [_Response(400)]
+    with pytest.raises(_aat_common.requests.HTTPError):
+        _aat_common._post({})
+    assert backoff["posts"] == 1
+
+
 # --- aat: single-object spectrographs -------------------------------------
 
 

@@ -136,5 +136,13 @@ def to_records(rows: list[dict], url: str, night: date) -> list[RawObservation]:
     return records
 
 
+# Nights walked per query. A night here is ~30 science exposures among a few
+# hundred raw frames, and the archive answers a week as fast as a night (see
+# _aat_common's docstring), so one night at a time spent most of its
+# requests on small or empty nights. aat_2df stays at one night: its pages
+# already carry ~10MB of fibre tables each.
+WINDOW_NIGHTS = 7
+
+
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
-    return _aat_common.fetch(cursor, QUERIES, to_records)
+    return _aat_common.fetch(cursor, QUERIES, to_records, window_nights=WINDOW_NIGHTS)
