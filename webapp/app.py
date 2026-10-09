@@ -2403,8 +2403,7 @@ CMD_TEMPLATE = """
         <label>{{ f.label }} max <input type="number" step="any" name="{{ f.name }}_max" value="{{ f.max }}"></label>
         {% endfor %}
       </div>
-      <p class="note">Min and max are inclusive; leave either blank for no limit. A star with no value for a
-        parameter you filter on is left out.</p>
+      <p class="note">Limits are inclusive; blank means no limit. Stars missing a filtered value are left out.</p>
     </details>
     <button type="submit">Show</button>
   </form>
@@ -2445,30 +2444,24 @@ CMD_TEMPLATE = """
       } catch (e) {}
     })();
   </script>
-  <p class="note">T<sub>eff</sub>, log g and [M/H] are Gaia DR3 GSP-Phot values (<code>teff_gspphot</code>,
-    <code>logg_gspphot</code>, <code>mh_gspphot</code>), copied as published from Gaia's own pipeline — from the
-    low-resolution BP/RP spectra, parallax and G magnitude, not from any spectrum listed here — with no quality
-    cuts or recalibration applied. Trust them as far as you trust GSP-Phot for that kind of star; many stars have
-    none at all.</p>
-  <p class="note">Resolution and wavelength selections use each instrument's published range and include any
-    instrument whose range reaches into the selection, so one covering R&nbsp;≈&nbsp;28,000–90,000 counts as both
-    “high” and “very high” resolution. See the <a href="/instruments">Instruments</a> tab for the ranges.</p>
   <p><strong>{{ preset.label }}:</strong>
     {{ "{:,}".format(preset.n_stars) }} star{{ "s" if preset.n_stars != 1 else "" }} with matched spectra{% if preset.n_plottable != preset.n_stars %},
-    {{ "{:,}".format(preset.n_plottable) }} of them with the Gaia photometry or GSP-Phot parameters needed to place them here{% endif %}.
-    {% if truncated %}Only the {{ "{:,}".format(max_stars) }} most-observed of those are kept for this page, so the
-    filters, counts and CSV below cover just those {{ "{:,}".format(max_stars) }}.{% endif %}
+    {{ "{:,}".format(preset.n_plottable) }} plottable{% endif %}.
+    {% if truncated %}Only the {{ "{:,}".format(max_stars) }} most-observed are kept; filters, counts and CSV cover just those.{% endif %}
     {% if filters_active %}{{ "{:,}".format(n_match) }} match your filters.{% endif %}
-    {% if n_match %}<a href="?{{ csv_query }}">Download {{ "this list" if not filters_active else "the matching stars" }} as CSV</a>
-    ({{ "{:,}".format(n_match) }} star{{ "s" if n_match != 1 else "" }}: Gaia source_id, name, G, BP−RP, absolute G, T<sub>eff</sub>, log g, [M/H], number of observations).{% endif %}
+    {% if n_match %}<a href="?{{ csv_query }}">Download CSV</a> ({{ "{:,}".format(n_match) }} star{{ "s" if n_match != 1 else "" }}).{% endif %}
   </p>
   {% if n_in_view > source_ids|length %}
-  <p class="note">Only the {{ "{:,}".format(sample_size) }} most-observed are displayed, of {{ "{:,}".format(n_in_view) }}
-    that could be drawn in this view — the CSV has them all.</p>
+  <p class="note">Showing the {{ "{:,}".format(sample_size) }} most-observed of {{ "{:,}".format(n_in_view) }}; the CSV has them all.
+    Click a point for that star's holdings.</p>
   {% elif source_ids %}
-  <p class="note">Displaying {{ "{:,}".format(source_ids|length) }} star{{ "s" if source_ids|length != 1 else "" }}{% if n_in_view != n_match %}
-    ({{ "{:,}".format(n_match - n_in_view) }} more lack the values this view needs){% endif %}. Click a point to see that star's holdings.</p>
+  <p class="note">Showing {{ "{:,}".format(source_ids|length) }} star{{ "s" if source_ids|length != 1 else "" }}{% if n_in_view != n_match %}
+    ({{ "{:,}".format(n_match - n_in_view) }} more lack the values this view needs){% endif %}. Click a point for that star's holdings.</p>
   {% endif %}
+  <p class="note">T<sub>eff</sub>, log g and [M/H] are Gaia DR3 GSP-Phot values as published, with no quality
+    cuts. Many stars have none.</p>
+  <p class="note">Resolution and wavelength selections include any instrument whose published range overlaps
+    them, so one instrument can count in several. Ranges are on the <a href="/instruments">Instruments</a> tab.</p>
   </div>
   <div class="cmd-main">
   {% if source_ids and view == "kiel" %}
