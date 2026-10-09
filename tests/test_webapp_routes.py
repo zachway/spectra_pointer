@@ -513,7 +513,7 @@ def test_cmd_archive_preset_counts_stars_with_and_without_photometry(client):
     body = client.get(f"/cmd?preset=archive:{WEBAPP_TEST_ARCHIVE_CODE_B}").get_data(as_text=True)
     assert "Webapp Test Archive B:" in body
     assert "2 stars with matched spectra" in body
-    assert "1 of them with the Gaia photometry" in body
+    assert "1 plottable" in body
     assert 'const labels = ["TEST STAR ONE"]' in body
 
 
