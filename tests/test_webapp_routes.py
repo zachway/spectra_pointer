@@ -517,6 +517,38 @@ def test_cmd_archive_preset_counts_stars_with_and_without_photometry(client):
     assert 'const labels = ["TEST STAR ONE"]' in body
 
 
+def test_cmd_picker_is_archive_then_instrument(client):
+    archive_key = f"archive:{WEBAPP_TEST_ARCHIVE_CODE}"
+    inst_key = f"inst:{WEBAPP_TEST_ARCHIVE_CODE}::TESTSPEC"
+
+    # No archive chosen: archives are listed, instruments are not, and the
+    # instrument row is hidden.
+    body = client.get("/cmd").get_data(as_text=True)
+    assert f'<option value="{archive_key}">Webapp Test Archive</option>' in body
+    assert f'<option value="{inst_key}"' not in body
+    assert '<label id="cmd-inst-row" hidden>' in body
+
+    # Archive chosen: its instruments are offered, none selected.
+    body = client.get(f"/cmd?preset={archive_key}").get_data(as_text=True)
+    assert "Webapp Test Archive:" in body
+    assert f'<option value="{archive_key}" selected>' in body
+    assert f'<option value="{inst_key}">TESTSPEC</option>' in body
+    assert '<label id="cmd-inst-row">' in body
+
+    # Archive plus one of its instruments narrows to that instrument; the
+    # first dropdown still shows the archive.
+    for url in (f"/cmd?preset={archive_key}&inst={inst_key}", f"/cmd?preset={inst_key}"):
+        body = client.get(url).get_data(as_text=True)
+        assert f'<option value="{archive_key}" selected>' in body, url
+        assert f'<option value="{inst_key}" selected>TESTSPEC</option>' in body, url
+        assert "preset=inst%3A" in body, url  # the CSV link is for the instrument
+
+    # An instrument left over from a different archive is ignored.
+    body = client.get(f"/cmd?preset=archive:{WEBAPP_TEST_ARCHIVE_CODE_B}&inst={inst_key}").get_data(as_text=True)
+    assert "Webapp Test Archive B:" in body
+    assert f'<option value="{inst_key}" selected>' not in body
+
+
 def test_cmd_instrument_and_resolution_class_presets(client, webapp_module):
     presets = webapp_module._cmd_presets()
     # TESTSPEC is R ~ 80,000 at 400-700 nm for the export (see conftest).
