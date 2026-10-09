@@ -168,6 +168,22 @@ ARCHIVES = {
     "nova_ar": nova_ar.fetch,
 }
 
+# Archives a run with no --only (the weekly cron) leaves alone, with the
+# reason. Naming one with --only still runs it. Remove an entry when its
+# reason no longer holds.
+PAUSED_ARCHIVES: dict[str, str] = {
+    # 2026-10-08: paging a filtered query for some nights (first seen on
+    # 2001-05-04, obstype=RUN) never answers and stalls the whole Data
+    # Central service while it is pending. Data Central has been asked how
+    # they want this archive accessed; not to be crawled until they reply.
+    "aat": "waiting on Data Central (query that stalls their service)",
+    "aat_2df": "waiting on Data Central (query that stalls their service)",
+}
+
+
+def default_archive_codes() -> list[str]:
+    return sorted(code for code in ARCHIVES if code not in PAUSED_ARCHIVES)
+
 
 def sync_archive(
     conn: psycopg.Connection,
@@ -222,7 +238,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    archive_codes = args.only or sorted(ARCHIVES)
+    archive_codes = args.only or default_archive_codes()
+    if not args.only and PAUSED_ARCHIVES:
+        logger.info("paused, not run unless named with --only: %s", ", ".join(sorted(PAUSED_ARCHIVES)))
 
     failed = []
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:

@@ -53,6 +53,8 @@ import requests
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+# fsspec logs every cache block it fetches at INFO: ~12 lines per file.
+logging.getLogger("fsspec").setLevel(logging.WARNING)
 
 MIRROR_URL = "https://sdsc-users.flatironinstitute.org/~gaia/dr3/hdf5/GaiaSource/"
 _FILE_RE = re.compile(r'href="(GaiaSource_(\d{6})-(\d{6})\.hdf5)"')
