@@ -2343,12 +2343,19 @@ CMD_TEMPLATE = """
   <meta charset="utf-8">
   <title>The Spectra Pointer — Spectroscopy CMD</title>
   <style>""" + SHARED_STYLE + """
-    #cmd-plot { width: 100%; height: 700px; margin-top: 1rem; }
-    .cmd-form { display: flex; flex-wrap: wrap; gap: 0.6rem 1.2rem; align-items: flex-start; }
-    .cmd-form select { font-family: monospace; padding: 0.3rem; max-width: 100%; }
-    .cmd-form details { flex-basis: 100%; }
-    .cmd-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.5rem 1rem; max-width: 700px; margin-top: 0.5rem; }
-    .cmd-filter-grid input { width: 7rem; }
+    /* Controls and notes in a left column, the plot on the right; one
+       column on a narrow screen. */
+    .cmd-layout { display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); gap: 1.5rem; align-items: start; margin-top: 1rem; }
+    @media (max-width: 800px) { .cmd-layout { grid-template-columns: minmax(0, 1fr); } }
+    .cmd-side > p:first-of-type { margin-top: 1rem; }
+    #cmd-plot { width: 100%; height: 700px; }
+    .cmd-form { display: flex; flex-direction: column; gap: 0.6rem; align-items: stretch; }
+    .cmd-form label { display: block; }
+    .cmd-form label[hidden] { display: none; }
+    .cmd-form select { font-family: monospace; padding: 0.3rem; width: 100%; box-sizing: border-box; margin-top: 0.2rem; }
+    .cmd-form button { align-self: flex-start; }
+    .cmd-filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem 0.8rem; margin-top: 0.5rem; }
+    .cmd-filter-grid input { width: 100%; box-sizing: border-box; }
   </style>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 </head>
@@ -2357,20 +2364,28 @@ CMD_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
+  <div class="cmd-layout">
+  <div class="cmd-side">
   <form method="get" action="/cmd" class="cmd-form">
     <label>Stars with matched spectra from
-      <select name="preset">
+      <select name="preset" id="cmd-preset">
         <optgroup label="By resolution and wavelength">
           {% for p in class_presets %}
-          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == preset.preset_key else "" }}>{{ p.label }}</option>
+          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == picked_key else "" }}>{{ p.label }}</option>
           {% endfor %}
         </optgroup>
-        {% for g in archive_preset_groups %}
-        <optgroup label="{{ g.label }}">
-          {% for p in g.presets %}
-          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == preset.preset_key else "" }}>{{ p.label }}{% if p.kind == "archive" %} — all instruments{% endif %}</option>
+        <optgroup label="By archive">
+          {% for p in archive_presets %}
+          <option value="{{ p.preset_key }}"{{ " selected" if p.preset_key == picked_key else "" }}>{{ p.label }}</option>
           {% endfor %}
         </optgroup>
+      </select>
+    </label>
+    <label id="cmd-inst-row"{{ "" if instruments_by_archive.get(picked_key) else " hidden" }}>Instrument
+      <select name="inst" id="cmd-inst">
+        <option value="">All instruments</option>
+        {% for o in instruments_by_archive.get(picked_key, []) %}
+        <option value="{{ o.key }}"{{ " selected" if o.key == preset.preset_key else "" }}>{{ o.label }}</option>
         {% endfor %}
       </select>
     </label>
@@ -2393,6 +2408,23 @@ CMD_TEMPLATE = """
     </details>
     <button type="submit">Show</button>
   </form>
+  <script>
+    // Choosing an archive refills the instrument list with that archive's
+    // instruments; anything that isn't an archive hides it.
+    (function () {
+      const instruments = {{ instruments_by_archive | tojson }};
+      const preset = document.getElementById('cmd-preset');
+      const inst = document.getElementById('cmd-inst');
+      const row = document.getElementById('cmd-inst-row');
+      preset.addEventListener('change', function () {
+        const options = instruments[preset.value] || [];
+        inst.length = 1;
+        inst.value = '';
+        for (const o of options) inst.add(new Option(o.label, o.key));
+        row.hidden = options.length === 0;
+      });
+    })();
+  </script>
   <p class="note">T<sub>eff</sub>, log g and [M/H] are Gaia DR3 GSP-Phot values (<code>teff_gspphot</code>,
     <code>logg_gspphot</code>, <code>mh_gspphot</code>), copied as published from Gaia's own pipeline — from the
     low-resolution BP/RP spectra, parallax and G magnitude, not from any spectrum listed here — with no quality
@@ -2417,6 +2449,8 @@ CMD_TEMPLATE = """
   <p class="note">Displaying {{ "{:,}".format(source_ids|length) }} star{{ "s" if source_ids|length != 1 else "" }}{% if n_in_view != n_match %}
     ({{ "{:,}".format(n_match - n_in_view) }} more lack the values this view needs){% endif %}. Click a point to see that star's holdings.</p>
   {% endif %}
+  </div>
+  <div class="cmd-main">
   {% if source_ids and view == "kiel" %}
     <div id="cmd-plot"></div>
     <script>
@@ -2552,6 +2586,8 @@ CMD_TEMPLATE = """
   {% else %}
     <p>No stars in this selection have both BP/RP photometry and a positive parallax{{ " within your filters" if filters_active else "" }}.</p>
   {% endif %}
+  </div>
+  </div>
 """ + FOOTER_HTML + """
 </body>
 </html>
@@ -2587,19 +2623,27 @@ def _cmd_presets() -> dict[str, dict]:
     return _cmd_presets_cache
 
 
-def _cmd_archive_preset_groups(presets: dict[str, dict]) -> list[dict]:
-    """Archive and instrument presets as one <optgroup> per archive: the
-    archive's own preset first, then its instruments."""
-    groups: dict[str, dict] = {}
+def _cmd_instrument_archive_key(preset_key: str) -> str:
+    """The archive preset an instrument preset belongs to."""
+    return "archive:" + preset_key.removeprefix("inst:").split(OVERLAP_SIDE_SEPARATOR, 1)[0]
+
+
+def _cmd_archive_picker(presets: dict[str, dict]) -> tuple[list[dict], dict[str, list[dict]]]:
+    """The two-step picker's contents: archive presets by name, and each
+    archive's instrument presets by name, keyed by the archive's preset_key.
+    One flat list of every instrument was unusable once an archive with
+    hundreds of them (BeSS) was in it."""
+    archives = sorted((p for p in presets.values() if p["kind"] == "archive"), key=lambda p: p["label"].lower())
+    instruments: dict[str, list[dict]] = {}
     for p in presets.values():
-        if p["kind"] == "archive":
-            code = p["preset_key"].removeprefix("archive:")
-            groups.setdefault(code, {"label": p["label"], "presets": []})["presets"].insert(0, p)
-            groups[code]["label"] = p["label"]
-        elif p["kind"] == "instrument":
-            code = p["preset_key"].removeprefix("inst:").split(OVERLAP_SIDE_SEPARATOR, 1)[0]
-            groups.setdefault(code, {"label": code, "presets": []})["presets"].append(p)
-    return sorted(groups.values(), key=lambda g: g["label"].lower())
+        if p["kind"] == "instrument":
+            name = p["preset_key"].removeprefix("inst:").split(OVERLAP_SIDE_SEPARATOR, 1)[-1]
+            instruments.setdefault(_cmd_instrument_archive_key(p["preset_key"]), []).append(
+                {"key": p["preset_key"], "label": name or "(unnamed)"}
+            )
+    for options in instruments.values():
+        options.sort(key=lambda o: o["label"].lower())
+    return archives, instruments
 
 
 @app.route("/cmd")
@@ -2612,6 +2656,15 @@ def cmd():
     # preset's already-bounded star list.
     presets = _cmd_presets()
     preset = presets.get(request.args.get("preset", "").strip()) or presets.get("all")
+    # Archive first, then (optionally) one of its instruments: `inst` only
+    # counts when it belongs to the archive chosen in `preset`, so a stale
+    # value left over from another archive falls back to the whole archive.
+    instrument = presets.get(request.args.get("inst", "").strip())
+    if (
+        instrument is not None and instrument["kind"] == "instrument" and preset is not None
+        and _cmd_instrument_archive_key(instrument["preset_key"]) == preset["preset_key"]
+    ):
+        preset = instrument
     view = request.args.get("view", "").strip()
     if view not in CMD_VIEWS:
         view = "cmd"
@@ -2660,6 +2713,10 @@ def cmd():
         params,
     )
     rows = _rows_as_dicts(cur)
+    archive_presets, instruments_by_archive = _cmd_archive_picker(presets)
+    picked_key = (
+        _cmd_instrument_archive_key(preset["preset_key"]) if preset["kind"] == "instrument" else preset["preset_key"]
+    )
     return render_template_string(
         CMD_TEMPLATE,
         xs=[r["x"] for r in rows],
@@ -2671,7 +2728,10 @@ def cmd():
         max_stars=CMD_PRESET_MAX_STARS,
         preset=preset,
         class_presets=[p for p in presets.values() if p["kind"] == "class"],
-        archive_preset_groups=_cmd_archive_preset_groups(presets),
+        archive_presets=archive_presets,
+        instruments_by_archive=instruments_by_archive,
+        # What the first dropdown shows: an instrument preset shows its archive.
+        picked_key=picked_key,
         view=view,
         filter_fields=filter_fields,
         filters_active=filters_active,
