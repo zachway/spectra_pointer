@@ -2424,6 +2424,26 @@ CMD_TEMPLATE = """
         row.hidden = options.length === 0;
       });
     })();
+    // Submitting reloads the page; put the reader back where they were
+    // instead of at the top. sessionStorage can be unavailable (private
+    // windows), in which case the page just loads at the top as before.
+    (function () {
+      const key = 'cmd-scroll-y';
+      try {
+        const saved = sessionStorage.getItem(key);
+        if (saved !== null) {
+          sessionStorage.removeItem(key);
+          const restore = function () { window.scrollTo(0, parseInt(saved, 10) || 0); };
+          // Once when the page is laid out, and again after the header
+          // image has loaded and pushed everything down.
+          document.addEventListener('DOMContentLoaded', restore);
+          window.addEventListener('load', restore);
+        }
+        document.querySelector('.cmd-form').addEventListener('submit', function () {
+          sessionStorage.setItem(key, String(window.scrollY));
+        });
+      } catch (e) {}
+    })();
   </script>
   <p class="note">T<sub>eff</sub>, log g and [M/H] are Gaia DR3 GSP-Phot values (<code>teff_gspphot</code>,
     <code>logg_gspphot</code>, <code>mh_gspphot</code>), copied as published from Gaia's own pipeline — from the
