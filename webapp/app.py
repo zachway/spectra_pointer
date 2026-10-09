@@ -2581,15 +2581,25 @@ CMD_TEMPLATE = """
         },
       ], {
         xaxis: { title: 'BP - RP (mag)' },
-        // Same Mamajek Bp-Rp-at-mid-type anchors as the marker colorscale
-        // above, just three more of them (B/A/F) for a legible top axis --
-        // O5V/B5V extrapolated (see the colorscale comment), A5V/F5V/G5V/
-        // K5V/M5V tabulated directly.
+        // Top axis shows each class as a Bp-Rp *range*, from the same
+        // SPECTRAL_TYPE_BOUNDS as the marker colorscale: a tick mark and a
+        // dotted line at every class boundary (the minor ticks), and the
+        // letter centered between its two boundaries with no tick mark of
+        // its own (the major ticks). A lone tick per class at its *5V color
+        // -- what this used to be -- read as "M starts at Bp-Rp 3.35", when
+        // M0V is 1.84 and most M dwarfs plotted sit well blueward of M5V.
+        // The O5V bound gets no boundary tick since it isn't a class start.
         xaxis2: {
           overlaying: 'x', matches: 'x', side: 'top',
           tickmode: 'array',
-          tickvals: [-0.47, -0.24, 0.194, 0.587, 0.85, 1.43, 3.35],
+          tickvals: SPECTRAL_TYPE_BOUNDS.slice(1).map((hi, i) => (SPECTRAL_TYPE_BOUNDS[i] + hi) / 2),
           ticktext: ['O', 'B', 'A', 'F', 'G', 'K', 'M'],
+          ticks: '', showgrid: false,
+          minor: {
+            tickmode: 'array', tickvals: SPECTRAL_TYPE_BOUNDS.slice(1),
+            ticks: 'outside', ticklen: 8,
+            showgrid: true, griddash: 'dot', gridcolor: 'rgba(0,0,0,0.25)',
+          },
           title: 'Spectral type (dwarfs, Mamajek)',
         },
         yaxis: { title: 'Absolute G magnitude', autorange: 'reversed' },
