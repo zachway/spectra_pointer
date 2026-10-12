@@ -1096,6 +1096,9 @@ PAGE_TEMPLATE = """
       <dt>RA, Dec</dt><dd>{{ "%.6f"|format(star.ra) }}, {{ "%.6f"|format(star.dec) }}</dd>
       <dt>G mag</dt><dd>{{ star.phot_g_mean_mag if star.phot_g_mean_mag is not none else "—" }}</dd>
       <dt>Gaia XP continuous</dt><dd>{{ "yes" if star.has_xp_continuous else "no" }}</dd>
+      {% if not resolve_only %}
+      <dt>Total spectra</dt><dd>{{ "{:,}".format(holdings_total) }}</dd>
+      {% endif %}
       <dt>Known as</dt><dd>{{ (star.name_aliases | join(", ")) if star.name_aliases else (star.input_name or "—") }}</dd>
     </dl>
 
