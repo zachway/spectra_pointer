@@ -63,6 +63,18 @@ def test_search_star_with_no_holdings_shows_empty_results(client):
     assert "No spectroscopy holdings found for this star yet." in resp.get_data(as_text=True)
 
 
+def test_star_page_shows_total_spectra_with_other_metadata(client):
+    total = "<dt>Total spectra</dt><dd>{}</dd>"
+    assert total.format(3) in client.get(f"/?q={WEBAPP_TEST_STAR_1}").get_data(as_text=True)
+    assert total.format(0) in client.get(f"/?q={WEBAPP_TEST_STAR_2}").get_data(as_text=True)
+    # The star's own total, not the advanced-search-filtered count.
+    filtered = client.get(f"/?q={WEBAPP_TEST_STAR_1}&adv_source={WEBAPP_TEST_ARCHIVE_CODE_B}").get_data(as_text=True)
+    assert "Showing 1 of 3 observations" in filtered
+    assert total.format(3) in filtered
+    # resolve_only never queries holdings, so it has no total to show.
+    assert "Total spectra" not in client.get(f"/?q={WEBAPP_TEST_STAR_1}&resolve_only=1").get_data(as_text=True)
+
+
 def test_search_csv_export_contains_holding_rows(client):
     resp = client.get("/?q=TEST+STAR+ONE&format=csv")
     assert resp.status_code == 200
