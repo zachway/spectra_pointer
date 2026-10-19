@@ -96,6 +96,22 @@ app = Flask(__name__)
 # directly against gunicorn/Flask's dev server, without the proxy in front.
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+
+def archive_instrument_label(display_name: str, instrument: str | None, empty: str = "—") -> str:
+    """"<archive> — <instrument>", or just the archive when its name already
+    says the instrument (DESI/DESI, "Las Cumbres Observatory — FLOYDS"/
+    FLOYDS, "SALT HRS (SAAO SSDA)"/HRS) instead of repeating it. Archive
+    display names deliberately don't list several instruments (see
+    db/migrations/0017), so a contained instrument is always *the* one."""
+    if not instrument:
+        return f"{display_name} — {empty}" if empty else display_name
+    if re.search(rf"(?<!\w){re.escape(instrument)}(?!\w)", display_name, re.IGNORECASE):
+        return display_name
+    return f"{display_name} — {instrument}"
+
+
+app.jinja_env.globals["archive_instrument_label"] = archive_instrument_label
+
 # ProxyFix (above) only fixes up SCRIPT_NAME/url_for() -- but every nav
 # link, form action, and JS fetch() in this app's hand-written HTML is a
 # hardcoded absolute path (e.g. `href="/instruments"`), not url_for(), so
@@ -441,7 +457,7 @@ def _wavelength_coverage_bars(holdings_groups: list[dict]) -> dict | None:
             continue
         bars.append({
             "archive": g["display_name"],
-            "label": f"{g['display_name']} — {g['instrument']}",
+            "label": archive_instrument_label(g["display_name"], g["instrument"]),
             "resolving_power": g["resolving_power"],
             "wave_min": coverage[0],
             "wave_max": coverage[1],
@@ -930,7 +946,7 @@ PAGE_TEMPLATE = """
             <optgroup label="{{ arc.display_name }}">
               <option value="{{ arc.archive_code }}">{{ arc.display_name }} — all instruments</option>
               {% for inst in arc.instruments %}
-              <option value="{{ arc.archive_code }}::{{ inst }}">{{ arc.display_name }} — {{ inst }}</option>
+              <option value="{{ arc.archive_code }}::{{ inst }}">{{ archive_instrument_label(arc.display_name, inst) }}</option>
               {% endfor %}
             </optgroup>
             {% endfor %}
@@ -1453,7 +1469,7 @@ PAGE_TEMPLATE = """
       {% for g in holdings %}
       <details{% if holdings|length == 1 %} open{% endif %}>
         <summary class="summary-row">
-          <span>{{ g.display_name }} — {{ g.instrument or "—" }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %}</span>
+          <span>{{ archive_instrument_label(g.display_name, g.instrument) }}{% if g.instrument and g.resolving_power != "—" %} ({{ g.resolving_power }}){% endif %}</span>
           <span class="summary-count">{{ g.observations|length }} observation{{ "s" if g.observations|length != 1 else "" }}</span>
         </summary>
         <table>
@@ -1625,7 +1641,7 @@ PAGE_TEMPLATE = """
             <option value="{{ arc.archive_code }}"{{ " selected" if selected == arc.archive_code else "" }}>{{ arc.display_name }} — all instruments</option>
             {% for inst in arc.instruments %}
             {% set v = arc.archive_code ~ "::" ~ inst %}
-            <option value="{{ v }}"{{ " selected" if selected == v else "" }}>{{ arc.display_name }} — {{ inst }}</option>
+            <option value="{{ v }}"{{ " selected" if selected == v else "" }}>{{ archive_instrument_label(arc.display_name, inst) }}</option>
             {% endfor %}
           </optgroup>
           {% endfor %}
@@ -2117,7 +2133,7 @@ def search():
     # trimming the data.
     spectrum_groups = [
         {
-            "label": f"{g['display_name']} — {g['instrument'] or '—'}",
+            "label": archive_instrument_label(g["display_name"], g["instrument"]),
             # Short form for the plot legend -- the full "label" above is
             # right for the dropdown, but repeated per trace it's the kind
             # of clutter that made the legend eat most of the plot's width
@@ -2162,7 +2178,7 @@ SPECTRUM_TEMPLATE = """
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
   <p><a href="/?q={{ star_search_id }}">&larr; back to {{ known_as }}</a></p>
-  <h2>{{ known_as }} — {{ holding.display_name }}{% if holding.instrument %} ({{ holding.instrument }}){% endif %}</h2>
+  <h2>{{ known_as }} — {{ archive_instrument_label(holding.display_name, holding.instrument, "") }}</h2>
   <p class="note">{{ holding.obs_date or "no observation date recorded" }} &middot; reduction: {{ holding.reduction_status }}
     &middot; <a href="{{ holding.archive_url }}" target="_blank" rel="noopener">archive file</a></p>
   {% if error %}
@@ -3368,7 +3384,7 @@ def _advanced_matches_for_star_ids(cur: duckdb.DuckDBPyConnection, star_ids: lis
     matches: dict[int, list[str]] = defaultdict(list)
     for r in _rows_as_dicts(cur):
         if _holding_matches_advanced_filters(r, filters):
-            label = f"{r['display_name']} — {r['instrument'] or '—'}"
+            label = archive_instrument_label(r["display_name"], r["instrument"])
             if label not in matches[r["star_id"]]:
                 matches[r["star_id"]].append(label)
     return matches
@@ -3573,7 +3589,7 @@ def _overlap_side_options() -> tuple[list[dict], dict[str, dict]]:
             sides[code] = {"value": code, "archive_code": code, "instrument": None, "label": name}
             for inst in insts:
                 value = f"{code}{OVERLAP_SIDE_SEPARATOR}{inst}"
-                sides[value] = {"value": value, "archive_code": code, "instrument": inst, "label": f"{name} — {inst}"}
+                sides[value] = {"value": value, "archive_code": code, "instrument": inst, "label": archive_instrument_label(name, inst)}
         _overlap_side_options_cache = (groups, sides)
     return _overlap_side_options_cache
 
@@ -3808,9 +3824,9 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     '4MOST': 'https://www.4most.eu/',
     'RAVE': 'https://www.rave-survey.org/',
     'CARMENES': 'http://carmenes.cab.inta-csic.es/',
-    'CARMENES (CAHA archive, VIS+NIR)': 'https://caha.sdc.cab.inta-csic.es/',
-    'LBT — PEPSI, MODS, LUCI': 'https://archive.lbto.org/',
-    'Lick / Mt. Hamilton (Shane + APF)': 'https://mthamilton.ucolick.org/',
+    'CARMENES (CAHA archive)': 'https://caha.sdc.cab.inta-csic.es/',
+    'LBT Archive': 'https://archive.lbto.org/',
+    'Lick Observatory (Mt. Hamilton)': 'https://mthamilton.ucolick.org/',
     'FEROS Public Spectra (GAVO)': 'https://dc.g-vo.org/',
     'Flash/Heros Public Spectra (GAVO)': 'https://dc.g-vo.org/',
     'Asiago Observatory — Echelle': 'http://archives.ia2.inaf.it/',
@@ -3818,7 +3834,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'ELODIE (OHP)': 'http://atlas.obs-hp.fr/elodie/',
     'SOPHIE (OHP)': 'http://atlas.obs-hp.fr/sophie/',
     'SALT HRS (SAAO SSDA)': 'https://ssda.saao.ac.za/',
-    'ING Archive (WHT/ISIS)': 'http://casu.ast.cam.ac.uk/casuadc/ingarch',
+    'ING Archive': 'http://casu.ast.cam.ac.uk/casuadc/ingarch',
     'NAOJ — Subaru HDS (via JVO)': 'https://jvo.nao.ac.jp/',
     'NEID (WIYN, Kitt Peak)': 'https://neid.ipac.caltech.edu/',
     'NOT (Nordic Optical Telescope) — FIES': 'https://www.not.iac.es/',
@@ -3833,12 +3849,12 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'Las Cumbres Observatory — FLOYDS': 'https://lco.global/',
     'Las Cumbres Observatory — NRES': 'https://lco.global/',
     'Ondrejov Observatory — CCD700': 'http://voarchive.asu.cas.cz/',
-    'PolarBase (ESPaDOnS/Narval/neo-Narval/SPIRou/HARPSpol spectropolarimetry)': 'https://www.polarbase.ovgso.fr/',
+    'PolarBase (spectropolarimetry)': 'https://www.polarbase.ovgso.fr/',
     'NAOJ — Subaru MOIRCS (via JVO)': 'https://jvo.nao.ac.jp/',
     'IACOB Spectroscopic Database (IAC)': 'http://research.iac.es/proyecto/iacob/',
     'SVO CAB Stellar Libraries': 'http://svo2.cab.inta-csic.es/',
     'IRSA Space-Mission Stellar Collections': 'https://irsa.ipac.caltech.edu/',
-    'Spitzer Heritage Archive (IRS + MIPS-SED)': 'https://sha.ipac.caltech.edu/applications/Spitzer/SHA/',
+    'Spitzer Heritage Archive': 'https://sha.ipac.caltech.edu/applications/Spitzer/SHA/',
     'Anglo-Australian Telescope Archive': 'https://archives.datacentral.org.au/',
     'Anglo-Australian Telescope Archive — AAOmega (2dF)': 'https://archives.datacentral.org.au/',
     'XMM-Newton RGS': 'https://nxsa.esac.esa.int/',
@@ -5242,7 +5258,7 @@ def batch_search():
             holdings_counts = {sid: len(rows) for sid, rows in holdings_by_source_id.items()}
             if adv_filters:
                 adv_matches_by_source = {
-                    sid: sorted({f"{r['display_name']} — {r['instrument'] or '—'}" for r in rows})
+                    sid: sorted({archive_instrument_label(r["display_name"], r["instrument"]) for r in rows})
                     for sid, rows in holdings_by_source_id.items()
                 }
         else:

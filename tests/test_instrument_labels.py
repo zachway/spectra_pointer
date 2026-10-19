@@ -36,6 +36,25 @@ def test_ing_folds_arm_case(raw, label):
     assert ing._instrument(raw) == label
 
 
+@pytest.mark.parametrize(
+    "archive, instrument, label",
+    [
+        ("LBT Archive", "LUCI", "LBT Archive — LUCI"),
+        ("Las Cumbres Observatory — FLOYDS", "FLOYDS", "Las Cumbres Observatory — FLOYDS"),
+        ("DESI", "DESI", "DESI"),
+        ("SALT HRS (SAAO SSDA)", "HRS", "SALT HRS (SAAO SSDA)"),
+        ("IRTF Legacy Archive", "SpeX", "IRTF Legacy Archive — SpeX"),
+        # whole-word only: a short instrument mustn't vanish inside a longer word
+        ("Gaia RVS", "RV", "Gaia RVS — RV"),
+        ("MAST", None, "MAST — —"),
+    ],
+)
+def test_archive_instrument_label(archive, instrument, label):
+    from webapp.app import archive_instrument_label
+
+    assert archive_instrument_label(archive, instrument) == label
+
+
 def test_noirlab_no_longer_pulls_sami_imager():
     assert "sami" not in noirlab.INSTRUMENTS
 

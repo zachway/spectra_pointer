@@ -9,7 +9,7 @@ from pathlib import Path
 
 from webapp import instrument_resolving_power, instrument_wavelengths
 
-DISPLAY_NAME = "Spitzer Heritage Archive (IRS + MIPS-SED)"
+DISPLAY_NAME = "Spitzer Heritage Archive"
 
 
 def _row(mode="IRS Stare", key="10649856", name="TWCam", **overrides):
