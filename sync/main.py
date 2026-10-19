@@ -9,9 +9,10 @@ Each archive's fetch() is called repeatedly until it returns no new records.
 Paginated archives (eso, desi, sdss_v_optical's MJD watermark, ...) converge
 to their current edge; static/gated archives (rave, galah, sdss_v_apogee's
 one-shot pulls, carmenes) short-circuit to a no-op after their first run via
-their own cursor. One archive failing doesn't stop the others — the error is
-logged, the connection is rolled back so the failure can't poison the next
-archive's transaction, and the driver moves on. Not-yet-implemented archives
+their own cursor. A page that hits an archive-side hiccup (timeout, 429,
+5xx) is retried a few times first (sync.retry). One archive failing doesn't
+stop the others — the error is logged, the connection is rolled back so the
+failure can't poison the next archive's transaction, and the driver moves on. Not-yet-implemented archives
 (weave, four_most) aren't registered here at all — they have no public data.
 
 gemini_ghost and gemini_igrins both need a GOA_SESSION_COOKIE env var (see
@@ -97,6 +98,7 @@ from sync.archives import (
     xmm,
 )
 from sync.reconcile_eso_raw import reconcile as reconcile_eso_raw
+from sync.retry import with_page_retries
 from sync.runner import run_sync
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -195,7 +197,9 @@ def sync_archive(
     totals: dict[str, int] = {}
     pages = 0
     while max_pages is None or pages < max_pages:
-        counts, gaia_degraded = run_sync(conn, archive_code, fetch_fn, offline=offline)
+        counts, gaia_degraded = with_page_retries(
+            conn, archive_code, lambda: run_sync(conn, archive_code, fetch_fn, offline=offline)
+        )
         if gaia_degraded and not offline:
             # A live Gaia TAP call for this page just exhausted its retries
             # and fell back to the local mirror once (see

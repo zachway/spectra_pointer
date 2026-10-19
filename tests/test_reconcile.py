@@ -1,6 +1,7 @@
 from datetime import date
 
 import sync.reconcile as reconcile_module
+import sync.retry as retry_module
 from sync import state
 from sync.base import RawObservation
 from sync.reconcile import reconcile_archive, reconcile_shitty_positional_match
@@ -143,7 +144,7 @@ def test_reconcile_archive_retries_transient_error(conn, monkeypatch):
     import requests
 
     _clear_sync_state(conn, "unit_test")
-    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(retry_module, "RETRY_BACKOFF_SECONDS", 0)
     calls = []
 
     def flaky_fetch(cursor):
@@ -161,7 +162,7 @@ def test_reconcile_archive_does_not_retry_real_bugs(conn, monkeypatch):
     import pytest
 
     _clear_sync_state(conn, "unit_test")
-    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(retry_module, "RETRY_BACKOFF_SECONDS", 0)
     calls = []
 
     def broken_fetch(cursor):
@@ -178,7 +179,7 @@ def test_reconcile_archive_gives_up_after_page_retries(conn, monkeypatch):
     import requests
 
     _clear_sync_state(conn, "unit_test")
-    monkeypatch.setattr(reconcile_module, "RETRY_BACKOFF_SECONDS", 0)
+    monkeypatch.setattr(retry_module, "RETRY_BACKOFF_SECONDS", 0)
     calls = []
 
     def dead_fetch(cursor):
@@ -187,37 +188,4 @@ def test_reconcile_archive_gives_up_after_page_retries(conn, monkeypatch):
 
     with pytest.raises(requests.exceptions.ConnectionError):
         reconcile_archive(conn, "unit_test", dead_fetch, max_pages=1)
-    assert len(calls) == reconcile_module.PAGE_RETRIES
-
-
-def _dal_service_error(status_code):
-    import requests
-    from pyvo.dal.exceptions import DALServiceError
-
-    resp = requests.Response()
-    resp.status_code = status_code
-    return DALServiceError.from_except(requests.HTTPError(str(status_code), response=resp), "https://x/TAP/sync")
-
-
-def test_is_transient_retries_pyvo_wrapped_gateway_timeout():
-    # irtf_spex, 2026-09-30: IRSA's "504 Gateway Time-out" arrives as a
-    # DALServiceError, which none of TRANSIENT_ERRORS' classes match.
-    assert reconcile_module._is_transient(_dal_service_error(504))
-    assert reconcile_module._is_transient(_dal_service_error(502))
-
-
-def test_is_transient_does_not_retry_pyvo_client_errors():
-    assert not reconcile_module._is_transient(_dal_service_error(400))
-    assert not reconcile_module._is_transient(_dal_service_error(404))
-
-
-def test_is_transient_retries_pyvo_wrapped_timeout_without_status():
-    import requests
-    from pyvo.dal.exceptions import DALServiceError
-
-    exc = DALServiceError.from_except(requests.exceptions.ReadTimeout("timed out"), "https://x/TAP/sync")
-    assert reconcile_module._is_transient(exc)
-
-
-def test_is_transient_leaves_real_bugs_alone():
-    assert not reconcile_module._is_transient(KeyError("planeid"))
+    assert len(calls) == retry_module.PAGE_RETRIES

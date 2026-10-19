@@ -35,8 +35,11 @@ WHERE obs_collection = 'DAO' AND dataproduct_type = 'spectrum' AND t_min > {last
 ORDER BY t_min ASC
 """
 
-# Kept well under the cliff found live (20,000 rows already up to 16.9s).
-PAGE_SIZE = 10000
+# Same CADC endpoint and cliff as cfht_cadc (see its PAGE_SIZE): on
+# 2026-10-19 TOP 10000 from the stuck reconcile cursor (t_min 59569.09) was
+# still streaming after 420 s with 3,893 rows, so dao failed the Sep and Oct
+# monthly reconciles on the same page.
+PAGE_SIZE = 5000
 
 # archive_url is the science FITS itself via CADC's file service, not the
 # caom2ops/datalink resolver it used to be (a VOTable listing the files --
