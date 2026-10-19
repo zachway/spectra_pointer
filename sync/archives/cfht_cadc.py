@@ -7,7 +7,8 @@ https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/argus.
 
 Real cliff found live, not just "byte/time-bounded" as previously noted:
 10,000 rows in 6s, 20,000 in 11.4s (~linear), but 30,000 in 59.7s — a sharp
-non-linear jump, not gradual degradation. Paginating well under that.
+non-linear jump, not gradual degradation. It has since moved well below
+that (see PAGE_SIZE); paginating under it.
 
 No Gaia column on ivoa.ObsCore — positional match, same shape as eso.py.
 Deep link is the standard DataLink resolver URL (constructible directly from
@@ -52,8 +53,13 @@ WHERE obs_collection = 'CFHT' AND dataproduct_type = 'spectrum' AND t_min > {las
 ORDER BY t_min ASC
 """
 
-# Kept well under the ~20k-30k cliff found live.
-PAGE_SIZE = 15000
+# The cliff has moved down since it was first measured at ~20k-30k: on
+# 2026-10-19, from the cursor the monthly reconcile was stuck on (t_min
+# 50694.34), TOP 1000/3000/6000 took 4.5/11/26 s (~4 ms/row) while TOP 15000
+# was still streaming after 420 s with 7,870 rows -- past the 180 s read
+# timeout, so cfht_cadc failed the Sep and Oct monthly reconciles on the same
+# page. 5000 stays in the linear part.
+PAGE_SIZE = 5000
 
 DATALINK_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID={did}"
 

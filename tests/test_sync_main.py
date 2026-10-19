@@ -46,6 +46,29 @@ def test_sync_archive_manual_offline_override_starts_offline_from_page_one(conn,
     assert run_sync_calls == [True]
 
 
+def test_sync_archive_retries_a_transient_page_error(conn, monkeypatch):
+    # ing/noirlab, 2026-10-17: one read timeout failed the whole weekly sync
+    # for that archive -- sync.main had no page retry, only sync.reconcile did.
+    import requests
+
+    import sync.retry as retry_module
+
+    monkeypatch.setattr(retry_module, "RETRY_BACKOFF_SECONDS", 0)
+    calls = []
+
+    def flaky_run_sync(conn_, archive_code, fetch_fn, offline=False):
+        calls.append(offline)
+        if len(calls) == 1:
+            raise requests.exceptions.ReadTimeout("slow")
+        return {"skipped": 0}, False
+
+    monkeypatch.setattr(sync_main_module, "run_sync", flaky_run_sync)
+
+    sync_archive(conn, "unit_test", lambda cursor: (None, None), max_pages=1)
+
+    assert len(calls) == 2, "the failed page must be retried once"
+
+
 def _archives_synced_by_main(monkeypatch, argv):
     synced = []
     monkeypatch.setattr(
