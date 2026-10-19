@@ -57,6 +57,9 @@ AND t_min >= {window_start} AND t_min < {window_end}
 
 DATALINK_URL = "https://ws.cadc-ccda.hia-iha.nrc-cnrc.gc.ca/caom2ops/datalink?ID={did}"
 
+# CADC's instrument_name -> the instrument's usual published name.
+_INSTRUMENT_LABELS = {"michelle": "Michelle", "TReCS": "T-ReCS", "F2": "Flamingos-2"}
+
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     window_start = cursor.get("window_start", FIRST_REAL_T_MIN)
@@ -79,7 +82,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             RawObservation(
                 archive_obs_id=did,
                 archive_url=DATALINK_URL.format(did=quote(did, safe="")),
-                instrument=str(row["instrument_name"]),
+                instrument=_INSTRUMENT_LABELS.get(str(row["instrument_name"]), str(row["instrument_name"])),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),

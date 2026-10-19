@@ -89,19 +89,24 @@ FIND_URL = "https://astroarchive.noirlab.edu/api/adv_search/find/"
 PAGE_SIZE = 10000
 
 # Every dedicated spectrograph observed on this API with the same
-# query shape as goodman (the only one originally wired up).
-INSTRUMENTS = [
-    "goodman",
-    "ghts_blue",
-    "ghts_red",
-    "chiron",
-    "echelle",
-    "kosmos",
-    "arcoiris",
-    "triplespec",
-    "cosmos",
-    "sami",
-]
+# query shape as goodman (the only one originally wired up), mapped from the
+# API's own lowercase instrument code (still what the query and the cursor
+# key on) to the label stored on each holding. "echelle" is the CTIO 1.5m
+# echelle (telescope=ct15m on every row sampled 2026-10-19); ghts_red/
+# ghts_blue are Goodman's newer red/blue cameras. "sami" used to be listed
+# here too, but it's the SOAR Adaptive Module *Imager* -- no spectroscopic
+# mode -- so it was dropped (see scripts/backfill_instrument_labels.py).
+INSTRUMENTS = {
+    "goodman": "Goodman",
+    "ghts_blue": "Goodman (blue camera)",
+    "ghts_red": "Goodman (red camera)",
+    "chiron": "CHIRON",
+    "echelle": "CTIO 1.5m Echelle",
+    "kosmos": "KOSMOS",
+    "arcoiris": "ARCoIRIS",
+    "triplespec": "TripleSpec",
+    "cosmos": "COSMOS",
+}
 
 # Pre-existing production cursors from before multi-instrument support was
 # a flat {"last_dateobs": ...} for goodman alone.
@@ -147,7 +152,7 @@ def _fetch_instrument(instrument: str, last_dateobs: str) -> tuple[list[RawObser
             RawObservation(
                 archive_obs_id=row["md5sum"],
                 archive_url=row["url"],
-                instrument=instrument,
+                instrument=INSTRUMENTS[instrument],
                 obs_date=Time(dateobs).to_datetime().date(),
                 program_id=row.get("proposal"),
                 ra=clean_float(row["ra_center"]),

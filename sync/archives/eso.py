@@ -21,6 +21,7 @@ QUERY = """
 SELECT TOP {page_size} dp_id, s_ra, s_dec, t_min, instrument_name, target_name, proposal_id, calib_level
 FROM ivoa.ObsCore
 WHERE dataproduct_type='spectrum' AND obs_collection != ''
+AND instrument_name != 'APEXHET'
 AND t_min > {last_t_min}
 ORDER BY t_min ASC
 """

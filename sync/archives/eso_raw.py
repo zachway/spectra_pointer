@@ -109,6 +109,10 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
         max_mjd = max(max_mjd, mjd_obs)
         dp_id = str(row["dp_id"])
         instrument = str(row["instrument"]).split("/")[0]
+        # X-shooter's commissioning-era code (2008-11 to 2010-04-01; every
+        # row from 2010-04-02 on says XSHOOTER) -- same instrument.
+        if instrument == "SHOOT":
+            instrument = "XSHOOTER"
         ra, dec = _clean_coords(row["ra"], row["dec"])
         records.append(
             RawObservation(

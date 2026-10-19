@@ -9,7 +9,7 @@ production behavior exactly, but never writes to spectroscopy_holdings.
 
 Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.simulate_match_radius \\
-        --archive noirlab --instrument chiron --radii 20,30,45,60,90,120,150,200
+        --archive noirlab --instrument CHIRON --radii 20,30,45,60,90,120,150,200
 """
 
 from __future__ import annotations

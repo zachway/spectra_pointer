@@ -1309,7 +1309,8 @@ def _parse_mast(holding: dict) -> dict:
                 flux = np.asarray(row["ABS_CAL"], dtype=float)[:n] * 1e17
                 # QUALITY != 0 flags saturated/bad/extrapolated pixels
                 flux = np.where(np.asarray(row["QUALITY"])[:n] == 0, flux, np.nan)
-                seg = _segment(f"IUE {instrument} order {int(row['ORDER'])}", wave, flux, None)
+                camera = instrument if instrument.startswith("IUE") else f"IUE {instrument}"
+                seg = _segment(f"{camera} order {int(row['ORDER'])}", wave, flux, None)
                 if seg["wavelength"]:
                     segments.append(seg)
             physical = True
