@@ -49,18 +49,21 @@ Observed end-to-end: Proxima Centauri alone has 4 real HETG exposures
 19708/20073/20080/20084), all with real, populated ra/dec (0 masked across
 the whole HETG/LETG/archived/observed set) and real ISO-8601 start_date
 timestamps.
+
+program_id is `proposal_number` (8-digit CXC proposal number, e.g.
+"01200018"), filled on all 3,258 HETG/LETG rows as of 2026-10-19.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, clean_str, make_tap_service
 
 TAP_URL = "https://cda.harvard.edu/cxctap"
 
 QUERY = """
-SELECT TOP {page_size} obsid, target_name, ra, dec, instrument, grating, start_date
+SELECT TOP {page_size} obsid, target_name, ra, dec, instrument, grating, proposal_number, start_date
 FROM cxc.observation
 WHERE grating IN ('HETG', 'LETG')
   AND status IN ('archived', 'observed')
@@ -102,6 +105,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["ra"]),
                 dec=clean_float(row["dec"]),
                 raw_target_name=str(row["target_name"]),
+                program_id=clean_str(row["proposal_number"]),
             )
         )
 

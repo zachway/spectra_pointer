@@ -64,16 +64,19 @@ at a time — sync.main's driver only stops once a whole page returns zero
 records, so an instrument that's already caught up just contributes an
 empty result on each subsequent call until every instrument is caught up
 together, same pattern as sync/archives/noirlab.py's multi-instrument fetch.
+
+program_id is `progid` (e.g. "U23H", "C282"; "ENG" for engineering time),
+present on all nine tables (checked 2026-10-19).
 """
 
 from astropy.time import Time
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, clean_str, make_tap_service
 
 TAP_URL = "https://koa.ipac.caltech.edu/TAP"
 
 QUERY = """
-SELECT TOP {page_size} koaid, ra, dec, {mjd_col} AS mjd, object, filehand
+SELECT TOP {page_size} koaid, ra, dec, {mjd_col} AS mjd, object, filehand, progid
 FROM {table}
 WHERE koaimtyp='object' AND {mjd_col} > {last_mjd} AND {mjd_col} < {mjd_sanity_bound}
 ORDER BY {mjd_col} ASC
@@ -145,6 +148,7 @@ def _fetch_instrument(tap, instrument: str, table: str, mjd_col: str, last_mjd: 
                 ra=clean_float(row["ra"]),
                 dec=clean_float(row["dec"]),
                 raw_target_name=str(row["object"]),
+                program_id=clean_str(row["progid"]),
                 # Every table queried here is one of KOA's raw per-instrument
                 # tables -- koa_reduced_data (the actual processed-products
                 # table) is deliberately out of scope, see module docstring.

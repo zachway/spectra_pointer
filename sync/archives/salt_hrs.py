@@ -84,6 +84,7 @@ COLUMNS = [
     "observation_time.start_time",
     "artifact.name",
     "artifact.artifact_id",
+    "proposal.proposal_code",
 ]
 
 QUERY = """
@@ -147,6 +148,7 @@ def _to_records(items: list[dict]) -> tuple[list[RawObservation], int]:
                 instrument="HRS",
                 obs_date=obs_date,
                 raw_target_name=meta.get("target.name"),
+                program_id=meta.get("proposal.proposal_code") or None,
             )
         )
     return records, max_start_time_ms
