@@ -3809,7 +3809,7 @@ ARCHIVE_HOMEPAGE_URL: dict[str, str] = {
     'RAVE': 'https://www.rave-survey.org/',
     'CARMENES': 'http://carmenes.cab.inta-csic.es/',
     'CARMENES (CAHA archive, VIS+NIR)': 'https://caha.sdc.cab.inta-csic.es/',
-    'LBT — PEPSI': 'https://archive.lbto.org/',
+    'LBT — PEPSI, MODS, LUCI': 'https://archive.lbto.org/',
     'Lick / Mt. Hamilton (Shane + APF)': 'https://mthamilton.ucolick.org/',
     'FEROS Public Spectra (GAVO)': 'https://dc.g-vo.org/',
     'Flash/Heros Public Spectra (GAVO)': 'https://dc.g-vo.org/',
