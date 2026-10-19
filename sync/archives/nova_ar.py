@@ -83,6 +83,11 @@ def _instrument(raw: str) -> str | None:
         return "REOSC"
     if "boller" in lowered:
         return "Boller & Chivens"
+    # MaGOSS's own "FIRE-LCO" means Las Campanas (Magellan), not Las Cumbres.
+    if text == "FIRE-LCO":
+        return "FIRE (Magellan)"
+    if text == "GNIRS-GEMINI":
+        return "GNIRS (Gemini)"
     return text or None
 
 

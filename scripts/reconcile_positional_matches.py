@@ -18,7 +18,7 @@ wider candidate radius pulls in an extra star.
 Usage:
     DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_positional_matches
     # scoped to one archive/instrument (faster, e.g. for a quick before/after check):
-    DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_positional_matches --archive noirlab --instrument chiron
+    DATABASE_URL=postgresql:///spectra_local python3 -m scripts.reconcile_positional_matches --archive noirlab --instrument CHIRON
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def reconcile(conn: psycopg.Connection, archive_filter: str | None = None, instr
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--archive", default=None, help="only re-check this archive_code (e.g. noirlab)")
-    parser.add_argument("--instrument", default=None, help="only re-check this instrument (e.g. chiron)")
+    parser.add_argument("--instrument", default=None, help="only re-check this instrument (e.g. CHIRON)")
     args = parser.parse_args()
 
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:

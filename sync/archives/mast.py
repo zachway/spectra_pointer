@@ -84,7 +84,7 @@ from sync.base import RawObservation, clean_float, make_tap_service, reduction_s
 TAP_URL = "https://mast.stsci.edu/vo-tap/api/v0.1/caom"
 
 QUERY = """
-SELECT TOP {page_size} obs_id, s_ra, s_dec, t_min, instrument_name, target_name, access_url, calib_level
+SELECT TOP {page_size} obs_id, obs_collection, s_ra, s_dec, t_min, instrument_name, target_name, access_url, calib_level
 FROM ivoa.obscore
 WHERE dataproduct_type='spectrum' AND obs_collection IN ('HST', 'IUE', 'FUSE', 'EUVE', 'HUT', 'TUES', 'BEFS', 'WUPPE')
 AND access_format IN ('application/fits', 'image/fits')
@@ -98,6 +98,26 @@ PAGE_SIZE = 20000
 # IUE/FUSE (observed on both) -- the one row per obs_id worth
 # keeping when an obs_id has several (raw/calibration/housekeeping/...).
 _CANONICAL_SUFFIX = "_vo.fits"
+
+# CAOM's instrument_name alone is ambiguous outside HST: IUE's cameras come
+# through as bare "SWP"/"LWP"/"LWR", HUT *and* FUSE both say "FUV", EUVE
+# says "DS/S", HST's GHRS says "HRS/1"/"HRS/2" (collides with SALT HRS), and
+# HASP/HSLA coadds say a bare "COS"/"STIS"/"COS-STIS" next to the real
+# per-detector "COS/FUV"-style rows.
+_MISSION_PREFIX = {"IUE": "IUE", "EUVE": "EUVE", "BEFS": "ORFEUS", "TUES": "ORFEUS"}
+_COADD_LABEL = {"COS": "COS (coadd)", "STIS": "STIS (coadd)", "COS-STIS": "COS+STIS (coadd)"}
+
+
+def instrument_label(obs_collection: str, instrument_name: str, obs_id: str) -> str:
+    if obs_collection in ("HUT", "FUSE"):
+        return obs_collection
+    if obs_collection in _MISSION_PREFIX:
+        return f"{_MISSION_PREFIX[obs_collection]}/{instrument_name}"
+    if instrument_name.startswith("HRS/"):
+        return "G" + instrument_name
+    if obs_id.startswith(("hst_hasp_", "hst_hsla_")) and instrument_name in _COADD_LABEL:
+        return _COADD_LABEL[instrument_name]
+    return instrument_name
 
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
@@ -120,7 +140,9 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             by_obs_id[obs_id] = {
                 "t_min": t_min,
                 "access_url": access_url,
-                "instrument_name": str(row["instrument_name"]),
+                "instrument_name": instrument_label(
+                    str(row["obs_collection"]), str(row["instrument_name"]), obs_id
+                ),
                 "s_ra": row["s_ra"],
                 "s_dec": row["s_dec"],
                 "target_name": str(row["target_name"]),

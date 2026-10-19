@@ -137,7 +137,7 @@ NAME_MATCH_SANITY_RADIUS_ARCSEC = 600.0
 # clean ones (2,191) more than 5:1. Unlike chiron/FEROS, widening the radius
 # here would create far more false ambiguity than it resolves.
 INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC: dict[tuple[str, str], float] = {
-    ("noirlab", "chiron"): 60.0,
+    ("noirlab", "CHIRON"): 60.0,
     ("eso", "FEROS"): 100.0,
 }
 

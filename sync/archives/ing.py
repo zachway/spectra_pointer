@@ -132,6 +132,17 @@ def _query(start: date, end: date) -> str:
     return response.text
 
 
+_ARM_RE = re.compile(r"^WHT/ISIS (RED|BLUE) ARM$", re.I)
+
+
+def _instrument(raw: str) -> str:
+    # The archive switched from "WHT/ISIS red arm" to "WHT/ISIS RED ARM"
+    # partway through -- same arm, folded to one label.
+    text = raw.strip()
+    m = _ARM_RE.match(text)
+    return f"WHT/ISIS {m.group(1).lower()} arm" if m else text
+
+
 def _parse_coords(coords: str) -> tuple[float, float] | tuple[None, None]:
     if coords == ZERO_COORD:
         return None, None
@@ -170,7 +181,7 @@ def _parse_rows(html: str) -> list[RawObservation]:
             RawObservation(
                 archive_obs_id=recno,
                 archive_url=HEADER_URL.format(recno=recno),
-                instrument=m["instrument"].strip(),
+                instrument=_instrument(m["instrument"]),
                 obs_date=obs_date,
                 ra=ra,
                 dec=dec,

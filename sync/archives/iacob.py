@@ -102,6 +102,9 @@ _COL_FILENAME = 6
 _COL_TARGET = 7
 _COL_INSTRUMENT = 12
 
+# The instrument column holds the telescope, not the spectrograph.
+_INSTRUMENT_LABELS = {"NOT": "FIES (NOT)", "MERCATOR": "HERMES (Mercator)"}
+
 _TR_RE = re.compile(r"<TR>(.*?)</TR>", re.DOTALL)
 _TD_RE = re.compile(r"<TD>(.*?)</TD>", re.DOTALL)
 _CDATA_RE = re.compile(r"^<!\[CDATA\[(.*)\]\]>$", re.DOTALL)
@@ -169,7 +172,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             RawObservation(
                 archive_obs_id=filename,
                 archive_url=_clean_acref(cols[_COL_ACREF]) or filename,
-                instrument=cols[_COL_INSTRUMENT].strip() or None,
+                instrument=_INSTRUMENT_LABELS.get(cols[_COL_INSTRUMENT].strip(), cols[_COL_INSTRUMENT].strip()) or None,
                 obs_date=_parse_obs_date(cols[_COL_TIME]),
                 ra=ra,
                 dec=dec,

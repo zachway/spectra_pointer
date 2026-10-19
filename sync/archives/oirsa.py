@@ -63,6 +63,11 @@ ORDER BY t_min ASC
 # Kept well under the cliff-free range observed (50,000 rows in ~9s).
 PAGE_SIZE = 50000
 
+# OIRSA's bare "echelle" is the CfA Digital Speedometers (the Mt. Hopkins
+# and Oak Ridge echelles -- the mthech/oroech paths in its file URLs);
+# NOIRLab has an unrelated "echelle" too.
+_INSTRUMENT_LABELS = {"echelle": "CfA Digital Speedometers (echelle)"}
+
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_t_min = cursor.get("last_t_min", 0)
@@ -80,7 +85,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             RawObservation(
                 archive_obs_id=str(row["obs_publisher_did"]),
                 archive_url=str(row["access_url"]),
-                instrument=str(row["instrument_name"]),
+                instrument=_INSTRUMENT_LABELS.get(str(row["instrument_name"]), str(row["instrument_name"])),
                 obs_date=Time(t_min, format="mjd").to_datetime().date(),
                 ra=clean_float(row["s_ra"]),
                 dec=clean_float(row["s_dec"]),

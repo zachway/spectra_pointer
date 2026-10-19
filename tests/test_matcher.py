@@ -470,11 +470,11 @@ def test_instrument_radius_override_recovers_offset_beyond_default_radius(conn):
         _insert_star(cur, 900000000000000090, 120.0, -15.0)
     conn.commit()
 
-    assert matcher.INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC[("noirlab", "chiron")] > 30.0
+    assert matcher.INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC[("noirlab", "CHIRON")] > 30.0
     ra, dec = _offset(120.0, -15.0, 45.0, 30.0)  # well outside 1", inside the chiron override
     rec = RawObservation(
         archive_obs_id="chiron-1", archive_url="http://example.test/chiron1",
-        instrument="chiron", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+        instrument="CHIRON", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
     )
     counts = matcher.match_records(conn, "noirlab", [rec])
     assert counts["positional_matched"] == 1
@@ -533,7 +533,7 @@ def test_instrument_radius_override_does_not_apply_to_other_instruments(conn):
     ra, dec = _offset(130.0, -25.0, 45.0, 30.0)
     rec = RawObservation(
         archive_obs_id="goodman-1", archive_url="http://example.test/goodman1",
-        instrument="goodman", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
+        instrument="Goodman", ra=ra, dec=dec, obs_date=date(2016, 1, 1),
     )
     counts = matcher.match_records(conn, "noirlab", [rec])
     assert counts["skipped"] == 1

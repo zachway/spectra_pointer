@@ -76,7 +76,8 @@ def test_fai_fetch_maps_rows_and_then_waits_for_the_refresh_window(monkeypatch):
         ("rds #180 (316 l/mm) 4 50 grados", "REOSC"),
         ("Dispersion simple Red: # 270 300 l/mm", "REOSC"),
         ("BOLLER & CHIVENS red=CH260 600 L/MM", "Boller & Chivens"),
-        ("FIRE-LCO", "FIRE-LCO"),
+        ("FIRE-LCO", "FIRE (Magellan)"),
+        ("GNIRS-GEMINI", "GNIRS (Gemini)"),
         ("  ", None),
     ],
 )
@@ -109,5 +110,5 @@ def test_new_archive_instruments_have_wavelength_ranges():
     table = instrument_wavelengths.INSTRUMENT_WAVELENGTH_RANGE_NM
     for label in fai_kz.COLLECTIONS.values():
         assert ("Fesenkov Astrophysical Institute (Kazakhstan VO)", label) in table
-    for label in ("REOSC", "FIRE-LCO", "GNIRS-GEMINI"):
+    for label in ("REOSC", "FIRE (Magellan)", "GNIRS (Gemini)"):
         assert ("NOVA (Argentine Virtual Observatory)", label) in table

@@ -54,6 +54,9 @@ FILE_URL = "http://archives.ia2.inaf.it/files/aao/{file_name}"
 
 RAD_TO_DEG = 180.0 / math.pi
 
+# Same spectrograph, two capitalizations in the archive's INSTRUMENT column.
+_INSTRUMENT_LABELS = {"echelle hi-res Spectrograph": "Echelle Hi-Res Spectrograph"}
+
 
 def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
     last_id = cursor.get("last_id", 0)
@@ -77,7 +80,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
             RawObservation(
                 archive_obs_id=str(row_id),
                 archive_url=FILE_URL.format(file_name=str(row["file_name"])),
-                instrument=str(row["INSTRUMENT"]),
+                instrument=_INSTRUMENT_LABELS.get(str(row["INSTRUMENT"]), str(row["INSTRUMENT"])),
                 obs_date=obs_date,
                 program_id=str(row["PROGRAM"]),
                 ra=ra_rad * RAD_TO_DEG if ra_rad is not None else None,

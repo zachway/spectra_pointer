@@ -83,6 +83,9 @@ from sync.base import RawObservation
 BASE_URL = "https://mthamilton.ucolick.org/data"
 INSTRUMENTS = ["shane", "APF"]  # case-sensitive -- observed
 
+# Directory name -> label stored on each holding.
+_INSTRUMENT_LABELS = {"shane": "Shane 3-m", "APF": "APF (Levy)"}
+
 # Repository observed to start between 2006-06 (404) and 2006-09 (200);
 # comfortably before that, same "don't bother hunting the exact bound" logic
 # carmenes_caha.py's FIRST_DATE uses.
@@ -143,7 +146,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                     RawObservation(
                         archive_obs_id=f"{instrument}_{day.isoformat()}_{row['filename']}",
                         archive_url=_day_url(day, instrument) + row["filename"],
-                        instrument=f"Lick {instrument}",
+                        instrument=_INSTRUMENT_LABELS[instrument],
                         obs_date=day,
                         ra=None,
                         dec=None,
