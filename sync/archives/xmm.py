@@ -76,13 +76,16 @@ observations represented here with RGS1+RGS2 pairs (18 rows total) --
 0049350101, 0049350201, 0551120201, 0551120301, 0551120401, 0801880201,
 0801880301, 0801880401, 0801880501 -- spanning 2001-08-12 through
 2018-03-11, all with real, populated ra/dec.
+
+program_id is v_public_observations.proposal_id (6 digits, e.g. "081101" --
+the first six digits of observation_id).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sync.base import RawObservation, clean_float, make_tap_service
+from sync.base import RawObservation, clean_float, clean_str, make_tap_service
 
 
 def _parse_start_utc(start_utc_str: str) -> datetime:
@@ -99,7 +102,7 @@ TAP_URL = "https://nxsa.esac.esa.int/tap-server/tap"
 
 QUERY = """
 SELECT TOP {page_size} e.observation_id, e.exposure_id, e.instrument, e.start_utc,
-       o.target, o.ra, o.dec
+       o.target, o.ra, o.dec, o.proposal_id
 FROM xsa.v_exposure AS e
 JOIN xsa.v_public_observations AS o ON e.observation_id = o.observation_id
 WHERE e.instrument LIKE 'RGS%'
@@ -162,6 +165,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
                 ra=clean_float(row["ra"]),
                 dec=clean_float(row["dec"]),
                 raw_target_name=target or None,
+                program_id=clean_str(row["proposal_id"]),
             )
         )
 

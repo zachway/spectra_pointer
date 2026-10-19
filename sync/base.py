@@ -49,6 +49,15 @@ def clean_float(value) -> float | None:
     return float(value)
 
 
+def clean_str(value) -> str | None:
+    """String counterpart of clean_float: a masked VO field stringifies to
+    '--', so map masked/None/blank to None and strip the rest.
+    """
+    if value is None or np.ma.is_masked(value):
+        return None
+    return str(value).strip() or None
+
+
 @dataclass
 class RawObservation:
     """One archive-native observation record, ready for matching.
