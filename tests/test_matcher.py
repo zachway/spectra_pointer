@@ -647,3 +647,89 @@ def test_upsert_holdings_batch_chunks_large_row_counts(conn, monkeypatch):
         cur.execute("SELECT count(*) FROM spectroscopy_holdings WHERE archive_code='unit_test' AND archive_obs_id LIKE 'chunk-%'")
         count = cur.fetchone()[0]
     assert count == 7
+
+
+def _store_fallback_result(cur, rec, star_id, theta_arcsec):
+    """Write rec the way shitty_positional_match does (sync/positional_fallback.py)."""
+    matcher.upsert_holdings_batch(
+        cur, [matcher.upsert_holding_row("unit_test", rec, star_id, "shitty_positional_match", "needs_review", theta_arcsec)]
+    )
+
+
+def _holding(cur, archive_obs_id):
+    cur.execute(
+        "SELECT s.gaia_source_id, h.match_method, h.match_status, h.theta_arcsec, h.program_id "
+        "FROM spectroscopy_holdings h LEFT JOIN stars s ON s.star_id = h.star_id "
+        "WHERE h.archive_code='unit_test' AND h.archive_obs_id=%s",
+        (archive_obs_id,),
+    )
+    return cur.fetchone()
+
+
+def test_refetch_that_only_skips_keeps_fallback_match(conn):
+    """A reconcile re-walk re-fetches rows shitty_positional_match already
+    attached to a star; the ordinary matcher finds nothing within its radius
+    and says 'skipped'. The fallback's star link must survive, while the
+    record's own columns (here program_id) still update."""
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000090, 120.0, 5.0)
+        cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (900000000000000090,))
+        star_id = cur.fetchone()[0]
+    conn.commit()
+
+    ra, dec = _offset(120.0, 5.0, 0, 60.0)  # far outside the easy-match radius
+    rec = RawObservation(
+        archive_obs_id="keep-1", archive_url="http://example.test/keep1", ra=ra, dec=dec, obs_date=date(2016, 1, 1)
+    )
+    with conn.cursor() as cur:
+        _store_fallback_result(cur, rec, star_id, 60.0)
+    conn.commit()
+
+    rec.program_id = "PROG-1"
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["skipped"] == 1
+
+    with conn.cursor() as cur:
+        assert _holding(cur, "keep-1") == (900000000000000090, "shitty_positional_match", "needs_review", 60.0, "PROG-1")
+
+
+def test_refetch_that_only_skips_keeps_fallback_no_candidate(conn):
+    """A fallback 'no confident candidate' row (needs_review, no star) must not
+    drop back to 'skipped' either -- that's what queued it for reconcile's
+    skipped-only fallback pass all over again."""
+    rec = RawObservation(
+        archive_obs_id="keep-2", archive_url="http://example.test/keep2", ra=10.0, dec=10.0, obs_date=date(2016, 1, 1)
+    )
+    with conn.cursor() as cur:
+        _store_fallback_result(cur, rec, None, None)
+    conn.commit()
+
+    matcher.match_records(conn, "unit_test", [rec])
+
+    with conn.cursor() as cur:
+        assert _holding(cur, "keep-2")[:3] == (None, "shitty_positional_match", "needs_review")
+
+
+def test_real_match_still_replaces_fallback_match(conn):
+    """Only a plain 'skipped' defers to the fallback: a real positional match
+    found on re-fetch (e.g. a star added since) overwrites its guess."""
+    with conn.cursor() as cur:
+        _insert_star(cur, 900000000000000091, 140.0, -5.0)
+        _insert_star(cur, 900000000000000092, 140.1, -5.0)
+        cur.execute("SELECT star_id FROM stars WHERE gaia_source_id = %s", (900000000000000092,))
+        wrong_star_id = cur.fetchone()[0]
+    conn.commit()
+
+    rec = RawObservation(
+        archive_obs_id="keep-3", archive_url="http://example.test/keep3", ra=140.0, dec=-5.0, obs_date=date(2016, 1, 1)
+    )
+    with conn.cursor() as cur:
+        _store_fallback_result(cur, rec, wrong_star_id, 360.0)
+    conn.commit()
+
+    counts = matcher.match_records(conn, "unit_test", [rec])
+    assert counts["positional_matched"] == 1
+
+    with conn.cursor() as cur:
+        gaia_id, method, status, _, _ = _holding(cur, "keep-3")
+    assert (gaia_id, method, status) == (900000000000000091, "positional_easy_match", "matched")

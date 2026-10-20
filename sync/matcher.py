@@ -331,6 +331,23 @@ def _match_radius_arcsec(archive_code: str, instrument: str | None) -> float:
     return INSTRUMENT_MATCH_RADIUS_OVERRIDES_ARCSEC.get((archive_code, instrument), EASY_MATCH_RADIUS_ARCSEC)
 
 
+# A re-fetched record that the ordinary matcher can only call 'skipped' keeps
+# whatever shitty_positional_match (sync/positional_fallback.py) already
+# decided for it. Without this, every sync.reconcile re-walk reset those rows
+# to skipped/NULL star, and they stayed unattached until reconcile's
+# skipped-only fallback pass redid them -- 1.31M rows / ~18.5h for the
+# 2026-10-19 chandra+xmm+salt_hrs+koa re-walk, with any export in that window
+# publishing the lost matches. A non-skipped result (a real name or positional
+# match, or a needs_review ambiguity) still overwrites the fallback's guess.
+# In ON CONFLICT DO UPDATE, the table-qualified columns are the row's values
+# before this update, so the condition reads the old match_method even though
+# match_method is itself assigned below.
+_KEEP_FALLBACK_MATCH = (
+    "EXCLUDED.match_status = 'skipped' "
+    "AND spectroscopy_holdings.match_method = 'shitty_positional_match'"
+)
+
+
 def _upsert_holding(
     cur: psycopg.Cursor,
     archive_code: str,
@@ -341,7 +358,7 @@ def _upsert_holding(
     theta_arcsec: float | None,
 ) -> None:
     cur.execute(
-        """
+        f"""
         INSERT INTO spectroscopy_holdings
             (star_id, archive_code, archive_obs_id, archive_url, instrument,
              obs_date, program_id, match_method, match_status, theta_arcsec,
@@ -351,14 +368,18 @@ def _upsert_holding(
                 %(theta_arcsec)s, %(raw_target_name)s, %(raw_ra)s, %(raw_dec)s,
                 %(reduction_status)s, now())
         ON CONFLICT (archive_code, archive_obs_id) DO UPDATE SET
-            star_id = EXCLUDED.star_id,
+            star_id = CASE WHEN {_KEEP_FALLBACK_MATCH}
+                THEN spectroscopy_holdings.star_id ELSE EXCLUDED.star_id END,
             archive_url = EXCLUDED.archive_url,
             instrument = EXCLUDED.instrument,
             obs_date = EXCLUDED.obs_date,
             program_id = EXCLUDED.program_id,
-            match_method = EXCLUDED.match_method,
-            match_status = EXCLUDED.match_status,
-            theta_arcsec = EXCLUDED.theta_arcsec,
+            match_method = CASE WHEN {_KEEP_FALLBACK_MATCH}
+                THEN spectroscopy_holdings.match_method ELSE EXCLUDED.match_method END,
+            match_status = CASE WHEN {_KEEP_FALLBACK_MATCH}
+                THEN spectroscopy_holdings.match_status ELSE EXCLUDED.match_status END,
+            theta_arcsec = CASE WHEN {_KEEP_FALLBACK_MATCH}
+                THEN spectroscopy_holdings.theta_arcsec ELSE EXCLUDED.theta_arcsec END,
             raw_target_name = EXCLUDED.raw_target_name,
             raw_ra = EXCLUDED.raw_ra,
             raw_dec = EXCLUDED.raw_dec,
