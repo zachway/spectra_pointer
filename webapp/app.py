@@ -68,6 +68,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 from ingest import simbad_servers
 from ingest.add_star import (
+    GaiaTimeout,
     _launch_gaia_job,
     resolve_bsc_hr_number,
     resolve_gaia_position,
@@ -204,6 +205,20 @@ if _REDIRECT_BASE_URL:
 MAX_NAME_LOOKUPS = 2000
 
 SIMBAD_UNAVAILABLE_MESSAGE = "SIMBAD is currently unavailable — try again in a bit."
+
+# Deadlines for the webapp's live Gaia TAP calls (see ingest.add_star.
+# _launch_gaia_job's deadline_s), all inside Apache's 60s proxy timeout.
+# Observed 2026-10-30: a 2" cone search took 93.6s, so without these a
+# slow Gaia surfaced as a bare "Proxy Error" page. The name-search one
+# leaves room for the SIMBAD lookup that runs before it.
+GAIA_SEARCH_DEADLINE_S = 30
+GAIA_POSITION_DEADLINE_S = 20
+GAIA_TRIAGE_DEADLINE_S = 40
+
+
+def _gaia_timeout_message(what: str, deadline_s: float) -> str:
+    return (f"Gaia's archive didn't answer within {deadline_s:g} seconds, so {what}. "
+            "Gaia is slow or down right now — try again in a bit.")
 
 
 def _simbad_available() -> bool:
@@ -1887,7 +1902,10 @@ def _not_found_error(source_id) -> tuple[str, float | None, float | None]:
     """
     error = f"No tracked star with source_id {source_id}."
     try:
-        position = resolve_gaia_position(int(source_id))
+        position = resolve_gaia_position(int(source_id), deadline_s=GAIA_POSITION_DEADLINE_S)
+    except GaiaTimeout:
+        what = "its position couldn't be looked up for a radius search"
+        return f"{error} {_gaia_timeout_message(what, GAIA_POSITION_DEADLINE_S)}", None, None
     except Exception:
         return error, None, None
     if position is None:
@@ -2061,7 +2079,10 @@ def search():
         if not _simbad_available():
             return _blank(query=query, error=SIMBAD_UNAVAILABLE_MESSAGE)
         try:
-            source_id = resolve_gaia_source_id(query)
+            source_id = resolve_gaia_source_id(query, gaia_deadline_s=GAIA_SEARCH_DEADLINE_S)
+        except GaiaTimeout:
+            what = f"{query!r} couldn't be matched to a Gaia DR3 source"
+            return _blank(query=query, error=_gaia_timeout_message(what, GAIA_SEARCH_DEADLINE_S))
         except (DALServiceError, requests.RequestException):
             return _blank(query=query, error=SIMBAD_UNAVAILABLE_MESSAGE)
         except ValueError as e:
@@ -6252,9 +6273,12 @@ def triage_cone_search():
 
     try:
         job = _launch_gaia_job(
-            TRIAGE_GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC / 3600)
+            TRIAGE_GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=TRIAGE_CONE_SEARCH_RADIUS_ARCSEC / 3600),
+            deadline_s=GAIA_TRIAGE_DEADLINE_S,
         )
         table = job.get_results()
+    except GaiaTimeout:
+        return _triage_redirect(offset, error=_gaia_timeout_message("the cone search didn't run", GAIA_TRIAGE_DEADLINE_S))
     except Exception as exc:
         return _triage_redirect(offset, error=f"Gaia cone search failed: {exc}")
 
@@ -6319,7 +6343,10 @@ def triage_submit():
             if not _simbad_available():
                 return _triage_redirect(offset, error=f"Could not resolve {target!r}: {SIMBAD_UNAVAILABLE_MESSAGE}")
             try:
-                proposed_gaia_source_id = resolve_gaia_source_id(target)
+                proposed_gaia_source_id = resolve_gaia_source_id(target, gaia_deadline_s=GAIA_SEARCH_DEADLINE_S)
+            except GaiaTimeout:
+                what = f"{target!r} couldn't be matched to a Gaia DR3 source"
+                return _triage_redirect(offset, error=_gaia_timeout_message(what, GAIA_SEARCH_DEADLINE_S))
             except (ValueError, DALServiceError) as exc:
                 return _triage_redirect(offset, error=f"Could not resolve {target!r}: {exc}")
 

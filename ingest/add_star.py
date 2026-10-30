@@ -15,6 +15,8 @@ import logging
 import os
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from typing import NamedTuple
 
 import psycopg
@@ -90,7 +92,19 @@ GAIA_LAUNCH_JOB_ATTEMPTS = 5
 GAIA_LAUNCH_JOB_BACKOFF_SECONDS = 15
 
 
-def _launch_gaia_job(query: str):
+class GaiaTimeout(TimeoutError):
+    """A deadline-bounded _launch_gaia_job call (see deadline_s) ran out."""
+
+
+# Threads a deadline-bounded Gaia call runs on. A call that times out is
+# abandoned, not killed (a blocked socket read can't be interrupted), and
+# finishes on its own within socket.setdefaulttimeout's 180s; the cap keeps
+# a Gaia outage from piling up threads -- extra calls queue, and still time
+# out at their own deadline.
+_gaia_deadline_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="gaia-deadline")
+
+
+def _launch_gaia_job(query: str, deadline_s: float | None = None):
     """Gaia.launch_job, retried on transient TAP failures.
 
     Observed: after ~10 back-to-back batch queries in a few minutes
@@ -101,7 +115,20 @@ def _launch_gaia_job(query: str):
     E19 parse error, so this catches broadly rather than one specific
     exception type. A short exponential backoff clears it within a couple of
     tries without needing to fail the whole archive sync over one blip.
+
+    deadline_s: for interactive callers (the webapp, whose requests die at
+    Apache's 60s proxy timeout) -- one attempt, no retries, raising
+    GaiaTimeout if Gaia hasn't answered within deadline_s. Observed
+    2026-10-30: a 2" cone search took 93.6s, so an unbounded call turned a
+    slow Gaia into a bare "Proxy Error" page.
     """
+    if deadline_s is not None:
+        future = _gaia_deadline_pool.submit(Gaia.launch_job, query)
+        try:
+            return future.result(timeout=deadline_s)
+        except FutureTimeoutError:
+            raise GaiaTimeout(f"Gaia didn't answer within {deadline_s:g}s") from None
+
     last_exc: Exception | None = None
     for attempt in range(GAIA_LAUNCH_JOB_ATTEMPTS):
         try:
@@ -118,7 +145,7 @@ def _launch_gaia_job(query: str):
     raise last_exc
 
 
-def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
+def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0, gaia_deadline_s: float | None = None) -> int:
     """Resolve a star name to a Gaia DR3 source_id via SIMBAD.
 
     Prefers SIMBAD's own Gaia DR3 cross-match id (present for the large
@@ -126,6 +153,8 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
     search around the SIMBAD position only when SIMBAD doesn't carry one, and
     raises if that fallback is itself ambiguous — same easy-match-or-defer
     rule used for archive cross-matching, applied here at ingestion time.
+
+    gaia_deadline_s bounds that cone search -- see _launch_gaia_job.
     """
     result = simbad_servers.query(lambda simbad: simbad.query_object(name), "ids")
     if result is None or len(result) == 0:
@@ -136,7 +165,9 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
         return int(gaia_tokens[0].removeprefix("Gaia DR3 "))
 
     ra, dec = float(result["ra"][0]), float(result["dec"][0])
-    job = _launch_gaia_job(GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=cone_radius_arcsec / 3600))
+    job = _launch_gaia_job(
+        GAIA_CONE_QUERY.format(ra=ra, dec=dec, radius_deg=cone_radius_arcsec / 3600), deadline_s=gaia_deadline_s
+    )
     table = job.get_results()
     if len(table) == 0:
         raise ValueError(
@@ -151,14 +182,14 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
     return int(table[0]["source_id"])
 
 
-def resolve_gaia_position(source_id: int) -> tuple[float, float] | None:
+def resolve_gaia_position(source_id: int, deadline_s: float | None = None) -> tuple[float, float] | None:
     """RA/Dec (deg, ICRS) for a Gaia DR3 source_id, queried directly from
     Gaia's own TAP service rather than this project's `stars` table -- for
     handing a user a coordinate to search by when the source_id they typed
     isn't one this project tracks. None if Gaia doesn't carry that source_id
     either (typo, or a DR2-only id that didn't survive into DR3).
     """
-    job = _launch_gaia_job(GAIA_POSITION_QUERY.format(source_id=source_id))
+    job = _launch_gaia_job(GAIA_POSITION_QUERY.format(source_id=source_id), deadline_s=deadline_s)
     table = job.get_results()
     if len(table) == 0:
         return None

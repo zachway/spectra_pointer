@@ -26,6 +26,34 @@ def test_launch_gaia_job_retries_transient_failure(monkeypatch):
     assert len(calls) == 3
 
 
+def test_launch_gaia_job_with_deadline_raises_gaia_timeout(monkeypatch):
+    import threading
+
+    release = threading.Event()
+    calls = []
+
+    def slow_launch_job(query):
+        calls.append(query)
+        release.wait(5)
+        return "too late"
+
+    monkeypatch.setattr(add_star.Gaia, "launch_job", slow_launch_job)
+    try:
+        add_star._launch_gaia_job("SELECT 1", deadline_s=0.2)
+        assert False, "expected GaiaTimeout"
+    except add_star.GaiaTimeout:
+        pass
+    finally:
+        release.set()
+    # One attempt only -- no retry backoff eating into a web request.
+    assert calls == ["SELECT 1"]
+
+
+def test_launch_gaia_job_with_deadline_returns_a_fast_answer(monkeypatch):
+    monkeypatch.setattr(add_star.Gaia, "launch_job", lambda query: "ok")
+    assert add_star._launch_gaia_job("SELECT 1", deadline_s=5) == "ok"
+
+
 def test_launch_gaia_job_raises_after_exhausting_attempts(monkeypatch):
     monkeypatch.setattr(add_star.time, "sleep", lambda _seconds: None)
 

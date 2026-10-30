@@ -32,7 +32,7 @@ def test_search_by_name_is_case_and_whitespace_insensitive(client):
 
 
 def test_search_unresolvable_name_shows_simbad_value_error(client, monkeypatch, webapp_module):
-    def _raise(name):
+    def _raise(name, **kwargs):
         raise ValueError(f"No SIMBAD match for {name!r}")
     monkeypatch.setattr(webapp_module, "resolve_gaia_source_id", _raise)
     resp = client.get("/?q=NOT+A+REAL+STAR+NAME")
@@ -43,7 +43,7 @@ def test_search_unresolvable_name_shows_simbad_value_error(client, monkeypatch, 
 def test_search_name_when_simbad_is_down_reports_that_plainly(client, monkeypatch, webapp_module):
     from pyvo.dal import DALServiceError
 
-    def _raise(name):
+    def _raise(name, **kwargs):
         raise DALServiceError("simbad unreachable")
     monkeypatch.setattr(webapp_module, "resolve_gaia_source_id", _raise)
     resp = client.get("/?q=SOME+UNTRACKED+NAME")
@@ -76,6 +76,32 @@ def test_search_unknown_source_id_reports_not_tracked(client):
     resp = client.get("/?q=123456789012345678")
     assert resp.status_code == 200
     assert "No tracked star" in resp.get_data(as_text=True)
+
+
+def test_search_name_reports_gaia_timeout_plainly(client, monkeypatch, webapp_module):
+    # Observed 2026-10-30: a slow Gaia cone search ran past Apache's 60s
+    # proxy timeout and users got a bare "Proxy Error" page.
+    def _timeout(name, **kwargs):
+        assert kwargs.get("gaia_deadline_s") == webapp_module.GAIA_SEARCH_DEADLINE_S
+        raise webapp_module.GaiaTimeout("slow")
+    monkeypatch.setattr(webapp_module, "resolve_gaia_source_id", _timeout)
+    resp = client.get("/?q=NGC+4258")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "Gaia&#39;s archive didn&#39;t answer within 30 seconds" in body
+    assert "couldn&#39;t be matched to a Gaia DR3 source" in body
+
+
+def test_unknown_source_id_still_reported_when_gaia_times_out(client, monkeypatch, webapp_module):
+    def _timeout(source_id, deadline_s=None):
+        assert deadline_s == webapp_module.GAIA_POSITION_DEADLINE_S
+        raise webapp_module.GaiaTimeout("slow")
+    monkeypatch.setattr(webapp_module, "resolve_gaia_position", _timeout)
+    resp = client.get("/?q=123456789012345678")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "No tracked star with source_id 123456789012345678." in body
+    assert "its position couldn&#39;t be looked up" in body
 
 
 def test_search_star_with_no_holdings_shows_empty_results(client):
