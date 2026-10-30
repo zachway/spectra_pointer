@@ -202,6 +202,49 @@ if _REDIRECT_BASE_URL:
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
+# Observed (2026-10-30, SIMBAD outage): a failed resolve_gaia_source_id()
+# only raises DALServiceError after ~75s -- astroquery retries SIMBAD's
+# capabilities endpoint, each attempt waiting out the 30s simbad_conf
+# timeout -- which is past Apache's 60s proxy timeout, so users saw a bare
+# "Proxy Error" page instead of the "SIMBAD is currently unavailable"
+# message, and each such search held a gunicorn worker for over a minute.
+# A short probe of that same endpoint first, cached per worker, turns an
+# outage into an immediate message instead.
+SIMBAD_PROBE_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/capabilities"
+SIMBAD_PROBE_TIMEOUT_S = 5
+SIMBAD_UP_CACHE_S = 60
+SIMBAD_DOWN_CACHE_S = 300
+SIMBAD_UNAVAILABLE_MESSAGE = "SIMBAD is currently unavailable — try again in a bit."
+
+_simbad_state_lock = threading.Lock()
+_simbad_state = {"available": True, "checked_at": 0.0}
+
+
+def _mark_simbad_down() -> None:
+    with _simbad_state_lock:
+        _simbad_state.update(available=False, checked_at=time.monotonic())
+
+
+def _simbad_available() -> bool:
+    """Whether SIMBAD answered a quick probe recently enough to be worth a
+    real (slow-to-fail) query. Up results are cached for SIMBAD_UP_CACHE_S,
+    down results for SIMBAD_DOWN_CACHE_S, so an outage costs at most one
+    SIMBAD_PROBE_TIMEOUT_S wait per worker every few minutes.
+    """
+    with _simbad_state_lock:
+        age = time.monotonic() - _simbad_state["checked_at"]
+        ttl = SIMBAD_UP_CACHE_S if _simbad_state["available"] else SIMBAD_DOWN_CACHE_S
+        if _simbad_state["checked_at"] and age < ttl:
+            return _simbad_state["available"]
+    try:
+        resp = requests.get(SIMBAD_PROBE_URL, timeout=SIMBAD_PROBE_TIMEOUT_S)
+        available = resp.status_code < 500
+    except requests.RequestException:
+        available = False
+    with _simbad_state_lock:
+        _simbad_state.update(available=available, checked_at=time.monotonic())
+    return available
+
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
     "leaderboard", "diversity", "cmd_stars", "archive_status", "instruments", "instrument_healpix",
@@ -2034,12 +2077,15 @@ def search():
         if query.isdigit():
             error, ra, dec = _not_found_error(query)
             return _blank(query=query, error=error, error_ra=ra, error_dec=dec)
+        # SIMBAD's TAP service goes down periodically. Say so plainly
+        # rather than a generic error or (worse) a misleading "not found".
+        if not _simbad_available():
+            return _blank(query=query, error=SIMBAD_UNAVAILABLE_MESSAGE)
         try:
             source_id = resolve_gaia_source_id(query)
-        except DALServiceError:
-            # SIMBAD's TAP service goes down periodically. Say so plainly
-            # rather than a generic error or (worse) a misleading "not found".
-            return _blank(query=query, error="SIMBAD is currently unavailable — try again in a bit.")
+        except (DALServiceError, requests.RequestException):
+            _mark_simbad_down()
+            return _blank(query=query, error=SIMBAD_UNAVAILABLE_MESSAGE)
         except ValueError as e:
             return _blank(query=query, error=str(e))
         resolved_source_id = source_id
@@ -5196,11 +5242,19 @@ def batch_search():
 
     name_to_source_id: dict[str, int] = {}
     batch_error = None
+    simbad_down_error = "SIMBAD is currently unavailable — name lookups skipped, source_id lookups below are unaffected."
     if name_entries:
-        try:
-            name_to_source_id = resolve_stellar_gaia_ids_batch(name_entries)
-        except DALServiceError:
-            batch_error = "SIMBAD is currently unavailable — name lookups skipped, source_id lookups below are unaffected."
+        # resolve_stellar_gaia_ids_batch swallows per-chunk SIMBAD failures,
+        # so during an outage it doesn't raise -- it just spends ~75s per
+        # chunk returning nothing. Check first (see _simbad_available).
+        if not _simbad_available():
+            batch_error = simbad_down_error
+        else:
+            try:
+                name_to_source_id = resolve_stellar_gaia_ids_batch(name_entries)
+            except (DALServiceError, requests.RequestException):
+                _mark_simbad_down()
+                batch_error = simbad_down_error
 
     all_source_ids = sorted({int(e) for e in id_entries} | set(name_to_source_id.values()))
 
@@ -6282,6 +6336,8 @@ def triage_submit():
             # real Gaia DR3 source_id should be attachable here, and add_star()
             # (see the apply-step TODO below) is what fetches-and-inserts a
             # not-yet-tracked star on demand.
+            if not _simbad_available():
+                return _triage_redirect(offset, error=f"Could not resolve {target!r}: {SIMBAD_UNAVAILABLE_MESSAGE}")
             try:
                 proposed_gaia_source_id = resolve_gaia_source_id(target)
             except (ValueError, DALServiceError) as exc:
@@ -6297,9 +6353,11 @@ def triage_submit():
             # Same SIMBAD-first resolution pattern as attach_gaia_source
             # above, just resolving an HR number instead of a Gaia source_id
             # -- see ingest.add_star.resolve_bsc_hr_number.
+            if not _simbad_available():
+                return _triage_redirect(offset, error=f"Could not resolve {target!r}: {SIMBAD_UNAVAILABLE_MESSAGE}")
             try:
                 proposed_bsc_hr_number = resolve_bsc_hr_number(target)
-            except ValueError as exc:
+            except (ValueError, DALServiceError) as exc:
                 return _triage_redirect(offset, error=f"Could not resolve {target!r}: {exc}")
 
     elif outcome == "confirmed_absent_from_gaia":

@@ -7,7 +7,7 @@ psycopg[binary]
 beautifulsoup4
 requests
 flask
-duckdb
+duckdb<2  # 2.0 drops the "x -> expr" lambda syntax webapp/app.py still uses
 scipy
 aiohttp
 fsspec[http]
