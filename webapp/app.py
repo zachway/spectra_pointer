@@ -66,6 +66,7 @@ from flask import Flask, Response, abort, redirect, render_template_string, requ
 from pyvo.dal.exceptions import DALServiceError
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+from ingest import simbad_servers
 from ingest.add_star import (
     _launch_gaia_job,
     resolve_bsc_hr_number,
@@ -202,48 +203,26 @@ if _REDIRECT_BASE_URL:
 # query — per project to-do, laptop/small-server scale, not a bulk pipeline.
 MAX_NAME_LOOKUPS = 2000
 
-# Observed (2026-10-30, SIMBAD outage): a failed resolve_gaia_source_id()
-# only raises DALServiceError after ~75s -- astroquery retries SIMBAD's
-# capabilities endpoint, each attempt waiting out the 30s simbad_conf
-# timeout -- which is past Apache's 60s proxy timeout, so users saw a bare
-# "Proxy Error" page instead of the "SIMBAD is currently unavailable"
-# message, and each such search held a gunicorn worker for over a minute.
-# A short probe of that same endpoint first, cached per worker, turns an
-# outage into an immediate message instead.
-SIMBAD_PROBE_URL = "https://simbad.cds.unistra.fr/simbad/sim-tap/capabilities"
-SIMBAD_PROBE_TIMEOUT_S = 5
-SIMBAD_UP_CACHE_S = 60
-SIMBAD_DOWN_CACHE_S = 300
 SIMBAD_UNAVAILABLE_MESSAGE = "SIMBAD is currently unavailable — try again in a bit."
-
-_simbad_state_lock = threading.Lock()
-_simbad_state = {"available": True, "checked_at": 0.0}
-
-
-def _mark_simbad_down() -> None:
-    with _simbad_state_lock:
-        _simbad_state.update(available=False, checked_at=time.monotonic())
 
 
 def _simbad_available() -> bool:
-    """Whether SIMBAD answered a quick probe recently enough to be worth a
-    real (slow-to-fail) query. Up results are cached for SIMBAD_UP_CACHE_S,
-    down results for SIMBAD_DOWN_CACHE_S, so an outage costs at most one
-    SIMBAD_PROBE_TIMEOUT_S wait per worker every few minutes.
+    """Whether any SIMBAD server (CDS or a mirror) answered a quick probe
+    recently -- see ingest.simbad_servers. Checked before a live resolve
+    because a failing one takes ~75s, past Apache's 60s proxy timeout, so
+    users saw a bare "Proxy Error" page instead of SIMBAD_UNAVAILABLE_MESSAGE.
     """
-    with _simbad_state_lock:
-        age = time.monotonic() - _simbad_state["checked_at"]
-        ttl = SIMBAD_UP_CACHE_S if _simbad_state["available"] else SIMBAD_DOWN_CACHE_S
-        if _simbad_state["checked_at"] and age < ttl:
-            return _simbad_state["available"]
-    try:
-        resp = requests.get(SIMBAD_PROBE_URL, timeout=SIMBAD_PROBE_TIMEOUT_S)
-        available = resp.status_code < 500
-    except requests.RequestException:
-        available = False
-    with _simbad_state_lock:
-        _simbad_state.update(available=available, checked_at=time.monotonic())
-    return available
+    return simbad_servers.any_available()
+
+
+# A batch on a mirror without TAP uploads goes name by name at ~7/s (see
+# ingest.simbad_servers), so MAX_NAME_LOOKUPS would take ~5 min -- well past
+# the 60s proxy timeout. ~200 names is ~30s.
+MIRROR_MAX_NAME_LOOKUPS = 200
+
+
+def _simbad_name_lookup_cap() -> int:
+    return MAX_NAME_LOOKUPS if simbad_servers.uploads_available() else MIRROR_MAX_NAME_LOOKUPS
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
@@ -2084,7 +2063,6 @@ def search():
         try:
             source_id = resolve_gaia_source_id(query)
         except (DALServiceError, requests.RequestException):
-            _mark_simbad_down()
             return _blank(query=query, error=SIMBAD_UNAVAILABLE_MESSAGE)
         except ValueError as e:
             return _blank(query=query, error=str(e))
@@ -5234,9 +5212,10 @@ def batch_search():
     name_entries = [e for e in entries if not e.isdigit()]
 
     truncated = 0
-    if len(name_entries) > MAX_NAME_LOOKUPS:
-        truncated = len(name_entries) - MAX_NAME_LOOKUPS
-        name_entries = name_entries[:MAX_NAME_LOOKUPS]
+    name_cap = _simbad_name_lookup_cap() if name_entries else MAX_NAME_LOOKUPS
+    if len(name_entries) > name_cap:
+        truncated = len(name_entries) - name_cap
+        name_entries = name_entries[:name_cap]
         kept = set(id_entries) | set(name_entries)
         entries = [e for e in entries if e in kept]
 
@@ -5253,7 +5232,6 @@ def batch_search():
             try:
                 name_to_source_id = resolve_stellar_gaia_ids_batch(name_entries)
             except (DALServiceError, requests.RequestException):
-                _mark_simbad_down()
                 batch_error = simbad_down_error
 
     all_source_ids = sorted({int(e) for e in id_entries} | set(name_to_source_id.values()))
@@ -5395,7 +5373,9 @@ def batch_search():
     if skipped_header:
         note += f" The first line ({skipped_header!r}) looked like a column header and was skipped."
     if truncated:
-        note += f" {truncated} additional name(s) beyond the {MAX_NAME_LOOKUPS} cap were skipped entirely."
+        note += f" {truncated} additional name(s) beyond the {name_cap:,} cap were skipped entirely."
+        if name_cap < MAX_NAME_LOOKUPS:
+            note += f" (The cap is normally {MAX_NAME_LOOKUPS:,}; it's lower while SIMBAD's main server is down and lookups go through its slower mirror.)"
     if adv_filters:
         note += " Holdings counts are filtered by the advanced search options."
 

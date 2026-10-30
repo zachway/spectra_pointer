@@ -22,9 +22,9 @@ covered by carmenes_caha.py (raw only).
 
 import requests
 from astropy.time import Time
-from astroquery.simbad import Simbad
 from bs4 import BeautifulSoup
 
+from ingest import simbad_servers
 from sync.base import RawObservation
 
 DR1_URL = "http://carmenes.cab.inta-csic.es/gto/jsp/dr1Public.jsp"
@@ -60,9 +60,7 @@ def fetch(cursor: dict) -> tuple[list[RawObservation], dict]:
 
     rows = _parse_dr1_table()
 
-    simbad = Simbad()
-    simbad.add_votable_fields("ids")
-    resolved = simbad.query_objects([name for _, name, _ in rows])
+    resolved = simbad_servers.query_objects([name for _, name, _ in rows], "ids")
     gaia_by_name = {}
     for r in resolved:
         if r["ids"] is None:
