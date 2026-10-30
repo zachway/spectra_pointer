@@ -314,8 +314,8 @@ def _common_name_expr(alias_col: str, input_col: str, id_col: str) -> str:
     # first-alias/input_name/gaia_source_id chain.
     return f"""COALESCE(
         list_transform(
-            list_filter({alias_col}, x -> x LIKE 'NAME %'),
-            x -> trim(substr(x, 6))
+            list_filter({alias_col}, lambda x: x LIKE 'NAME %'),
+            lambda x: trim(substr(x, 6))
         )[1],
         {alias_col}[1],
         {input_col},
