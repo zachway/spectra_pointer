@@ -19,9 +19,9 @@ from typing import NamedTuple
 
 import psycopg
 from astroquery.gaia import Gaia
-from astroquery.simbad import Simbad
 from astroquery.simbad import conf as simbad_conf
 
+from ingest import simbad_servers
 from sync.base import RawObservation, clean_float
 from sync.matcher import BSC5_REF_EPOCH, GAIA_DR3_REF_EPOCH
 
@@ -127,9 +127,7 @@ def resolve_gaia_source_id(name: str, cone_radius_arcsec: float = 2.0) -> int:
     raises if that fallback is itself ambiguous — same easy-match-or-defer
     rule used for archive cross-matching, applied here at ingestion time.
     """
-    simbad = Simbad()
-    simbad.add_votable_fields("ids")
-    result = simbad.query_object(name)
+    result = simbad_servers.query(lambda simbad: simbad.query_object(name), "ids")
     if result is None or len(result) == 0:
         raise ValueError(f"could not resolve {name!r} via SIMBAD")
 
@@ -173,9 +171,7 @@ def fetch_name_aliases(gaia_source_id: int) -> list[str]:
     with positional matching as fallback (see sync.matcher). Empty list if
     SIMBAD doesn't carry this source at all.
     """
-    simbad = Simbad()
-    simbad.add_votable_fields("ids")
-    result = simbad.query_object(f"Gaia DR3 {gaia_source_id}")
+    result = simbad_servers.query(lambda simbad: simbad.query_object(f"Gaia DR3 {gaia_source_id}"), "ids")
     if result is None or len(result) == 0 or result["ids"][0] is None:
         return []
     return [tok.strip() for tok in str(result["ids"][0]).split("|")]
@@ -283,9 +279,7 @@ def resolve_bsc_hr_number(name: str) -> int:
     cone search can produce -- SIMBAD carrying the identifier is the only
     path in.
     """
-    simbad = Simbad()
-    simbad.add_votable_fields("ids")
-    result = simbad.query_object(name)
+    result = simbad_servers.query(lambda simbad: simbad.query_object(name), "ids")
     if result is None or len(result) == 0:
         raise ValueError(f"could not resolve {name!r} via SIMBAD")
 
@@ -305,9 +299,7 @@ def add_bsc_star(conn: psycopg.Connection, hr_number: int, input_name: str | Non
     add_star) -- Gaia RVS is definitionally not available for a star Gaia
     doesn't carry at all.
     """
-    simbad = Simbad()
-    simbad.add_votable_fields(*BSC5_SIMBAD_FIELDS)
-    result = simbad.query_object(f"HR {hr_number}")
+    result = simbad_servers.query(lambda simbad: simbad.query_object(f"HR {hr_number}"), *BSC5_SIMBAD_FIELDS)
     if result is None or len(result) == 0:
         raise ValueError(f"HR {hr_number} not found in SIMBAD")
     row = result[0]
@@ -577,10 +569,8 @@ def resolve_stellar_gaia_ids_batch(names: list[str]) -> dict[str, int]:
     resolved: dict[str, int] = {}
     for i in range(0, len(unique_names), SIMBAD_BATCH_CHUNK_SIZE):
         chunk = unique_names[i : i + SIMBAD_BATCH_CHUNK_SIZE]
-        simbad = Simbad()
-        simbad.add_votable_fields("ids", "otype")
         try:
-            result = simbad.query_objects(chunk)
+            result = simbad_servers.query_objects(chunk, "ids", "otype")
         except Exception:
             # SIMBAD outages/blips happen -- skip just this chunk instead of
             # losing every chunk already resolved before it (a single 404

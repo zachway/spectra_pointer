@@ -56,17 +56,13 @@ def test_resolve_stellar_gaia_ids_batch_keeps_earlier_chunks_when_a_later_one_fa
 
     query_calls = []
 
-    class FlakySimbad:
-        def add_votable_fields(self, *args, **kwargs):
-            pass
+    def flaky_query_objects(chunk, *fields):
+        query_calls.append(list(chunk))
+        if chunk == ["sirius b"]:
+            raise TimeoutError("SIMBAD read timed out")
+        return good_result
 
-        def query_objects(self, chunk):
-            query_calls.append(list(chunk))
-            if chunk == ["sirius b"]:
-                raise TimeoutError("SIMBAD read timed out")
-            return good_result
-
-    monkeypatch.setattr(add_star, "Simbad", FlakySimbad)
+    monkeypatch.setattr(add_star.simbad_servers, "query_objects", flaky_query_objects)
 
     result = add_star.resolve_stellar_gaia_ids_batch(["proxima centauri", "sirius b"])
 

@@ -72,21 +72,6 @@ def test_search_tracked_name_works_while_simbad_is_down(client, monkeypatch, web
     assert "SIMBAD is currently unavailable" not in body
 
 
-def test_simbad_probe_caches_a_down_result(monkeypatch, webapp_module):
-    import requests
-
-    calls = []
-
-    def fake_get(url, timeout):
-        calls.append(url)
-        raise requests.ConnectionError("down")
-    monkeypatch.setattr(webapp_module.requests, "get", fake_get)
-    monkeypatch.setattr(webapp_module, "_simbad_state", {"available": True, "checked_at": 0.0})
-    assert webapp_module._simbad_available() is False
-    assert webapp_module._simbad_available() is False
-    assert len(calls) == 1
-
-
 def test_search_unknown_source_id_reports_not_tracked(client):
     resp = client.get("/?q=123456789012345678")
     assert resp.status_code == 200
@@ -272,6 +257,24 @@ def test_batch_search_names_skipped_when_simbad_is_down(client, monkeypatch, web
     resp = client.post("/batch", data={"names": f"Vega\n{WEBAPP_TEST_STAR_1}\n"})
     assert resp.status_code == 200
     assert "SIMBAD is currently unavailable" in resp.get_data(as_text=True)
+
+
+def test_batch_search_caps_names_lower_while_only_the_mirror_is_up(client, monkeypatch, webapp_module):
+    # One-by-one lookups on the mirror are ~7 names/s; the normal cap would
+    # run far past the proxy timeout.
+    asked = []
+
+    def fake_resolve(names):
+        asked.extend(names)
+        return {}
+    monkeypatch.setattr(webapp_module, "_simbad_name_lookup_cap", lambda: 3)
+    monkeypatch.setattr(webapp_module, "resolve_stellar_gaia_ids_batch", fake_resolve)
+    resp = client.post("/batch", data={"names": "Vega\nAltair\nDeneb\nSirius\nRigel\n"})
+    assert resp.status_code == 200
+    assert asked == ["Vega", "Altair", "Deneb"]
+    body = resp.get_data(as_text=True)
+    assert "2 additional name(s) beyond the 3 cap were skipped entirely." in body
+    assert "slower mirror" in body
 
 
 def test_batch_search_header_row_from_uploaded_file(client, monkeypatch, webapp_module):
