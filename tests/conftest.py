@@ -223,6 +223,9 @@ def webapp_module(spectra_data_dir):
 
 
 @pytest.fixture
-def client(webapp_module):
+def client(webapp_module, monkeypatch):
     webapp_module.app.config["TESTING"] = True
+    # No live SIMBAD probe from tests -- the resolvers themselves are
+    # monkeypatched per test; a test of the outage path overrides this.
+    monkeypatch.setattr(webapp_module, "_simbad_available", lambda: True)
     return webapp_module.app.test_client()

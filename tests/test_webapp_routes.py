@@ -51,6 +51,42 @@ def test_search_name_when_simbad_is_down_reports_that_plainly(client, monkeypatc
     assert "SIMBAD is currently unavailable" in resp.get_data(as_text=True)
 
 
+def test_search_name_skips_simbad_when_probe_says_down(client, monkeypatch, webapp_module):
+    # A failing resolve takes ~75s, past the 60s proxy timeout -- when the
+    # probe already says SIMBAD is down, the resolver must not be called.
+    def fail_if_called(name):
+        raise AssertionError("resolver called while SIMBAD is down")
+    monkeypatch.setattr(webapp_module, "_simbad_available", lambda: False)
+    monkeypatch.setattr(webapp_module, "resolve_gaia_source_id", fail_if_called)
+    resp = client.get("/?q=SOME+UNTRACKED+NAME")
+    assert resp.status_code == 200
+    assert "SIMBAD is currently unavailable" in resp.get_data(as_text=True)
+
+
+def test_search_tracked_name_works_while_simbad_is_down(client, monkeypatch, webapp_module):
+    monkeypatch.setattr(webapp_module, "_simbad_available", lambda: False)
+    resp = client.get("/?q=TEST+STAR+ONE")
+    assert resp.status_code == 200
+    body = resp.get_data(as_text=True)
+    assert "TESTSPEC" in body
+    assert "SIMBAD is currently unavailable" not in body
+
+
+def test_simbad_probe_caches_a_down_result(monkeypatch, webapp_module):
+    import requests
+
+    calls = []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        raise requests.ConnectionError("down")
+    monkeypatch.setattr(webapp_module.requests, "get", fake_get)
+    monkeypatch.setattr(webapp_module, "_simbad_state", {"available": True, "checked_at": 0.0})
+    assert webapp_module._simbad_available() is False
+    assert webapp_module._simbad_available() is False
+    assert len(calls) == 1
+
+
 def test_search_unknown_source_id_reports_not_tracked(client):
     resp = client.get("/?q=123456789012345678")
     assert resp.status_code == 200
@@ -224,6 +260,18 @@ def test_batch_search_skips_column_header_row(client, monkeypatch, webapp_module
     assert "2 entries looked up." in body
     assert "looked like a column header and was skipped" in body
     assert "not resolved via SIMBAD" not in body
+
+
+def test_batch_search_names_skipped_when_simbad_is_down(client, monkeypatch, webapp_module):
+    # resolve_stellar_gaia_ids_batch swallows per-chunk failures, so the
+    # outage has to be caught before it's called, not from an exception.
+    def fail_if_called(names):
+        raise AssertionError("batch resolver called while SIMBAD is down")
+    monkeypatch.setattr(webapp_module, "_simbad_available", lambda: False)
+    monkeypatch.setattr(webapp_module, "resolve_stellar_gaia_ids_batch", fail_if_called)
+    resp = client.post("/batch", data={"names": f"Vega\n{WEBAPP_TEST_STAR_1}\n"})
+    assert resp.status_code == 200
+    assert "SIMBAD is currently unavailable" in resp.get_data(as_text=True)
 
 
 def test_batch_search_header_row_from_uploaded_file(client, monkeypatch, webapp_module):
