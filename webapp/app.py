@@ -2929,7 +2929,7 @@ LEADERBOARD_TEMPLATE = """
     <h1>The Spectra Pointer</h1>
     <img class="logo-placeholder" src="/static/logo.png" alt="The Spectra Pointer logo">
   </div>""" + NAV_HTML + """
-  <p class="note">Fixed 6-month periods. Each period computes two top-10 lists: most cumulative (all-time) observations, and most observations within that period alone. Any star that ever made either list gets a line below, appearing only for the periods it qualified — not dragged across the whole timeline. Only dated holdings count; DESI and SDSS-V report no per-observation dates, so a star's true total (see Stats below) can be higher. Log scale: zero observations in a period shows as a gap, not a dip to zero.</p>
+  <p class="note">Fixed 6-month periods. Each period computes two top-10 lists: most cumulative (all-time) observations, and most observations within that period alone. Any star that ever made either list gets a line below, appearing only for the periods it qualified — not dragged across the whole timeline. Only dated holdings count; DESI and SDSS-V APOGEE report no per-observation dates, so a star's true total (see Stats below) can be higher. Log scale: zero observations in a period shows as a gap, not a dip to zero.</p>
   <h2>Cumulative observations</h2>
   {% if cumulative_traces %}
     <div id="cumulative-plot"></div>
@@ -3065,7 +3065,7 @@ LEADERBOARD_TEMPLATE = """
       {% endfor %}
     </table>
   {% else %}
-    <p class="note">Nothing in the last {{ trending_years }} years yet — most holdings are decades-old archival spectra, and DESI/SDSS-V carry no per-observation dates, so this stays sparse until more recently-dated archives (ESO, MAST, KOA, NOIRLab) sync.</p>
+    <p class="note">Nothing in the last {{ trending_years }} years yet — most holdings are decades-old archival spectra, and DESI/SDSS-V APOGEE carry no per-observation dates.</p>
   {% endif %}
 
   <h3>Holdings by archive</h3>
@@ -3077,6 +3077,7 @@ LEADERBOARD_TEMPLATE = """
   </table>
 
   <h3>Matches by method</h3>
+  <p class="note">shitty_positional_match counts are tentative, needs-review assignments, not confirmed matches. See More Info.</p>
   <table>
     <tr><th>Method</th><th>Count</th></tr>
     {% for r in by_method %}
@@ -5003,19 +5004,27 @@ INFO_TEMPLATE = """
   {% endif %}
 
   <h2>How matching works</h2>
-  <p>Every archive record goes through up to three match methods, tried in this order, and the first one that succeeds wins:</p>
+  <p>Every archive record goes through up to three confident match methods at sync time, tried in this order, and the first one that succeeds wins. Records that none of them can place get a fourth, deliberately low-confidence positional fallback later on:</p>
   <ol>
     <li><b>direct_gaia_column</b> — the archive already reports a Gaia DR3 source_id for the record (e.g. DESI, LAMOST, GALAH, SDSS-V). This is just a lookup against the tracked-star list, not a positional or name match, so it's the most reliable method.</li>
     <li><b>name_resolved</b> — no Gaia column, but the archive's reported target name matches one of a tracked star's cached SIMBAD aliases. Tried <b>before</b> position deliberately: Gaia's single-star astrometric solution can be biased for close visual binaries, which can break a positional match even with otherwise-correct proper motion — an identifier match sidesteps that failure mode entirely. Still sanity-checked against the record's own reported position when one is present (within 10 arcmin) — a name match whose own position is nowhere near that star falls through to positional matching instead of being trusted blindly.</li>
-    <li><b>positional_easy_match</b> — no Gaia column and no name match (or a name match that failed the sanity check above). The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a fixed 1.0 arcsecond radius. Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → recorded as <b>skipped</b> (see below) rather than dropped — unless a name match was rejected just above, in which case it's <b>needs_review</b> instead: a rejected name match is often still correct (e.g. the archive's own logged position for that one exposure is simply wrong), so it's kept visible for confirmation rather than dropped with no candidate at all.</li>
+    <li><b>positional_easy_match</b> — no Gaia column and no name match (or a name match that failed the sanity check above). The record's reported RA/Dec is checked against tracked stars only (not the full Gaia catalog), each candidate's proper motion propagated to the observation's epoch, within a 1.0 arcsecond radius (wider for a couple of instruments, see below). Exactly one candidate within radius → matched. More than one → <b>needs_review</b> (ambiguous, gaia_source_id left unassigned). Zero → recorded as <b>skipped</b> (see below) rather than dropped — unless a name match was rejected just above, in which case it's <b>needs_review</b> instead: a rejected name match is often still correct (e.g. the archive's own logged position for that one exposure is simply wrong), so it's kept visible for confirmation rather than dropped with no candidate at all.</li>
+    <li><b>shitty_positional_match</b> — a deliberately low-confidence fallback for skipped records that still carry a reported RA/Dec. It runs in the periodic reconcile pass, not during the sync itself. The search widens to 60 arcseconds and covers the full Gaia DR3 catalog, not just tracked stars, with every candidate's proper motion propagated to the observation's epoch. A candidate is picked like this:
+      <ul>
+        <li>A Bright Star Catalogue star in range wins outright, since nothing Gaia sees can outshine a naked-eye star. If two BSC stars are in range at similar distances (a close visual binary such as Alpha Cen A/B), no star is picked.</li>
+        <li>Otherwise, candidates fainter than that archive's faintness ceiling are dropped. The ceiling is the G magnitude below which 99% of the archive's confirmed matches fall, or G=18 for archives not measured yet.</li>
+        <li>A single remaining candidate wins. With two or more, the brightest wins only if it is at least 2 magnitudes brighter than the next.</li>
+        <li>No star is picked if a fainter candidate sits more than 3× closer than the winner.</li>
+      </ul>
+      A Gaia star that wins but isn't tracked yet is added to the tracked-star list. Whether or not a star is picked, the record moves to <b>needs_review</b> and is never marked <b>matched</b>: the evidence is "brightest plausible star nearby", which is an inference, not an identifier. Picked records still appear on that star's page, with Match "needs_review" and Method "shitty_positional_match", so treat them as probable rather than confirmed.</li>
   </ol>
-  <p class="note">The 1.0" match radius is the same for every archive and instrument. Some instruments have a real, documented systematic offset between their reported pointing and the true catalog position (e.g. finder-camera-derived coordinates) — if that offset ever exceeds 1.0", the record ends up in the skipped queue rather than getting mismatched (the tight radius protects against false positives, at the cost of some real holdings not surfacing automatically).</p>
+  <p class="note">The 1.0" radius is widened for two instruments whose reported pointings carry a measured, systematic offset from the true star position: NOIRLab/CHIRON (60") and ESO/FEROS (100"). Each radius was chosen by simulating several radii against records already matched by name and taking the one that recovered the most single-candidate matches. Gemini/NIFS has a similar offset (~180") but sits in crowded fields where a radius that wide would produce far more ambiguous matches than clean ones, so it keeps 1.0". Records from other instruments with a pointing offset larger than the radius end up skipped rather than mismatched. The fallback above recovers many of them as tentative matches.</p>
 
   <h2>What's likely missing</h2>
   <p>This is a "pointer" database, not a spectra archive — it tracks whether an archive has a spectrum for a star and links to it, not the spectrum data (flux/wavelength arrays) itself. A few concrete, known gaps beyond that:</p>
   <ul>
     <li><b>Archives and instruments not yet tracked</b>: see the Archive Status tab's Known gaps table (whole archives not yet public or investigated, like WEAVE/4MOST/JUST, and specific instruments at already-implemented archives like CARMENES's co-added template library).</li>
-    <li><b>Name resolution gaps</b>: not every archive-reported target name resolves to a tracked star via SIMBAD, and it varies a lot by archive — some archives (e.g. NOIRLab) report a much higher fraction of unresolvable names than others, often because the reported name is a survey-internal field ID or calibration marker rather than an actual star name. These records aren't dropped: they're persisted with match_status <b>skipped</b> so they can be manually or crowd-sourced attached to a real Gaia source later. See the Skipped records section below for live, per-archive counts.</li>
+    <li><b>Name resolution gaps</b>: not every archive-reported target name resolves to a tracked star via SIMBAD, and it varies a lot by archive — some archives (e.g. NOIRLab) report a much higher fraction of unresolvable names than others, often because the reported name is a survey-internal field ID or calibration marker rather than an actual star name. These records aren't dropped. If they carry a position, the shitty_positional_match fallback (see How matching works above) gives them a tentative needs_review match where it can. If they don't, they stay <b>skipped</b> so they can be attached to a real Gaia source later, manually or through crowd-sourced triage. See the Skipped records section below for live, per-archive counts.</li>
     <li><b>Gaia XP continuous spectra</b>: flagged as available per-star (see the "Gaia XP continuous" field on a star's page) but not ingested as data — same lean-pointer tradeoff as everything else here.</li>
     <li><b>SDSS legacy vs. SDSS-V</b>: legacy optical spectroscopy is capped at MJD 58932 (~2020); anything after that boundary lives in the separate SDSS-V optical archive instead, on a different pipeline.</li>
   </ul>
@@ -5035,7 +5044,7 @@ INFO_TEMPLATE = """
   <p class="note"><b>ESO Science Archive</b> (Phase 3, pipeline-reduced) and <b>ESO Archive (Raw)</b> (unreduced exposures) are two separate archive_codes because a substantial slice of ESO's holdings — tens of thousands of raw HARPS/UVES/ESPRESSO frames per well-observed target — has no Phase 3 counterpart at all. Since the two source tables share no join key, a periodic reconciliation pass deletes any raw holding whose instrument and observation date match an already-synced Phase 3 holding for the same star, so a raw exposure disappears once ESO deposits its reduced counterpart rather than double-counting the same observation twice.</p>
 
   <h2>Needs-review queue</h2>
-  <p class="note">Either an ambiguous positional match (2+ tracked stars within 1.0" of the reported position) or a rejected name match with no positional fallback (see How matching works above) — no single star was assigned automatically. Showing the {{ needs_review|length }} most recent{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
+  <p class="note">Three kinds of record land here (see How matching works above). Some are ambiguous positional matches, with 2+ tracked stars within the match radius. Some are rejected name matches with no positional match. The rest went through the shitty_positional_match fallback: those either carry a tentative star assignment or had no candidate confident enough to pick. None of these is a confirmed match. Showing the {{ needs_review|length }} most recent{% if needs_review_total > needs_review|length %} of {{ "{:,}".format(needs_review_total) }} total{% endif %}.</p>
   {% if needs_review %}
     <table class="compact">
       <tr><th>Archive</th><th>Reported name</th><th>RA, Dec</th><th>Date</th><th>Separation</th><th>Reduction</th></tr>
@@ -5055,7 +5064,7 @@ INFO_TEMPLATE = """
   {% endif %}
 
   <h2>Skipped records</h2>
-  <p class="note">No candidate at all — nothing within the match radius, an untracked direct Gaia id, or missing/invalid position. Kept with the raw reported name/position for later review (manual or crowd-sourced), not discarded.</p>
+  <p class="note">No candidate at all. These records have an untracked or invalid direct Gaia id, have a missing or invalid position or date, or had nothing within the 1.0" radius and are waiting for the next shitty_positional_match pass. That pass moves every record it processes to needs review. Kept with the raw reported name/position for later review (manual or crowd-sourced), not discarded.</p>
   <table>
     <tr><th>Archive</th><th>Skipped</th></tr>
     {% for r in skipped_by_archive %}
