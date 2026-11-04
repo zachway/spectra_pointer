@@ -285,6 +285,14 @@ def test_batch_search_names_skipped_when_simbad_is_down(client, monkeypatch, web
     assert "SIMBAD is currently unavailable" in resp.get_data(as_text=True)
 
 
+@pytest.mark.parametrize("server, cap", [
+    ("simbad.cds.unistra.fr", 2000), ("simbad.harvard.edu", 200), ("simbad.idia.ac.za", 40), (None, 2000),
+])
+def test_batch_name_cap_follows_the_server_in_use(monkeypatch, webapp_module, server, cap):
+    monkeypatch.setattr(webapp_module.simbad_servers, "first_available", lambda: server)
+    assert webapp_module._simbad_name_lookup_cap() == cap
+
+
 def test_batch_search_caps_names_lower_while_only_the_mirror_is_up(client, monkeypatch, webapp_module):
     # One-by-one lookups on the mirror are ~7 names/s; the normal cap would
     # run far past the proxy timeout.
