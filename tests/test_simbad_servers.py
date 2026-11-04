@@ -5,7 +5,7 @@ from pyvo.dal.exceptions import DALQueryError, DALServiceError
 
 from ingest import simbad_servers
 
-CDS, CFA = simbad_servers.SIMBAD_SERVERS
+CDS, CFA, IDIA = simbad_servers.SIMBAD_SERVERS
 
 
 @pytest.fixture(autouse=True)
@@ -16,9 +16,38 @@ def fresh_state(monkeypatch):
 @pytest.fixture
 def up(monkeypatch):
     """Which servers the probe reports as up; tests mutate it."""
-    servers = {CDS, CFA}
+    servers = {CDS, CFA, IDIA}
     monkeypatch.setattr(simbad_servers, "_probe", lambda server: server in servers)
     return servers
+
+
+def test_idia_is_registered_with_astroquery():
+    # astroquery's Simbad.server setter rejects hosts missing from
+    # conf.servers_list, which ships with only CDS and CfA.
+    from astroquery.simbad import Simbad
+
+    simbad = Simbad()
+    simbad.server = IDIA
+    assert simbad.server == IDIA
+
+
+def test_falls_through_to_idia_when_cds_and_cfa_are_down(up, fake_simbad):
+    up.difference_update({CDS, CFA})
+    fake_simbad.responses = {
+        CDS: AssertionError("CDS is down"), CFA: AssertionError("CfA is down"), IDIA: Table({"main_id": ["idia"]}),
+    }
+    assert simbad_servers.query(lambda s: s.query_object("Vega"))["main_id"][0] == "idia"
+    assert simbad_servers.first_available() == IDIA
+
+
+def test_idia_batches_go_one_by_one(up, fake_simbad):
+    # IDIA's upload failure is a DALQueryError, which doesn't fail over --
+    # so it must never be sent query_objects at all.
+    up.difference_update({CDS, CFA})
+    fake_simbad.responses = {IDIA: lambda name: Table({"main_id": [name], "ids": ["x"]})}
+    result = simbad_servers.query_objects(["Vega", "Proxima"], "ids")
+    assert sorted(result["user_specified_id"]) == ["Proxima", "Vega"]
+    assert {kind for _, kind, _ in fake_simbad.calls} == {"object"}
 
 
 class FakeSimbad:

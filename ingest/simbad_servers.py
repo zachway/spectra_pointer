@@ -4,11 +4,13 @@ Every SIMBAD query in this project goes through query() / query_objects()
 here instead of a bare astroquery Simbad(), so an outage of one SIMBAD
 service falls through to the next instead of failing the lookup.
 
-Only two independent SIMBAD services exist (checked 2026-10-30, the same
-pair astroquery's own conf.servers_list carries): CDS and the CfA mirror.
-simbad.u-strasbg.fr is an alias of CDS (same IP, 130.79.128.4) and
-simbad.cfa.harvard.edu an alias of simbad.harvard.edu, so listing them too
-would just probe the same machines twice.
+Three independent SIMBAD services, per CDS's own mirror list: CDS, the CfA
+mirror and IDIA (South Africa). astroquery's conf.servers_list only knows
+the first two and its Simbad.server setter refuses anything else, so IDIA
+is registered there at import (below). simbad.u-strasbg.fr is an alias of
+CDS (same IP, 130.79.128.4) and simbad.cfa.harvard.edu an alias of
+simbad.harvard.edu, so listing them too would just probe the same machines
+twice.
 
 SIMBAD_SERVERS is in preference order. A server's health is probed (a quick
 GET of its TAP capabilities endpoint) and cached per process -- up results
@@ -36,16 +38,25 @@ import requests
 from astropy.table import Column, Table, vstack
 from astroquery.exceptions import NoResultsWarning
 from astroquery.simbad import Simbad
+from astroquery.simbad import conf as simbad_conf
 from pyvo.dal.exceptions import DALServiceError
 
 logger = logging.getLogger(__name__)
 
-SIMBAD_SERVERS = ("simbad.cds.unistra.fr", "simbad.harvard.edu")
+SIMBAD_SERVERS = ("simbad.cds.unistra.fr", "simbad.harvard.edu", "simbad.idia.ac.za")
 
-# Observed 2026-10-30: the CfA mirror answers query_object and plain ADQL
-# in ~0.1s but 504s after 60s on query_objects, which astroquery 0.4.11
-# sends as a TAP table upload. Batch lookups against it go name by name.
-SERVERS_WITHOUT_UPLOADS = frozenset({"simbad.harvard.edu"})
+for _server in SIMBAD_SERVERS:
+    if _server not in simbad_conf.servers_list:
+        simbad_conf.servers_list = [*simbad_conf.servers_list, _server]
+
+# Neither mirror takes query_objects, which astroquery 0.4.11 sends as a TAP
+# table upload, so batch lookups against them go name by name. Observed
+# during the CDS outage: CfA answers query_object/plain ADQL in ~0.1s but
+# 504s after 60s on uploads (2026-10-30); IDIA answers query_object in ~2s
+# but fails uploads after ~4 min with "Simbad's ID normalisation
+# temporarily impossible!" -- a DALQueryError, which _run doesn't fail over
+# on, so IDIA must never be sent one (2026-11-04).
+SERVERS_WITHOUT_UPLOADS = frozenset({"simbad.harvard.edu", "simbad.idia.ac.za"})
 ONE_BY_ONE_WORKERS = 8
 # query_object warns once per name SIMBAD doesn't know -- harmless, but a
 # one-by-one batch of a sync page's target names would print thousands of
@@ -104,11 +115,9 @@ def any_available() -> bool:
     return any(server_available(server) for server in SIMBAD_SERVERS)
 
 
-def uploads_available() -> bool:
-    """Whether a server that takes query_objects' TAP upload is up -- i.e.
-    whether a batch lookup gets one request per chunk rather than going
-    name by name (~7 names/s against the CfA mirror, observed 2026-10-30)."""
-    return any(server_available(s) for s in SIMBAD_SERVERS if s not in SERVERS_WITHOUT_UPLOADS)
+def first_available() -> str | None:
+    """The server the next query would go to, or None if none is up."""
+    return next((server for server in SIMBAD_SERVERS if server_available(server)), None)
 
 
 def _client(server: str, fields: tuple[str, ...]) -> Simbad:

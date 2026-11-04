@@ -230,14 +230,16 @@ def _simbad_available() -> bool:
     return simbad_servers.any_available()
 
 
-# A batch on a mirror without TAP uploads goes name by name at ~7/s (see
-# ingest.simbad_servers), so MAX_NAME_LOOKUPS would take ~5 min -- well past
-# the 60s proxy timeout. ~200 names is ~30s.
-MIRROR_MAX_NAME_LOOKUPS = 200
+# A batch on a mirror without TAP uploads goes name by name (see
+# ingest.simbad_servers), so MAX_NAME_LOOKUPS would run minutes past the 60s
+# proxy timeout. Caps sized for ~25-30s at each mirror's observed rate with
+# 8 parallel lookups: CfA ~7 names/s, IDIA ~1.6 names/s.
+MIRROR_MAX_NAME_LOOKUPS = {"simbad.harvard.edu": 200, "simbad.idia.ac.za": 40}
 
 
 def _simbad_name_lookup_cap() -> int:
-    return MAX_NAME_LOOKUPS if simbad_servers.uploads_available() else MIRROR_MAX_NAME_LOOKUPS
+    server = simbad_servers.first_available()
+    return MIRROR_MAX_NAME_LOOKUPS.get(server, MAX_NAME_LOOKUPS)
 
 DATA_TABLES = (
     "stars", "archives", "spectroscopy_holdings", "archive_sync_state",
