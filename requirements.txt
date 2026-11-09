@@ -2,6 +2,7 @@ astroquery
 astropy
 astropy-healpix
 healpy
+matplotlib  # scripts/paper_figures
 skyplothelper[plotly]
 psycopg[binary]
 beautifulsoup4
