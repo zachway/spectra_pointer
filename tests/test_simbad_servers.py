@@ -164,3 +164,13 @@ def test_probe_result_is_cached(monkeypatch):
     assert simbad_servers.any_available() is False
     assert simbad_servers.any_available() is False
     assert len(calls) == len(simbad_servers.SIMBAD_SERVERS)
+
+
+@pytest.mark.parametrize("status, expected", [(200, True), (404, False), (503, False)])
+def test_probe_needs_a_2xx(monkeypatch, status, expected):
+    # 404 is what CDS served for every SIMBAD path during its Nov 2026 outage.
+    class Resp:
+        status_code = status
+        ok = 200 <= status < 300
+    monkeypatch.setattr(simbad_servers.requests, "get", lambda url, timeout: Resp())
+    assert simbad_servers._probe(CDS) is expected

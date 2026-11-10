@@ -88,7 +88,12 @@ def _probe(server: str) -> bool:
         resp = requests.get(f"https://{server}/simbad/sim-tap/capabilities", timeout=PROBE_TIMEOUT_S)
     except requests.RequestException:
         return False
-    return resp.status_code < 500
+    # A healthy server answers 200 here. Require 2xx, not just "below 500":
+    # during the Nov 2026 CDS incident, simbad.cds.unistra.fr answered every
+    # SIMBAD path with a fast 404 "Page unavailable" page. That passed the old
+    # check, so first_available() reported CDS as up and the webapp allowed
+    # CDS-sized name batches that actually ran one by one on the mirrors.
+    return resp.ok
 
 
 def server_available(server: str) -> bool:
