@@ -114,6 +114,19 @@ def archive_instrument_label(display_name: str, instrument: str | None, empty: s
 
 app.jinja_env.globals["archive_instrument_label"] = archive_instrument_label
 
+
+def _simbad_web_url(path: str, query: str) -> str:
+    """Link to SIMBAD's web UI on whichever server is answering. During the
+    Nov 2026 CDS incident simbad.cds.unistra.fr served a 404 "Page
+    unavailable" page; the CfA and IDIA mirrors serve the same /simbad/sim-id
+    and /simbad/sim-coo pages. Falls back to CDS if no server is up, so the
+    links go back to CDS on their own once it returns."""
+    host = simbad_servers.first_available() or simbad_servers.SIMBAD_SERVERS[0]
+    return f"https://{host}/simbad/{path}?{query}"
+
+
+app.jinja_env.globals["simbad_web_url"] = _simbad_web_url
+
 # ProxyFix (above) only fixes up SCRIPT_NAME/url_for() -- but every nav
 # link, form action, and JS fetch() in this app's hand-written HTML is a
 # hardcoded absolute path (e.g. `href="/instruments"`), not url_for(), so
@@ -1142,10 +1155,10 @@ PAGE_TEMPLATE = """
     <dl>
       {% if star.gaia_source_id is not none %}
       <dt>Gaia source_id</dt><dd>{{ star.gaia_source_id }}</dd>
-      <dt>SIMBAD</dt><dd><a href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=Gaia+DR3+{{ star.gaia_source_id }}" target="_blank" rel="noopener">open</a></dd>
+      <dt>SIMBAD</dt><dd><a href="{{ simbad_web_url('sim-id', 'Ident=Gaia+DR3+' ~ star.gaia_source_id) }}" target="_blank" rel="noopener">open</a></dd>
       {% else %}
       <dt>Gaia source_id</dt><dd>— (no credible Gaia counterpart; tracked via Bright Star Catalogue HR {{ star.bsc_hr_number }})</dd>
-      <dt>SIMBAD</dt><dd><a href="https://simbad.cds.unistra.fr/simbad/sim-id?Ident=HR+{{ star.bsc_hr_number }}" target="_blank" rel="noopener">open</a></dd>
+      <dt>SIMBAD</dt><dd><a href="{{ simbad_web_url('sim-id', 'Ident=HR+' ~ star.bsc_hr_number) }}" target="_blank" rel="noopener">open</a></dd>
       {% endif %}
       <dt>ESASky</dt><dd><a href="https://sky.esa.int/esasky/?target={{ "%.6f"|format(star.ra) }}%20{{ "%.6f"|format(star.dec) }}&amp;fov=0.2&amp;hips=DSS2+color&amp;cooframe=J2000&amp;sci=true&amp;lang=en" target="_blank" rel="noopener">open</a></dd>
       <dt>RA, Dec</dt><dd>{{ "%.6f"|format(star.ra) }}, {{ "%.6f"|format(star.dec) }}</dd>
@@ -5692,7 +5705,7 @@ def _esasky_url(ra: float, dec: float) -> str:
 
 
 def _simbad_coord_url(ra: float, dec: float) -> str:
-    return f"https://simbad.cds.unistra.fr/simbad/sim-coo?Coord={ra}+{dec}&Radius=2&Radius.unit=arcmin"
+    return _simbad_web_url("sim-coo", f"Coord={ra}+{dec}&Radius=2&Radius.unit=arcmin")
 
 
 # =============================================================================

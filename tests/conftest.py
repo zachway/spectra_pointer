@@ -229,4 +229,7 @@ def client(webapp_module, monkeypatch):
     # monkeypatched per test; a test of the outage path overrides this.
     monkeypatch.setattr(webapp_module, "_simbad_available", lambda: True)
     monkeypatch.setattr(webapp_module, "_simbad_name_lookup_cap", lambda: webapp_module.MAX_NAME_LOOKUPS)
+    # SIMBAD links on rendered pages pick a host via first_available(), which
+    # would probe the real servers; pin it to CDS.
+    monkeypatch.setattr(webapp_module.simbad_servers, "first_available", lambda: webapp_module.simbad_servers.SIMBAD_SERVERS[0])
     return webapp_module.app.test_client()

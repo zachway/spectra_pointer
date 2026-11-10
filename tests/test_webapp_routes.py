@@ -704,3 +704,19 @@ def test_cmd_csv_export_lists_stars_with_gaia_parameters(client):
     assert "5200.0" in row
     assert row.endswith(",3")  # 2 holdings in archive A + 1 in archive B
     assert len(client.get("/cmd?teff_min=6000&format=csv").get_data(as_text=True).splitlines()) == 1
+
+
+def test_star_page_simbad_link_uses_the_server_that_is_up(client, monkeypatch, webapp_module):
+    # During the Nov 2026 CDS incident, links to simbad.cds.unistra.fr landed
+    # on a 404 page; they should follow the failover to a mirror.
+    monkeypatch.setattr(webapp_module.simbad_servers, "first_available", lambda: "simbad.harvard.edu")
+    page = client.get(f"/?q={WEBAPP_TEST_STAR_1}").get_data(as_text=True)
+    assert f"https://simbad.harvard.edu/simbad/sim-id?Ident=Gaia+DR3+{WEBAPP_TEST_STAR_1}" in page
+    assert "simbad.cds.unistra.fr" not in page
+
+
+def test_simbad_link_falls_back_to_cds_when_nothing_answers(monkeypatch, webapp_module):
+    monkeypatch.setattr(webapp_module.simbad_servers, "first_available", lambda: None)
+    assert webapp_module._simbad_coord_url(1.5, -2.5) == (
+        "https://simbad.cds.unistra.fr/simbad/sim-coo?Coord=1.5+-2.5&Radius=2&Radius.unit=arcmin"
+    )
