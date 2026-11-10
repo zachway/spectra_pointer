@@ -35,7 +35,13 @@ jobs:
           # runner images preinstall -- install the server-dev package for
           # whichever major version 'postgresql' actually resolved to instead.
           PG_MAJOR=$(psql --version | awk '{print $3}' | cut -d. -f1)
-          sudo apt-get install -y "postgresql-server-dev-${PG_MAJOR}"
+          # Pin it to the installed client's exact version: since ~2026-11-10
+          # the client resolves to PGDG (18.6-1.pgdg...) while an unpinned
+          # server-dev picks Ubuntu's build (18.6-0ubuntu...), which depends
+          # on Ubuntu's client and apt refuses ("unmet dependencies").
+          PG_CLIENT_VERSION=$(dpkg-query -W -f='${Version}' "postgresql-client-${PG_MAJOR}")
+          sudo apt-get install -y "postgresql-server-dev-${PG_MAJOR}=${PG_CLIENT_VERSION}" \
+            || sudo apt-get install -y "postgresql-server-dev-${PG_MAJOR}"
           # PGXS also wants the exact clang the installed Postgres was built
           # with (for the JIT bitcode side-build) -- without it, `make` fails
           # on dump.bc with "clang-19: No such file or directory".
